@@ -1,0 +1,28 @@
+[project]
+name = "resume-parser"
+version = "0.1.0"
+description = "Resume parser foundation service"
+requires-python = ">=3.12"
+readme = "README.md"
+license = { text = "MIT" }
+dependencies = [
+  "fastapi>=0.100.0",
+  "uvicorn[standard]>=0.30.0",
+  "pydantic>=2.9",
+  "pydantic-settings>=2.0",
+  "minio>=7.1.0",
+  "aiokafka>=0.10.0",
+  "PyMuPDF>=1.22.0"
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "httpx>=0.24.0",
+  "requests>=2.30.0"
+]
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-q"
+python_files = ["test_*.py"]

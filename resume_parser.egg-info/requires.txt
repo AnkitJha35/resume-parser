@@ -1,0 +1,12 @@
+fastapi>=0.100.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.9
+pydantic-settings>=2.0
+minio>=7.1.0
+aiokafka>=0.10.0
+PyMuPDF>=1.22.0
+
+[dev]
+pytest>=8.0
+httpx>=0.24.0
+requests>=2.30.0
