@@ -16,6 +16,8 @@ from app.pipeline.stages.sections import SectionDetector
 from app.pipeline.stages.normalization import TextNormalizer
 from app.pipeline.stages.text_extraction import PDFExtractor
 from app.pipeline.stages.reading_order import ReadingOrder
+from app.pipeline.stages.block_classification import classify_block
+from app.pipeline.stages.candidate_grouping import group_candidates
 
 
 class PipelineError(Exception):
@@ -52,6 +54,14 @@ class ResumeParser:
         context.ordered_blocks = ReadingOrder.reorder(context.text_blocks)
         context.normalized_blocks = TextNormalizer.normalize_blocks(context.ordered_blocks)
         context.sections = self.section_detector.detect(context.normalized_blocks)
+
+        # Classify blocks in each section
+        for section_name, blocks in context.sections.items():
+            context.classified_sections[section_name] = [classify_block(b) for b in blocks]
+
+        # Group the classified blocks
+        for section_name, classified_blocks in context.classified_sections.items():
+            context.candidate_groups[section_name] = group_candidates(classified_blocks, section_name)
 
         context.partial_result["parserVersion"] = "1.0.0"
         context.partial_result["personal"] = self.contact_extractor.extract(context.sections.get("SUMMARY", []) or context.normalized_blocks)
