@@ -30,7 +30,9 @@ def _vertical_gap(prev_block, next_block) -> float:
     if prev_block is None or next_block is None:
         return float("inf")
     try:
-        return abs(getattr(next_block, "y0", 0) - getattr(prev_block, "y1", 0))
+        # Use starting Y positions for a more reliable vertical gap when y1
+        # (bottom coordinate) may be missing or unreliable in fixtures.
+        return abs(getattr(next_block, "y0", 0) - getattr(prev_block, "y0", 0))
     except Exception:
         return float("inf")
 
@@ -56,7 +58,8 @@ def group_candidates(classified_blocks: Iterable[ClassifiedBlock], section: str)
         text = getattr(b, "text", "") or ""
         meaningful = text.replace("\u200b", "").replace("\u200c", "").replace("\u200d", "").strip()
         if not meaningful:
-            last_block = b
+            # Ignore invisible/empty blocks entirely — do not update last_block
+            # so they do not create artificial vertical gaps or group boundaries.
             continue
 
         if cb.label == "SECTION_HEADER":

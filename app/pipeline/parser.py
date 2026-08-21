@@ -66,7 +66,10 @@ class ResumeParser:
         context.partial_result["parserVersion"] = "1.0.0"
         context.partial_result["personal"] = self.contact_extractor.extract(context.sections.get("SUMMARY", []) or context.normalized_blocks)
         context.partial_result["skills"] = [skill["value"] for skill in self.skills_extractor.extract(context.sections.get("SKILLS", []) or context.normalized_blocks, section_name="SKILLS")]
-        context.partial_result["experience"] = self.experience_extractor.extract(context.sections.get("EXPERIENCE", []) or [])
+        context.partial_result["experience"] = self.experience_extractor.extract(
+            context.sections.get("EXPERIENCE", []),
+            groups=context.candidate_groups.get("EXPERIENCE")
+        )
         context.partial_result["education"] = self.education_extractor.extract([block.text for block in context.sections.get("EDUCATION", []) or []])
         context.partial_result["projects"] = self.project_extractor.extract(context.sections.get("PROJECTS", []) or [])
         context.partial_result["certifications"] = self.certification_extractor.extract(context.sections.get("CERTIFICATIONS", []) or [])
