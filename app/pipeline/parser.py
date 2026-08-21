@@ -15,6 +15,7 @@ from app.pipeline.stages.pdf_detection import PDFDetector
 from app.pipeline.stages.sections import SectionDetector
 from app.pipeline.stages.normalization import TextNormalizer
 from app.pipeline.stages.text_extraction import PDFExtractor
+from app.pipeline.stages.reading_order import ReadingOrder
 
 
 class PipelineError(Exception):
@@ -47,7 +48,9 @@ class ResumeParser:
             raise PipelineError("PDF_EXTRACTION_FAILED", "Unable to extract meaningful text.")
 
         context.text_blocks = PDFExtractor.extract(raw_pdf_bytes)
-        context.normalized_blocks = TextNormalizer.normalize_blocks(context.text_blocks)
+        # Apply column-aware reading order before normalization
+        context.ordered_blocks = ReadingOrder.reorder(context.text_blocks)
+        context.normalized_blocks = TextNormalizer.normalize_blocks(context.ordered_blocks)
         context.sections = self.section_detector.detect(context.normalized_blocks)
 
         context.partial_result["parserVersion"] = "1.0.0"

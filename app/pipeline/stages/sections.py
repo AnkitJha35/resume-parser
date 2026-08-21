@@ -58,17 +58,16 @@ class SectionDetector:
     def detect(self, blocks: Iterable[TextBlock]) -> dict[str, list[TextBlock]]:
         sections: dict[str, list[TextBlock]] = {section: [] for section in SECTION_NAMES}
         current_section = None
-        sorted_blocks = sorted(blocks, key=lambda block: (block.page_number, block.y0, block.x0))
+        blocks = list(blocks)
 
         index = 0
-        while index < len(sorted_blocks):
-            block = sorted_blocks[index]
+        while index < len(blocks):
+            block = blocks[index]
             block_text = block.text.strip()
             matched_section = self._find_section_header(block_text)
             line_blocks: list[TextBlock] = []
-
             if matched_section is None:
-                line_blocks = self._collect_same_line_blocks(sorted_blocks, index)
+                line_blocks = self._collect_same_line_blocks(blocks, index)
                 line_text = self._line_text(line_blocks)
                 matched_section = self._find_section_header(line_text)
                 if matched_section is None and current_section is None and self._looks_like_education_header(line_text):

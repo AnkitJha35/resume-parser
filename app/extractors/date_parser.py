@@ -5,6 +5,8 @@ from typing import Optional
 
 from pydantic import BaseModel
 
+from app.pipeline.stages.normalization import TextNormalizer
+
 
 MONTHS = {
     "jan": "01",
@@ -50,6 +52,8 @@ class DateRangeParser:
     def parse(date_range_text: str) -> Optional[DateRange]:
         if not date_range_text or not date_range_text.strip():
             return None
+        # Strip optional leading label like "Date:" or "Date :" (case-insensitive)
+        date_range_text = re.sub(r"^\s*date\s*:?\s*", "", date_range_text, flags=re.IGNORECASE)
 
         match = DATE_RANGE_PATTERN.match(date_range_text)
         if not match:

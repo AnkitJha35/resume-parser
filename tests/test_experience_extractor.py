@@ -77,3 +77,32 @@ def test_experience_extractor_description_spanning_multiple_lines():
 
     assert "Built backend services." in entries[0]["description"]
     assert "Led a team of 3 engineers." in entries[0]["description"]
+
+
+def test_experience_extractor_handles_title_company_date_order():
+    # Title -> Company -> Date ordering should be handled correctly
+    blocks = [
+        _make_block("SDE 2"),
+        _make_block("Probus Smart Things!"),
+        _make_block("Date : 07/2022 - Present"),
+        _make_block("Worked on feature X."),
+        _make_block("SDE Intern"),
+        _make_block("Navyug Infosolutions Pvt. Ltd"),
+        _make_block("Date : 02/2022 - 06/2022"),
+        _make_block("Worked on internship tasks."),
+    ]
+
+    extractor = ExperienceExtractor()
+    entries = extractor.extract(blocks)
+
+    assert len(entries) == 2
+    first, second = entries[0], entries[1]
+    assert first["designation"] == "SDE 2"
+    assert first["company"] == "Probus Smart Things!"
+    assert first["startDate"] == "2022-07"
+    assert first["current"] is True
+
+    assert second["designation"] == "SDE Intern"
+    assert second["company"] == "Navyug Infosolutions Pvt. Ltd"
+    assert second["startDate"] == "2022-02"
+    assert second["endDate"] == "2022-06"

@@ -25,7 +25,8 @@ class SkillsExtractor:
 
     def extract(self, blocks: Iterable[TextBlock], section_name: str | None = None) -> list[dict[str, object]]:
         found: dict[str, dict[str, object]] = {}
-        text = "\n".join(block.text for block in blocks)
+        # Defensive: handle blocks whose .text may be None
+        text = "\n".join((block.text or "") for block in blocks)
         for match in self.pattern.finditer(text):
             alias = match.group(0).strip().lower()
             canonical = self.skills.get(alias)

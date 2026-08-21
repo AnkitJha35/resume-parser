@@ -29,6 +29,7 @@ class ExperienceExtractor:
         entries: list[dict[str, object]] = []
         block_list = list(blocks)
         current_entry: dict[str, object] | None = None
+        buffer: list[str] = []
 
         for block in block_list:
             text = block.text.strip()
@@ -36,13 +37,56 @@ class ExperienceExtractor:
                 continue
 
             date_range = DateRangeParser.parse(text)
+
+            if current_entry is None:
+                # buffer lines until we see a signal that starts an entry
+                buffer.append(text)
+
+                signal = False
+                if date_range or self._is_job_title(text) or self._is_company_line(text):
+                    signal = True
+
+                if not signal:
+                    continue
+
+                # Start a new entry using any available date_range (may be None)
+                current_entry = self._new_entry(date_range)
+
+                # Attach buffered lines to the new entry, using heuristics
+                for b in buffer:
+                    # If this buffered line contains a date, set date fields
+                    dr = DateRangeParser.parse(b)
+                    if dr and current_entry.get("startDate") is None:
+                        current_entry["startDate"] = dr.startDate
+                        current_entry["endDate"] = dr.endDate
+                        current_entry["current"] = dr.current
+                        continue
+
+                    if self._is_job_title(b) and not current_entry.get("designation"):
+                        current_entry["designation"] = b
+                        continue
+
+                    if self._is_company_line(b) and not current_entry.get("company"):
+                        current_entry["company"] = b
+                        continue
+
+                    if self._is_location_line(b) and not current_entry.get("location"):
+                        current_entry["location"] = b
+                        continue
+
+                    # Otherwise treat as description
+                    description = current_entry.get("description", "") or ""
+                    current_entry["description"] = "\n".join(filter(None, [description, b])).strip()
+
+                buffer.clear()
+                continue
+
+            # current_entry exists
             if date_range:
+                # Close current and start new
                 if current_entry:
                     entries.append(current_entry)
                 current_entry = self._new_entry(date_range)
-                continue
-
-            if current_entry is None:
                 continue
 
             if self._is_company_line(text):
@@ -57,7 +101,7 @@ class ExperienceExtractor:
                 current_entry["location"] = text
                 continue
 
-            description = current_entry.get("description", "")
+            description = current_entry.get("description", "") or ""
             current_entry["description"] = "\n".join(filter(None, [description, text])).strip()
 
         if current_entry:
@@ -69,14 +113,23 @@ class ExperienceExtractor:
 
         return entries
 
-    def _new_entry(self, date_range: object) -> dict[str, object]:
+    def _new_entry(self, date_range: object | None) -> dict[str, object]:
+        if date_range:
+            start = date_range.startDate
+            end = date_range.endDate
+            current = date_range.current
+        else:
+            start = None
+            end = None
+            current = False
+
         return {
             "company": None,
             "designation": None,
             "location": None,
-            "startDate": date_range.startDate,
-            "endDate": date_range.endDate,
-            "current": date_range.current,
+            "startDate": start,
+            "endDate": end,
+            "current": current,
             "description": None,
             "skills": [],
             "confidence": self._confidence.section_extraction(),

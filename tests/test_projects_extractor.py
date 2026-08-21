@@ -53,3 +53,20 @@ def test_project_extractor_extracts_multiple_technologies():
 
     assert len(entries) == 1
     assert set(entries[0]["technologies"]) >= {"React", "Django", "PostgreSQL"}
+
+
+def test_project_extractor_handles_missing_description():
+    # Project with no description lines should not crash; technologies should be empty
+    blocks = [
+        _make_block("Lonely Project"),
+    ]
+
+    extractor = ProjectExtractor()
+    entries = extractor.extract(blocks)
+
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["name"] == "Lonely Project"
+    assert entry["description"] is None or entry["description"] == ""
+    assert isinstance(entry["technologies"], list)
+    assert entry["technologies"] == []

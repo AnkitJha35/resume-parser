@@ -59,7 +59,8 @@ class ProjectExtractor:
             entries.append(current_entry)
 
         for entry in entries:
-            description_text = entry.get("description", "")
+            # Ensure description_text is a string (default to empty string if None)
+            description_text = entry.get("description") or ""
             skills = self.skills_extractor.extract(
                 [TextBlock(text=description_text, page_number=1, x0=0, y0=0, x1=0, y1=0)],
                 section_name="PROJECTS",

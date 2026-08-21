@@ -12,6 +12,7 @@ class PipelineContext:
         self.raw_pdf_bytes = raw_pdf_bytes
         self.pdf_detection: PDFDetectionResult | None = None
         self.text_blocks: list[TextBlock] = []
+        self.ordered_blocks: list[TextBlock] = []
         self.normalized_blocks: list[TextBlock] = []
         self.sections: dict[str, list[TextBlock]] = {}
         self.partial_result: dict[str, Any] = {}

@@ -16,7 +16,7 @@ _LIGATURE_REPLACEMENTS = {
     "ﬆ": "st",
 }
 
-_CONTROL_CHARS_REGEX = re.compile(r"[\x00-\x08\x0b-\x0c\x0e-\x1f]+")
+_CONTROL_CHARS_REGEX = re.compile(r"[\x00-\x08\x0b-\x0c\x0e-\x1f\u200b\u200c\u200d\u2060\ufeff]+")
 _WHITESPACE_REGEX = re.compile(r"[ \t]+")
 
 
