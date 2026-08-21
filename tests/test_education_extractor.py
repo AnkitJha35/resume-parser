@@ -75,3 +75,35 @@ def test_extracts_fresher_hr_resume_education_entries():
     assert bachelor["institution"] == "BIR Tikendrajit University"
     assert bachelor["startDate"] == "2020"
     assert bachelor["endDate"] == "2023"
+
+
+def test_extracts_from_candidate_groups():
+    # Simulate two CandidateGroups produced by grouping for the resume
+    from types import SimpleNamespace
+    from app.pipeline.stages.block_classification import ClassifiedBlock
+    from app.pipeline.stages.candidate_grouping import CandidateGroup
+
+    # GROUP 1
+    g1_blocks = [
+        ClassifiedBlock(original=SimpleNamespace(text="M.C.A NIT Calicut"), label="UNKNOWN", score=1.0, reasons=[]),
+        ClassifiedBlock(original=SimpleNamespace(text="Date : 07/2019 - 06/2022"), label="DATE", score=1.0, reasons=[]),
+        ClassifiedBlock(original=SimpleNamespace(text="Location: Kerala, India"), label="LOCATION", score=1.0, reasons=[]),
+    ]
+    group1 = CandidateGroup(section="EDUCATION", blocks=g1_blocks, page_number=1, column_id=0, start_index=0, end_index=2, summary_text="")
+
+    # GROUP 2
+    g2_blocks = [
+        ClassifiedBlock(original=SimpleNamespace(text="B.SC-IT Magadh University"), label="DEGREE", score=1.0, reasons=[]),
+        ClassifiedBlock(original=SimpleNamespace(text="Date : 07/2015 - 08/2018"), label="DATE", score=1.0, reasons=[]),
+        ClassifiedBlock(original=SimpleNamespace(text="Location: Patna, India"), label="LOCATION", score=1.0, reasons=[]),
+    ]
+    group2 = CandidateGroup(section="EDUCATION", blocks=g2_blocks, page_number=1, column_id=0, start_index=3, end_index=5, summary_text="")
+
+    extractor = EducationExtractor()
+    entries = extractor.extract(groups=[group1, group2])
+
+    assert len(entries) == 2
+    assert entries[0]["institution"] in ("M.C.A NIT Calicut", "NIT Calicut", None)
+    assert entries[0]["startDate"] == "2019-07"
+    assert entries[1]["institution"] in ("B.SC-IT Magadh University", "Magadh University", None)
+    assert entries[1]["startDate"] == "2015-07"

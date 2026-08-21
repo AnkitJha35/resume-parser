@@ -52,8 +52,23 @@ class DateRangeParser:
     def parse(date_range_text: str) -> Optional[DateRange]:
         if not date_range_text or not date_range_text.strip():
             return None
+
+        # Remove invisible Unicode characters commonly introduced by PDF extraction.
+        date_range_text = (
+            date_range_text.replace("\u200b", "")
+            .replace("\u200c", "")
+            .replace("\u200d", "")
+            .replace("\ufeff", "")
+            .strip()
+        )
+
         # Strip optional leading label like "Date:" or "Date :" (case-insensitive)
-        date_range_text = re.sub(r"^\s*date\s*:?\s*", "", date_range_text, flags=re.IGNORECASE)
+        date_range_text = re.sub(
+            r"^\s*date\s*:?\s*",
+            "",
+            date_range_text,
+            flags=re.IGNORECASE,
+        )
 
         match = DATE_RANGE_PATTERN.match(date_range_text)
         if not match:
@@ -76,7 +91,11 @@ class DateRangeParser:
             if end_date is None:
                 return None
 
-        return DateRange(startDate=start_date, endDate=end_date, current=current)
+        return DateRange(
+            startDate=start_date,
+            endDate=end_date,
+            current=current,
+        )
 
     @staticmethod
     def _is_current(token: str) -> bool:

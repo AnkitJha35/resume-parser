@@ -70,7 +70,10 @@ class ResumeParser:
             context.sections.get("EXPERIENCE", []),
             groups=context.candidate_groups.get("EXPERIENCE")
         )
-        context.partial_result["education"] = self.education_extractor.extract([block.text for block in context.sections.get("EDUCATION", []) or []])
+        context.partial_result["education"] = self.education_extractor.extract(
+            [block.text for block in context.sections.get("EDUCATION", []) or []],
+            groups=context.candidate_groups.get("EDUCATION"),
+        )
         context.partial_result["projects"] = self.project_extractor.extract(context.sections.get("PROJECTS", []) or [])
         context.partial_result["certifications"] = self.certification_extractor.extract(context.sections.get("CERTIFICATIONS", []) or [])
         context.partial_result["achievements"] = [block.text for block in context.sections.get("ACHIEVEMENTS", []) or []]

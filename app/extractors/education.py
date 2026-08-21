@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional, List
+from app.pipeline.stages.candidate_grouping import CandidateGroup
 
 from app.pipeline.stages.confidence import ConfidenceScorer
 from app.extractors.date_parser import DateRangeParser
@@ -35,7 +36,8 @@ class EducationExtractor:
             re.IGNORECASE,
         )
 
-    def extract(self, lines: list[str]) -> list[EducationEntry]:
+    def _extract_from_lines(self, lines: list[str]) -> list[EducationEntry]:
+        """Original line-oriented extraction logic extracted to a helper."""
         education_entries: list[EducationEntry] = []
         current_entry: dict[str, Any] | None = None
 
@@ -84,6 +86,73 @@ class EducationExtractor:
             education_entries.append(self._build_entry(current_entry))
 
         return education_entries
+
+    def extract(self, lines: Optional[list[str]] = None, groups: Optional[list[CandidateGroup]] = None) -> list[EducationEntry]:
+        """Accept either raw lines or candidate groups. For groups, extract per-group."""
+        results: list[EducationEntry] = []
+        if groups:
+            # Prefer a group-aware extraction path that uses classification labels
+            # as hints when the original line-oriented matcher fails to find a degree.
+            return self._extract_from_groups(groups)
+
+        if not lines:
+            return []
+
+        return self._extract_from_lines(lines)
+
+    def _extract_from_groups(self, groups: list[CandidateGroup]) -> list[EducationEntry]:
+        results: list[EducationEntry] = []
+        for group in groups:
+            entry: dict[str, Any] = {
+                "degree": None,
+                "institution": None,
+                "fieldOfStudy": None,
+                "startDate": None,
+                "endDate": None,
+                "grade": None,
+            }
+
+            # Process blocks in visual order and use labels as hints
+            for cb in group.blocks:
+                text = (cb.original.text or "").strip()
+                if not text:
+                    continue
+
+                # Date
+                date_range = self._date_parser.parse(text)
+                if date_range and entry["startDate"] is None:
+                    entry["startDate"] = date_range.startDate
+                    entry["endDate"] = date_range.endDate or "Present"
+                    continue
+
+                lbl = str(getattr(cb, "label", "")).upper()
+                if lbl == "DEGREE" and entry["degree"] is None:
+                    entry["degree"] = text
+                    continue
+                if lbl == "INSTITUTION" and entry["institution"] is None:
+                    entry["institution"] = text
+                    continue
+
+                # Unknown label: use existing line heuristics
+                if lbl == "UNKNOWN":
+                    if entry["degree"] is None and self._is_degree_line(text):
+                        entry["degree"] = text
+                        continue
+                    if entry["institution"] is None and self._looks_like_institution(text):
+                        entry["institution"] = text
+                        continue
+
+            # Fallback: if no degree but institution present, set degree to first non-date block text
+            if entry["degree"] is None:
+                for cb in group.blocks:
+                    t = (cb.original.text or "").strip()
+                    if t and not self._contains_date_range(t):
+                        entry["degree"] = t
+                        break
+
+            results.append(self._build_entry(entry))
+
+        return results
 
     def _is_degree_line(self, text: str) -> bool:
         return bool(self._degree_pattern.match(text))
