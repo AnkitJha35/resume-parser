@@ -27,7 +27,13 @@ class SkillsExtractor:
         found: dict[str, dict[str, object]] = {}
         # Defensive: handle blocks whose .text may be None
         text = "\n".join((block.text or "") for block in blocks)
-        for match in self.pattern.finditer(text):
+        # For matching only, collapse runs of whitespace (including newlines)
+        # into single spaces so multi-word skills split across physical PDF
+        # line breaks still match their canonical aliases. Do not modify
+        # the original TextBlock objects.
+        normalized_text = re.sub(r"\s+", " ", text)
+
+        for match in self.pattern.finditer(normalized_text):
             alias = match.group(0).strip().lower()
             canonical = self.skills.get(alias)
             if canonical is None:
