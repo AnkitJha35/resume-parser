@@ -84,7 +84,7 @@ class ExperienceExtractor:
                         continue
 
                     if self._is_location_line(b) and not current_entry.get("location"):
-                        current_entry["location"] = b
+                        current_entry["location"] = self._normalize_location(b)
                         continue
 
                     # Otherwise treat as description
@@ -140,7 +140,7 @@ class ExperienceExtractor:
                 continue
 
             if self._is_location_line(text) and not current_entry.get("location") and not current_entry.get("description"):
-                current_entry["location"] = text
+                current_entry["location"] = self._normalize_location(text)
                 continue
 
             # Structural fallback: if we already have a designation but no company
@@ -210,7 +210,7 @@ class ExperienceExtractor:
                     continue
 
                 if lbl == "LOCATION" and not entry.get("location"):
-                    entry["location"] = text
+                    entry["location"] = self._normalize_location(text)
                     continue
 
                 # If label is not decisive, use heuristics
@@ -287,6 +287,12 @@ class ExperienceExtractor:
     def _is_job_title(self, text: str) -> bool:
         normalized = text.lower()
         return any(normalized == title for title in self.job_titles)
+
+    def _normalize_location(self, text: str) -> str:
+        value = text.strip()
+        if value.lower().startswith("location:"):
+            value = value.split(":", 1)[1].strip()
+        return value.strip()
 
     def _is_location_line(self, text: str) -> bool:
         return "," in text and any(char.isalpha() for char in text)
