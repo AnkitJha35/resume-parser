@@ -18,6 +18,7 @@ from app.pipeline.stages.text_extraction import PDFExtractor
 from app.pipeline.stages.reading_order import ReadingOrder
 from app.pipeline.stages.block_classification import classify_block
 from app.pipeline.stages.candidate_grouping import group_candidates
+from app.pipeline.stages.sections import SECTION_NAMES
 
 
 class PipelineError(Exception):
@@ -64,7 +65,9 @@ class ResumeParser:
             context.candidate_groups[section_name] = group_candidates(classified_blocks, section_name)
 
         context.partial_result["parserVersion"] = "1.0.0"
-        context.partial_result["personal"] = self.contact_extractor.extract(context.sections.get("SUMMARY", []) or context.normalized_blocks)
+        # Extract header blocks (blocks before the first recognized section heading)
+        header_blocks = self._header_blocks(context.normalized_blocks)
+        context.partial_result["personal"] = self.contact_extractor.extract(header_blocks)
         context.partial_result["skills"] = [skill["value"] for skill in self.skills_extractor.extract(context.sections.get("SKILLS", []) or context.normalized_blocks, section_name="SKILLS")]
         context.partial_result["experience"] = self.experience_extractor.extract(
             context.sections.get("EXPERIENCE", []),
@@ -78,6 +81,10 @@ class ResumeParser:
             context.sections.get("PROJECTS", []) or [],
             groups=context.candidate_groups.get("PROJECTS"),
         )
+        # Summary: join non-empty blocks from the SUMMARY section into a single paragraph
+        summary_blocks = context.sections.get("SUMMARY", []) or []
+        summary_text = " ".join(b.text.strip() for b in summary_blocks if (b.text or "").strip())
+        context.partial_result["summary"] = summary_text or None
         context.partial_result["certifications"] = self.certification_extractor.extract(context.sections.get("CERTIFICATIONS", []) or [])
         context.partial_result["achievements"] = [block.text for block in context.sections.get("ACHIEVEMENTS", []) or []]
         context.partial_result["languages"] = [block.text for block in context.sections.get("LANGUAGES", []) or []]
@@ -93,7 +100,7 @@ class ResumeParser:
         return Resume(
             parserVersion="1.0.0",
             personal=partial_result["personal"],
-            summary=None,
+            summary=partial_result.get("summary"),
             skills=partial_result["skills"],
             experience=partial_result["experience"],
             education=partial_result["education"],
@@ -103,3 +110,17 @@ class ResumeParser:
             languages=partial_result["languages"],
             metadata={}
         )
+
+    def _header_blocks(self, normalized_blocks: list) -> list:
+        """Return the sequence of blocks before the first recognized section header.
+
+        Uses SECTION_NAMES to detect headings (exact match of trimmed uppercase text).
+        """
+        blocks = list(normalized_blocks or [])
+        for idx, b in enumerate(blocks):
+            text = (getattr(b, "text", "") or "").strip()
+            if not text:
+                continue
+            if text.strip().upper() in SECTION_NAMES:
+                return blocks[:idx]
+        return blocks

@@ -30,7 +30,7 @@ class ContactExtractor:
         github = ContactExtractor._find_github(text_lines)
         portfolio = ContactExtractor._find_portfolio(text_lines, linkedin, github)
         name = ContactExtractor._find_name(ordered_blocks, email, phone, linkedin, github)
-        location = ContactExtractor._find_location(text_lines, email, phone, linkedin, github)
+        location = ContactExtractor._find_location(text_lines, name, email, phone, linkedin, github)
 
         return {
             "name": ContactExtractor._field(name, scorer.header_name(), "header_name" if name else "not_found"),
@@ -57,8 +57,9 @@ class ContactExtractor:
     @staticmethod
     def _find_phone(lines: list[str]) -> str | None:
         for line in lines:
-            if EMAIL_REGEX.search(line) or LINKEDIN_REGEX.search(line) or GITHUB_REGEX.search(line):
-                continue
+            # Always attempt to extract a phone number from the line even if
+            # the line also contains an email or URL (some headers place email
+            # and phone on the same physical line).
             match = PHONE_REGEX.search(line)
             if match:
                 phone = match.group(0).strip()
@@ -118,12 +119,48 @@ class ContactExtractor:
         return all(word[0].isupper() for word in words if word)
 
     @staticmethod
-    def _find_location(lines: list[str], email: str | None, phone: str | None, linkedin: str | None, github: str | None) -> str | None:
+    def _find_location(lines: list[str], name: str | None, email: str | None, phone: str | None, linkedin: str | None, github: str | None) -> str | None:
+        # First, look for explicit LOCATION: tokens inside lines (handles combined header lines)
+        for line in lines:
+            m = re.search(r"LOCATION\s*[:\-]\s*(.+)$", line, re.IGNORECASE)
+            if m:
+                return m.group(1).strip()
+
+        # First pass: strict pattern match (e.g., 'City, State' or similar)
         for line in lines:
             if EMAIL_REGEX.search(line) or PHONE_REGEX.search(line) or LINKEDIN_REGEX.search(line) or GITHUB_REGEX.search(line):
                 continue
             if URL_REGEX.search(line):
                 continue
+            if name and line.strip().lower() == name.strip().lower():
+                continue
             if LOCATION_PATTERN.search(line) and not any(char.isdigit() for char in line):
                 return line.strip()
+
+        # Fallback 1: prefer comma-containing lines (e.g., 'City, State')
+        for line in lines:
+            if EMAIL_REGEX.search(line) or PHONE_REGEX.search(line) or LINKEDIN_REGEX.search(line) or GITHUB_REGEX.search(line):
+                continue
+            if URL_REGEX.search(line):
+                continue
+            if name and line.strip().lower() == name.strip().lower():
+                continue
+            text = line.strip()
+            if "," in text and any(ch.isalpha() for ch in text):
+                return text
+
+        # Fallback 2: avoid selecting obvious job-title lines; pick a short alpha-containing line
+        title_stop_words = {"engineer", "developer", "manager", "director", "analyst", "consultant", "intern", "lead", "senior", "sr", "principal"}
+        for line in lines:
+            if EMAIL_REGEX.search(line) or PHONE_REGEX.search(line) or LINKEDIN_REGEX.search(line) or GITHUB_REGEX.search(line):
+                continue
+            if URL_REGEX.search(line):
+                continue
+            if name and line.strip().lower() == name.strip().lower():
+                continue
+            text = line.strip()
+            low = text.lower()
+            if 1 < len(text) <= 80 and any(ch.isalpha() for ch in text) and not any(word in low for word in title_stop_words):
+                return text
+
         return None
