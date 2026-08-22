@@ -108,6 +108,45 @@ def test_ignore_zero_width_and_varying_x0():
     assert all(len(g.blocks) > 0 for g in groups)
 
 
+def test_projects_title_date_description_grouping():
+    # Simulate three projects with title(x0=300), date(x0=300), description(x0=335)
+    seq = []
+    # Project 1
+    seq.append({"text": "Head End System (HES)", "x0": 300})
+    seq.append({"text": "Date : 02/2025 - present", "x0": 300})
+    seq.append({"text": "Built components ...", "x0": 335})
+    seq.append({"text": "Implemented features ...", "x0": 335})
+
+    # Project 2 (starts after a large vertical gap)
+    seq.append({"text": "Network Monitoring System", "x0": 300, "y0_offset": 120})
+    seq.append({"text": "Date : 11/2023 - 01/2025", "x0": 300, "y0_offset": 120})
+    seq.append({"text": "Led firmware integration", "x0": 335, "y0_offset": 120})
+
+    # Project 3 (starts after a large vertical gap)
+    seq.append({"text": "Solar String Monitoring System", "x0": 300, "y0_offset": 240})
+    seq.append({"text": "Date : 09/2022 - 10/2023", "x0": 300, "y0_offset": 240})
+    seq.append({"text": "Led data ingestion", "x0": 335, "y0_offset": 240})
+
+    blocks = []
+    for i, t in enumerate(seq):
+        y = i * 12
+        if isinstance(t, dict):
+            y = t.get("y0_offset", 0) + (i % 4) * 12
+            blocks.append(_make_block(t.get("text"), y0=y, x0=t.get("x0", 0)))
+        else:
+            blocks.append(_make_block(t, y0=y))
+
+    classified = [classify_block(b) for b in blocks]
+    groups = group_candidates(classified, section="PROJECTS")
+
+    assert len(groups) == 3
+    for g in groups:
+        # each group should contain exactly one DATE
+        assert sum(1 for cb in g.blocks if cb.label == "DATE") == 1
+        # first block should be the project title (UNKNOWN)
+        assert g.blocks[0].label == "UNKNOWN"
+
+
 def test_education_grouping():
     seq = [
         "M.C.A NIT Calicut",
@@ -136,3 +175,92 @@ def test_section_headers_not_included():
     groups = group_candidates(classified, section="EXPERIENCE")
     # header should not be part of any group's blocks
     assert all(all(cb.label != "SECTION_HEADER" for cb in g.blocks) for g in groups)
+
+
+def test_projects_horizontal_title_date_layout():
+    # Title at x0=100, date at same y but x0=420 (to the right). Description below.
+    blocks = []
+    blocks.append(_make_block("Project A", x0=100, y0=0))
+    blocks.append(_make_block("Date : 01/2021 - 12/2021", x0=420, y0=0))
+    blocks.append(_make_block("Implemented feature X", x0=120, y0=12))
+
+    # Second project after a gap
+    blocks.append(_make_block("Project B", x0=100, y0=120))
+    blocks.append(_make_block("Date : 02/2020 - 12/2020", x0=420, y0=120))
+    blocks.append(_make_block("Implemented feature Y", x0=120, y0=132))
+
+    classified = [classify_block(b) for b in blocks]
+    groups = group_candidates(classified, section="PROJECTS")
+    assert len(groups) == 2
+    for g in groups:
+        assert sum(1 for cb in g.blocks if cb.label == "DATE") == 1
+        assert g.blocks[0].label == "UNKNOWN"
+
+
+def test_projects_indented_body_layout():
+    # Title/date aligned left, body indented
+    blocks = []
+    blocks.append(_make_block("Analytics Dashboard", x0=80, y0=0))
+    blocks.append(_make_block("Date : 03/2022 - 08/2022", x0=80, y0=12))
+    blocks.append(_make_block("- Built APIs", x0=140, y0=24))
+
+    blocks.append(_make_block("Data Pipeline", x0=80, y0=120))
+    blocks.append(_make_block("Date : 01/2021 - 02/2022", x0=80, y0=132))
+    blocks.append(_make_block("- Stream processing", x0=140, y0=144))
+
+    classified = [classify_block(b) for b in blocks]
+    groups = group_candidates(classified, section="PROJECTS")
+    assert len(groups) == 2
+
+
+def test_projects_two_consecutive_projects_small_gap():
+    # Two projects with small vertical gap but clear DATE markers should split
+    blocks = []
+    blocks.append(_make_block("Proj One", x0=100, y0=0))
+    blocks.append(_make_block("Date : 01/2021 - 06/2021", x0=100, y0=12))
+    blocks.append(_make_block("Work A", x0=120, y0=24))
+
+    # Small gap, next title immediately follows
+    blocks.append(_make_block("Proj Two", x0=100, y0=36))
+    blocks.append(_make_block("Date : 07/2021 - 12/2021", x0=100, y0=48))
+    blocks.append(_make_block("Work B", x0=120, y0=60))
+
+    classified = [classify_block(b) for b in blocks]
+    groups = group_candidates(classified, section="PROJECTS")
+    assert len(groups) == 2
+
+
+def test_projects_unknown_title_followed_by_date_lookahead():
+    # Unknown title (no bold) followed shortly by DATE should form a project
+    blocks = []
+    blocks.append(_make_block("Mysterious Project", x0=200, y0=0))
+    blocks.append(_make_block("Date : 05/2020 - 10/2020", x0=200, y0=12))
+    blocks.append(_make_block("Did important things", x0=220, y0=24))
+
+    classified = [classify_block(b) for b in blocks]
+    groups = group_candidates(classified, section="PROJECTS")
+    assert len(groups) == 1
+    g = groups[0]
+    assert sum(1 for cb in g.blocks if cb.label == "DATE") == 1
+
+
+def test_projects_bullet_continuation_not_new_group():
+    # Bullet lines should not start a new project group; they continue the prior body
+    blocks = []
+    blocks.append(_make_block("Head End System (HES)", x0=300, y0=0))
+    blocks.append(_make_block("Date : 02/2025 - present", x0=300, y0=12))
+    blocks.append(_make_block("Architected a scalable microservices-based Head End", x0=335, y0=24))
+    blocks.append(_make_block("●", x0=316, y0=36))
+    blocks.append(_make_block("containerization, Kubernetes, and Jenkins CI/CD.", x0=335, y0=48))
+
+    # Next project starts after a larger gap
+    blocks.append(_make_block("Network Monitoring System", x0=300, y0=160))
+    blocks.append(_make_block("Date : 11/2023 - 01/2025", x0=300, y0=172))
+    blocks.append(_make_block("Developed a scalable backend", x0=335, y0=184))
+
+    classified = [classify_block(b) for b in blocks]
+    groups = group_candidates(classified, section="PROJECTS")
+    # should be two groups: first contains the bullet and following line
+    assert len(groups) == 2
+    assert groups[0].start_index == 0 and groups[0].end_index >= 4
+    assert any((getattr(cb, 'label', None) == 'DATE') for cb in groups[0].blocks)

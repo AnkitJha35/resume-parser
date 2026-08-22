@@ -70,3 +70,27 @@ def test_project_extractor_handles_missing_description():
     assert entry["description"] is None or entry["description"] == ""
     assert isinstance(entry["technologies"], list)
     assert entry["technologies"] == []
+
+
+def test_project_extractor_accepts_candidate_groups():
+    from app.pipeline.stages.block_classification import ClassifiedBlock
+    from app.pipeline.stages.candidate_grouping import CandidateGroup
+    b1 = _make_block("Resume Parser")
+    b2 = _make_block("Date : 01/2020 - 12/2020")
+    b3 = _make_block("Created a parser for PDF resumes using Python and regex.")
+
+    cb1 = ClassifiedBlock(original=b1, label="UNKNOWN", score=0.0, reasons=[])
+    cb2 = ClassifiedBlock(original=b2, label="DATE", score=1.0, reasons=[])
+    cb3 = ClassifiedBlock(original=b3, label="DESCRIPTION", score=0.6, reasons=[])
+
+    group = CandidateGroup(section="PROJECTS", blocks=[cb1, cb2, cb3], page_number=1, column_id=0, start_index=0, end_index=2, summary_text="Resume Parser")
+
+    extractor = ProjectExtractor()
+    entries = extractor.extract(groups=[group])
+
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["name"] == "Resume Parser"
+    assert entry["startDate"] == "2020-01"
+    assert entry["endDate"] == "2020-12"
+    assert "Python" in entry["technologies"]
