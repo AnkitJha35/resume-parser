@@ -147,8 +147,26 @@ class EducationExtractor:
                 for cb in group.blocks:
                     t = (cb.original.text or "").strip()
                     if t and not self._contains_date_range(t):
-                        entry["degree"] = t
+                        # Try to split compact 'degree institution' lines
+                        deg, inst, field = self._extract_degree_line(t)
+                        if inst is not None:
+                            entry["degree"] = deg
+                            entry["institution"] = inst
+                            entry["fieldOfStudy"] = field
+                        else:
+                            entry["degree"] = t
                         break
+
+            # Post-process: if degree contains both degree+institution on one
+            # line, try to split it into degree and institution
+            if entry["degree"] and entry["institution"] is None:
+                deg_text = entry["degree"]
+                deg, inst, field = self._extract_degree_line(deg_text)
+                if inst is not None:
+                    entry["degree"] = deg
+                    entry["institution"] = inst
+                    if field and not entry.get("fieldOfStudy"):
+                        entry["fieldOfStudy"] = field
 
             results.append(self._build_entry(entry))
 
@@ -164,6 +182,26 @@ class EducationExtractor:
             institution = self._normalize_institution(institution_text)
         else:
             degree_text = text
+            # Heuristic: handle common compact formats like "M.C.A NIT Calicut" or
+            # "B.SC-IT Magadh University" where degree and institution appear
+            # on the same line separated by whitespace. Only split when the
+            # leading token looks like an acronym/degree (contains dots or
+            # hyphens) or is an all-caps short token to avoid false positives.
+            m = re.match(r"^(?P<deg>[A-Za-z0-9]+(?:[.\-][A-Za-z0-9]+)+)\s+(?P<inst>.+)$", text)
+            if not m:
+                # also match short all-caps tokens (e.g., "MCA NIT Calicut")
+                m2 = re.match(r"^(?P<deg>[A-Z]{2,6})\s+(?P<inst>.+)$", text)
+                if m2:
+                    m = m2
+
+            if m:
+                inst_candidate = m.group("inst").strip()
+                # Avoid splitting when the remainder is a field-of-study like
+                # 'in Electronics' or starts with 'of ...', which should be
+                # interpreted as degree + field, not degree + institution.
+                if not re.match(r"^(in|of)\b", inst_candidate, re.I):
+                    degree_text = m.group("deg").strip()
+                    institution = self._normalize_institution(inst_candidate)
 
         field_of_study = None
         match = re.match(r"^(?P<degree>.+?)\s+in\s+(?P<field>.+)$", degree_text, re.I)
@@ -190,7 +228,13 @@ class EducationExtractor:
         return bool(re.search(r"\b(computer science|information technology|electronics|mechanical|civil|business administration|commerce|finance|mathematics|physics|data science|machine learning)\b", text, re.I))
 
     def _build_entry(self, entry: dict[str, Any]) -> dict[str, object]:
-        degree_value = self._normalize_degree(entry["degree"])
+        # Preserve compact/acroynmic degree tokens (e.g., 'M.C.A', 'B.SC-IT') when
+        # they were split from an institution and no fieldOfStudy is present.
+        raw_degree = entry.get("degree")
+        if raw_degree and entry.get("fieldOfStudy") is None and re.search(r"[.\-]", raw_degree):
+            degree_value = raw_degree.strip()
+        else:
+            degree_value = self._normalize_degree(entry["degree"])
         return {
             "institution": entry["institution"],
             "degree": degree_value,
