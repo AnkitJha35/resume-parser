@@ -77,6 +77,11 @@ class ProjectExtractor:
         for entry in entries:
             # Ensure description_text is a string (default to empty string if None)
             description_text = entry.get("description") or ""
+            # Clean up PDF layout artifacts and join broken lines for final
+            # description representation without modifying original TextBlock
+            description_text = self._clean_description_text(description_text)
+            # update the stored description with cleaned text for presentation
+            entry["description"] = description_text
             skills = self.skills_extractor.extract(
                 [TextBlock(text=description_text, page_number=1, x0=0, y0=0, x1=0, y1=0)],
                 section_name="PROJECTS",
@@ -171,8 +176,13 @@ class ProjectExtractor:
 
             # technologies extraction
             description_text = entry.get("description") or ""
+            # Clean description for presentation and for downstream skills
+            # extraction (without mutating original blocks)
+            cleaned_description = self._clean_description_text(description_text)
+            # update stored description for presentation
+            entry["description"] = cleaned_description
             skills = self.skills_extractor.extract(
-                [TextBlock(text=description_text, page_number=1, x0=0, y0=0, x1=0, y1=0)],
+                [TextBlock(text=cleaned_description, page_number=1, x0=0, y0=0, x1=0, y1=0)],
                 section_name="PROJECTS",
             )
             entry["technologies"] = [skill["value"] for skill in skills]
@@ -187,3 +197,78 @@ class ProjectExtractor:
 
     def _is_url(self, text: str) -> bool:
         return bool(URL_PATTERN.search(text))
+
+    def _is_bullet_only(self, s: str) -> bool:
+        if not s:
+            return False
+        t = s.strip()
+        if t in ("•", "\u2022", "\u2023", "\u25E6", "-", "*", "●", "\u00B7"):
+            return True
+        # very short markers of punctuation only
+        if len(t) <= 3 and not any(ch.isalnum() for ch in t):
+            return True
+        return False
+
+    def _clean_description_text(self, text: str) -> str:
+        """Return a cleaned, presentation-ready description string.
+
+        Rules:
+        - Remove lines that are bullet-only artifacts.
+        - Collapse sequences of non-empty lines into paragraphs by joining
+          with a single space when the previous line does not end with
+          sentence-ending punctuation. Preserve paragraph breaks on blank
+          lines.
+        - Ensure punctuation such as commas/semicolons are followed by a
+          single space.
+        """
+        if not text:
+            return text
+
+        # Normalize CRLF and stray carriage returns
+        lines = [ln for ln in text.replace('\r', '').split('\n')]
+
+        cleaned_lines: list[str] = []
+        for ln in lines:
+            if self._is_bullet_only(ln):
+                # drop bullet-only artifact
+                continue
+            cleaned_lines.append(ln)
+
+        paragraphs: list[str] = []
+        buf: list[str] = []
+
+        def flush_buf():
+            if not buf:
+                return
+            # join buffer lines: if a line ends with sentence-ending
+            # punctuation, keep as paragraph boundary; otherwise join with space
+            joined = buf[0].strip()
+            for additional in buf[1:]:
+                prev = joined.rstrip()
+                if prev.endswith(('.', '!', '?', ';', ':')):
+                    joined = joined + '\n' + additional.strip()
+                else:
+                    # join with space to repair PDF line breaks
+                    joined = joined + ' ' + additional.strip()
+            paragraphs.append(joined.strip())
+
+        for ln in cleaned_lines:
+            if not ln.strip():
+                # blank line -> paragraph break
+                flush_buf()
+                buf = []
+                continue
+            buf.append(ln)
+
+        flush_buf()
+
+        # Re-join paragraphs with double newlines to preserve separations
+        out = '\n\n'.join(paragraphs)
+
+        # Ensure punctuation followed by no space gets a space (e.g., 'Kubernetes,and')
+        out = re.sub(r'([,;:])([^\s])', r'\1 \2', out)
+
+        # Collapse multiple spaces
+        out = re.sub(r' {2,}', ' ', out)
+
+        return out

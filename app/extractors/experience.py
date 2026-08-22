@@ -65,12 +65,14 @@ class ExperienceExtractor:
 
                 # Attach buffered lines to the new entry, using heuristics
                 for b in buffer:
-                    # If this buffered line contains a date, set date fields
+                    # If this buffered line contains a date, set date fields and do not
+                    # treat the same line as resume body copy.
                     dr = DateRangeParser.parse(b)
-                    if dr and current_entry.get("startDate") is None:
-                        current_entry["startDate"] = dr.startDate
-                        current_entry["endDate"] = dr.endDate
-                        current_entry["current"] = dr.current
+                    if dr:
+                        if current_entry.get("startDate") is None:
+                            current_entry["startDate"] = dr.startDate
+                            current_entry["endDate"] = dr.endDate
+                            current_entry["current"] = dr.current
                         continue
 
                     if self._is_job_title(b) and not current_entry.get("designation"):
@@ -110,7 +112,7 @@ class ExperienceExtractor:
                 current_entry = self._new_entry(date_range)
                 continue
 
-            if self._is_company_line(text):
+            if self._is_company_line(text) and not current_entry.get("company") and not current_entry.get("description"):
                 current_entry["company"] = text
                 continue
 
@@ -132,11 +134,12 @@ class ExperienceExtractor:
                     entries.append(current_entry)
                     current_entry = self._new_entry(None)
 
-                # Assign/update the designation on the current entry.
-                current_entry["designation"] = text
+                # Only treat a standalone title as metadata before description content begins.
+                if not current_entry.get("description"):
+                    current_entry["designation"] = text
                 continue
 
-            if self._is_location_line(text):
+            if self._is_location_line(text) and not current_entry.get("location") and not current_entry.get("description"):
                 current_entry["location"] = text
                 continue
 
@@ -157,7 +160,11 @@ class ExperienceExtractor:
             entries.append(current_entry)
 
         for entry in entries:
-            entry["skills"] = [skill["value"] for skill in self.skills_extractor.extract([TextBlock(text=entry.get("description", ""), page_number=1, x0=0, y0=0, x1=0, y1=0)], section_name=None)]
+            # Clean description for presentation and for skills extraction
+            desc_text = entry.get("description") or ""
+            cleaned = self._clean_experience_description(desc_text)
+            entry["description"] = cleaned
+            entry["skills"] = [skill["value"] for skill in self.skills_extractor.extract([TextBlock(text=cleaned, page_number=1, x0=0, y0=0, x1=0, y1=0)], section_name=None)]
             entry["confidence"] = self._confidence.section_extraction()
 
         return entries
@@ -229,8 +236,11 @@ class ExperienceExtractor:
 
             # Extract skills from description
             if entry.get("description"):
+                # Clean description before skills extraction and presentation
+                cleaned = self._clean_experience_description(entry.get("description", ""))
+                entry["description"] = cleaned
                 entry["skills"] = [skill["value"] for skill in self.skills_extractor.extract(
-                    [TextBlock(text=entry.get("description", ""), page_number=1, x0=0, y0=0, x1=0, y1=0)],
+                    [TextBlock(text=cleaned, page_number=1, x0=0, y0=0, x1=0, y1=0)],
                     section_name=None
                 )]
             else:
@@ -264,7 +274,15 @@ class ExperienceExtractor:
         }
 
     def _is_company_line(self, text: str) -> bool:
-        return any(keyword in text.lower() for keyword in ["inc", "llc", "ltd", "corp", "company", "technologies"])
+        normalized = text.lower().strip()
+        if not normalized:
+            return False
+        keywords = ["inc", "llc", "ltd", "corp", "company", "technologies"]
+        for keyword in keywords:
+            pattern = rf"(?<![a-z]){re.escape(keyword)}(?![a-z])"
+            if re.search(pattern, normalized):
+                return True
+        return False
 
     def _is_job_title(self, text: str) -> bool:
         normalized = text.lower()
@@ -272,3 +290,56 @@ class ExperienceExtractor:
 
     def _is_location_line(self, text: str) -> bool:
         return "," in text and any(char.isalpha() for char in text)
+
+    def _is_bullet_marker(self, s: str) -> bool:
+        if not s:
+            return False
+        t = s.strip()
+        if t in ("•", "\u2022", "\u2023", "\u25E6", "-", "*", "●", "\u00B7"):
+            return True
+        if len(t) <= 3 and not any(ch.isalnum() for ch in t):
+            return True
+        if re.match(r"^[\-\*]\s+", s.strip()):
+            return True
+        return False
+
+    def _clean_experience_description(self, text: str) -> str:
+        """Clean experience description while preserving real bullet boundaries."""
+        if not text:
+            return text
+
+        cleaned_lines: list[str] = []
+        for raw_line in text.replace('\r', '').split('\n'):
+            line = raw_line.strip()
+            if not line:
+                continue
+            if self._is_bullet_marker(line) and line in ("•", "\u2022", "\u2023", "\u25E6", "●", "\u00B7"):
+                continue
+            cleaned_lines.append(line)
+
+        bullet_lines: list[str] = []
+        current_bullet: list[str] = []
+
+        def flush_current() -> None:
+            nonlocal current_bullet
+            if current_bullet:
+                bullet_lines.append("• " + " ".join(part.strip() for part in current_bullet if part and part.strip()))
+                current_bullet = []
+
+        for line in cleaned_lines:
+            if re.match(r"^[\-\*•\u2022\u2023\u25E6\u25CF\u00B7]\s*.*$", line):
+                flush_current()
+                current_bullet = [line.lstrip(" -•\u2022\u2023\u25E6\u25CF\u00B7").strip()]
+                continue
+
+            if current_bullet:
+                current_bullet.append(line)
+            else:
+                bullet_lines.append(line)
+
+        flush_current()
+
+        out = "\n".join(bullet_lines)
+        out = re.sub(r'([,;:])([^\s])', r'\1 \2', out)
+        out = re.sub(r' {2,}', ' ', out)
+        return out.strip()
