@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from app.extractors.certifications import CertificationExtractor
 from app.pipeline.stages.text_extraction import TextBlock
 
@@ -59,3 +61,13 @@ def test_certification_extractor_splits_description_properly():
 
     assert len(entries) == 1
     assert "Maintained Kubernetes clusters" in entries[0]["description"]
+
+
+def test_resume_7_certification_ignores_programming_languages_block():
+    from app.pipeline.parser import ResumeParser
+
+    resume = ResumeParser().parse(Path("tests/fixtures/resume_7.pdf").read_bytes())
+    certification = resume.certifications[0]
+
+    assert certification.name == "PHP Framework (certificate): Zend, Codeigniter, Symfony ."
+    assert certification.issuingOrganization is None

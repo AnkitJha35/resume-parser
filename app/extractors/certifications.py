@@ -49,6 +49,9 @@ class CertificationExtractor:
                 current_entry["expiryDate"] = expiry_date
                 continue
 
+            if text.lower().startswith("programming languages:"):
+                continue
+
             if current_entry["name"] is None:
                 current_entry["name"] = text
                 continue

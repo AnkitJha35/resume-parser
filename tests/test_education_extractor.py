@@ -77,6 +77,18 @@ def test_extracts_fresher_hr_resume_education_entries():
     assert bachelor["endDate"] == "2023"
 
 
+def test_extracts_resume_7_trailing_year_from_degree():
+    from app.pipeline.parser import ResumeParser
+
+    resume = ResumeParser().parse(Path("tests/fixtures/resume_7.pdf").read_bytes())
+    education = resume.education[0]
+
+    assert education.degree == "Bachelor of Science: Computer Information Systems"
+    assert education.institution == "Columbia University , NY"
+    assert education.startDate == "2014"
+    assert education.endDate is None
+
+
 def test_extracts_from_candidate_groups():
     # Simulate two CandidateGroups produced by grouping for the resume
     from types import SimpleNamespace

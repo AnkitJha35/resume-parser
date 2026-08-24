@@ -1,8 +1,8 @@
 {
-  "SUMMARY": ["summary", "professional summary", "profile", "about me", "career summary", "overview"],
+  "SUMMARY": ["summary", "professional summary", "profile", "about me", "career summary", "overview", "career objective"],
   "EXPERIENCE": ["experience", "professional experience", "work experience", "employment history", "career experience"],
   "EDUCATION": ["education", "academic background", "academics", "educational background"],
-  "SKILLS": ["skills", "technical skills", "core skills", "skills & tools", "expertise"],
+  "SKILLS": ["skills", "technical skills", "core skills", "skills & tools", "expertise", "skill highlights", "key skills", "soft skills", "hard skills", "human resource skills", "tools & technical skills"],
   "PROJECTS": ["projects", "selected projects", "project experience", "project highlights"],
   "CERTIFICATIONS": ["certifications", "certificates", "licenses", "credentials"],
   "ACHIEVEMENTS": ["achievements", "accomplishments", "honors", "awards"],

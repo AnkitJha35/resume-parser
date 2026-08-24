@@ -68,3 +68,21 @@ def test_contact_extractor_with_linkedin_github_portfolio():
     assert result["linkedin"]["value"] == "https://linkedin.com/in/morganlee"
     assert result["github"]["value"] == "https://github.com/morganlee"
     assert result["portfolio"]["value"] == "https://morganlee.dev"
+
+
+def test_contact_extractor_prefers_letter_spaced_name_over_role_title():
+    blocks = [
+        _make_block("A N G E L A"),
+        _make_block("W I L K I N S O"),
+        _make_block("ADMINISTRATIVE ASSISTANT"),
+        _make_block("youremail@gmail.com"),
+        _make_block("895 555 555"),
+        _make_block("Drive Harrisburg, PA"),
+    ]
+
+    result = ContactExtractor.extract(blocks)
+
+    assert result["name"]["value"] != "ADMINISTRATIVE ASSISTANT"
+    assert result["name"]["value"] == "ANGELA WILKINSO"
+    assert result["email"]["value"] == "youremail@gmail.com"
+    assert result["phone"]["value"] == "895 555 555"

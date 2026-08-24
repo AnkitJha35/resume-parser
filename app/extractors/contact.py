@@ -97,6 +97,10 @@ class ContactExtractor:
 
     @staticmethod
     def _find_name(blocks: list[TextBlock], email: str | None, phone: str | None, linkedin: str | None, github: str | None) -> str | None:
+        spaced_name = ContactExtractor._find_letter_spaced_name(blocks[:8])
+        if spaced_name:
+            return spaced_name
+
         for block in blocks[:5]:
             text = block.text.strip()
             if not text or EMAIL_REGEX.search(text) or PHONE_REGEX.search(text) or LINKEDIN_REGEX.search(text) or GITHUB_REGEX.search(text):
@@ -112,7 +116,38 @@ class ContactExtractor:
         return None
 
     @staticmethod
+    def _find_letter_spaced_name(blocks: list[TextBlock]) -> str | None:
+        words: list[str] = []
+        for block in blocks:
+            text = (block.text or "").strip()
+            if not text:
+                continue
+            if ContactExtractor._is_letter_spaced_name(text):
+                letters = "".join(ch for ch in text if ch.isalpha())
+                if letters:
+                    words.append(letters)
+                continue
+            if words:
+                break
+
+        if not words:
+            return None
+        return " ".join(words)
+
+    @staticmethod
+    def _is_letter_spaced_name(text: str) -> bool:
+        tokens = text.split()
+        if len(tokens) < 2:
+            return False
+        return all(len(token) == 1 and token.isalpha() for token in tokens)
+
+    @staticmethod
     def _looks_like_name(text: str) -> bool:
+        text = text.strip()
+        if not text:
+            return False
+        if re.search(r"\b(assistant|manager|developer|engineer|specialist|analyst|coordinator|secretary|supervisor|director|consultant|executive|officer|associate|lead|intern|clerk|administrator|representative)\b", text, re.IGNORECASE):
+            return False
         words = text.split()
         if not (1 < len(words) <= 4):
             return False

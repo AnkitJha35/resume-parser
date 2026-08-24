@@ -43,3 +43,27 @@ def test_skills_extractor_handles_none_block_text():
     # Should not raise and should return an empty list
     assert isinstance(skills, list)
     assert skills == []
+
+
+def test_resume_1_skill_values_are_recognized():
+    extractor = SkillsExtractor()
+    blocks = [
+        _make_block("Problem Solving"),
+        _make_block("Adaptability"),
+        _make_block("Collaboration"),
+        _make_block("Strong Work Ethic"),
+        _make_block("Time Management"),
+        _make_block("Critical Thinking"),
+        _make_block("Handling Pressure"),
+    ]
+
+    skills = extractor.extract(blocks, section_name="SKILLS")
+    assert [item["value"] for item in skills] == [
+        "Problem Solving",
+        "Adaptability",
+        "Collaboration",
+        "Strong Work Ethic",
+        "Time Management",
+        "Critical Thinking",
+        "Handling Pressure",
+    ]

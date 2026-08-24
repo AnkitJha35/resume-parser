@@ -41,6 +41,10 @@ class SectionDetector:
 
     def __init__(self) -> None:
         self.aliases = _load_section_aliases()
+        self._normalized_aliases = {
+            section: [re.sub(r"[^a-z0-9]+", "", alias.lower()) for alias in section_aliases]
+            for section, section_aliases in self.aliases.items()
+        }
         self._header_patterns = {
             section: [re.compile(rf"^\s*{re.escape(alias)}\s*$", re.IGNORECASE) for alias in section_aliases]
             for section, section_aliases in self.aliases.items()
@@ -66,6 +70,7 @@ class SectionDetector:
             block_text = block.text.strip()
             matched_section = self._find_section_header(block_text)
             line_blocks: list[TextBlock] = []
+            inferred_transition = False
             if matched_section is None:
                 line_blocks = self._collect_same_line_blocks(blocks, index)
                 line_text = self._line_text(line_blocks)
@@ -74,8 +79,16 @@ class SectionDetector:
                     matched_section = "EDUCATION"
                     sections[matched_section].extend(line_blocks)
 
+            if matched_section is None and current_section is not None:
+                matched_section = self._infer_section_transition(current_section, block, sections)
+                inferred_transition = matched_section is not None
+
             if matched_section:
                 current_section = matched_section
+                if inferred_transition:
+                    sections[matched_section].append(block)
+                elif matched_section == "SUMMARY" and self._is_summary_header(block_text):
+                    sections[matched_section].append(block)
                 index += len(line_blocks) if line_blocks else 1
                 continue
 
@@ -103,11 +116,113 @@ class SectionDetector:
         return " ".join(block.text.strip() for block in blocks if block.text.strip()).strip()
 
     def _find_section_header(self, text: str) -> str | None:
+        if text is None:
+            return None
+
+        stripped = text.strip()
+        if not stripped:
+            return None
+
+        normalized_text = re.sub(r"[^a-z0-9]+", "", stripped.lower())
+
+        if re.search(r"\bobjective\b", stripped, re.IGNORECASE):
+            return "SUMMARY"
+
+        for section, aliases in self._normalized_aliases.items():
+            for alias in aliases:
+                if alias == normalized_text:
+                    return section
+
         for section, patterns in self._header_patterns.items():
             for pattern in patterns:
-                if pattern.match(text):
+                if pattern.match(stripped):
+                    return section
+                if pattern.match(re.sub(r"\s+", " ", stripped)):
                     return section
         return None
+
+    def _is_summary_header(self, text: str) -> bool:
+        normalized = (text or "").strip()
+        if not normalized:
+            return False
+        return bool(re.search(r"(?:^|\s)(?:resume\s+)?objective(?:\s|$)", normalized, re.IGNORECASE))
+
+    def _looks_like_skill_text(self, text: str) -> bool:
+        normalized = (text or "").strip()
+        if not normalized:
+            return False
+
+        lowered = normalized.lower()
+        if re.search(r"\b(?:manager|developer|engineer|director|analyst|assistant|secretary|teacher|professor|intern)\b", lowered):
+            return False
+        if len(normalized) > 60:
+            return False
+        words = normalized.split()
+        if len(words) > 6:
+            return False
+        return True
+
+    def _looks_like_education_content(self, text: str) -> bool:
+        normalized = (text or "").strip()
+        if not normalized:
+            return False
+        lowered = normalized.lower()
+        if re.search(r"(?:degree|major|university|college|school|academy|institute|location\s+\d{4})", lowered):
+            return True
+        if re.search(r"(?:b\.a|b\.sc|btech|b\.tech|m\.a|m\.sc|mba|phd|bachelor|master)", lowered):
+            return True
+        return "educat" in lowered or "academ" in lowered
+
+    def _looks_like_certification_content(self, text: str) -> bool:
+        normalized = (text or "").strip()
+        if not normalized:
+            return False
+        lowered = normalized.lower()
+        return "certificat" in lowered or "credential" in lowered or "licens" in lowered
+
+    def _infer_section_transition(self, current_section: str, block: TextBlock, sections: dict[str, list[TextBlock]]) -> str | None:
+        text = (block.text or "").strip()
+        if not text:
+            return None
+
+        if current_section == "SKILLS":
+            from app.extractors.date_parser import DateRangeParser
+
+            if DateRangeParser.parse(text) is not None and self._is_aligned_education_date(block, sections["EDUCATION"]):
+                return "EDUCATION"
+            if self._looks_like_education_content(text):
+                return "EDUCATION"
+            if self._looks_like_certification_content(text):
+                return "CERTIFICATIONS"
+
+        if current_section == "EDUCATION":
+            if self._looks_like_certification_content(text):
+                return "CERTIFICATIONS"
+            # Right-column date ranges like '2024 – 2026' and '2020 – 2023' are
+            # valid education content and must not be reclassified as skills.
+            from app.extractors.date_parser import DateRangeParser
+
+            if DateRangeParser.parse(text) is not None:
+                return None
+            if block.x0 > 200 and self._looks_like_skill_text(text):
+                return "SKILLS"
+
+        if current_section == "CERTIFICATIONS":
+            if block.x0 > 200 and self._looks_like_skill_text(text):
+                return "SKILLS"
+
+        if current_section == "ACHIEVEMENTS" and re.search(r"\bobjective\b", text, re.IGNORECASE):
+            return "SUMMARY"
+
+        return None
+
+    def _is_aligned_education_date(self, block: TextBlock, education_blocks: list[TextBlock]) -> bool:
+        return any(
+            candidate.page_number == block.page_number
+            and abs(candidate.y0 - block.y0) <= self.LINE_Y_TOLERANCE
+            and block.x0 > candidate.x1
+            for candidate in education_blocks
+        )
 
     def _looks_like_education_header(self, text: str) -> bool:
         match = self._education_header_pattern.match(text)

@@ -161,6 +161,25 @@ def test_education_grouping():
     assert len(groups) == 2
 
 
+def test_resume_1_education_does_not_split_on_repeated_institution():
+    seq = [
+        "EDUCATIO",
+        "DEGREE NAME /",
+        "MAJOR",
+        "University,",
+        "DEGREE NAME / MAJOR",
+        "University,",
+        "Location 2007 -",
+    ]
+    classified = _classify_sequence(seq)
+    groups = group_candidates(classified, section="EDUCATION")
+
+    assert len(groups) == 1
+
+    texts = [cb.original.text for cb in groups[0].blocks]
+    assert texts == seq
+
+
 def test_section_headers_not_included():
     seq = [
         "EXPERIENCE",
@@ -175,6 +194,32 @@ def test_section_headers_not_included():
     groups = group_candidates(classified, section="EXPERIENCE")
     # header should not be part of any group's blocks
     assert all(all(cb.label != "SECTION_HEADER" for cb in g.blocks) for g in groups)
+
+
+def test_fresher_hr_education_groups_match_right_column_dates():
+    from pathlib import Path
+
+    from app.pipeline.stages.normalization import TextNormalizer
+    from app.pipeline.stages.reading_order import ReadingOrder
+    from app.pipeline.stages.text_extraction import PDFExtractor
+    from app.pipeline.stages.sections import SectionDetector
+
+    blocks = TextNormalizer.normalize_blocks(
+        ReadingOrder.reorder(PDFExtractor.extract(Path("tests/fixtures/fresher_hr_resume.pdf").read_bytes()))
+    )
+    sections = SectionDetector().detect(blocks)
+    classified = [classify_block(block) for block in sections["EDUCATION"]]
+    groups = group_candidates(classified, section="EDUCATION")
+
+    group_texts = [[cb.original.text for cb in group.blocks] for group in groups]
+    mba_group = next(group for group in group_texts if "MBA (Human Resource Management) | School Of Open Learning , Delhi University (DU-SOL)" in group)
+    bachelor_group = next(group for group in group_texts if "Bachelor of Arts (General) | BIR Tikendrajit University" in group)
+
+    assert "2024 – 2026" in mba_group
+    assert "2020 – 2023" in bachelor_group
+    assert "Bachelor of Arts (General) | BIR Tikendrajit University" not in mba_group
+    assert "MBA (Human Resource Management) | School Of Open Learning , Delhi University (DU-SOL)" not in bachelor_group
+    assert all(group not in ({"2024 – 2026"}, {"2020 – 2023"}) for group in map(set, group_texts))
 
 
 def test_projects_horizontal_title_date_layout():

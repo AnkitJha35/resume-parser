@@ -127,7 +127,13 @@ class EducationExtractor:
 
                 lbl = str(getattr(cb, "label", "")).upper()
                 if lbl == "DEGREE" and entry["degree"] is None:
-                    entry["degree"] = text
+                    trailing_year = re.fullmatch(r"(?P<degree>.+?)\s*[-–—]\s*(?P<year>\d{4})", text)
+                    if trailing_year:
+                        entry["degree"] = trailing_year.group("degree").strip()
+                        entry["startDate"] = trailing_year.group("year")
+                        entry["_preserve_degree_text"] = True
+                    else:
+                        entry["degree"] = text
                     continue
                 if lbl == "INSTITUTION" and entry["institution"] is None:
                     entry["institution"] = text
@@ -231,7 +237,9 @@ class EducationExtractor:
         # Preserve compact/acroynmic degree tokens (e.g., 'M.C.A', 'B.SC-IT') when
         # they were split from an institution and no fieldOfStudy is present.
         raw_degree = entry.get("degree")
-        if raw_degree and entry.get("fieldOfStudy") is None and re.search(r"[.\-]", raw_degree):
+        if entry.get("_preserve_degree_text") and raw_degree:
+            degree_value = raw_degree.strip()
+        elif raw_degree and entry.get("fieldOfStudy") is None and re.search(r"[.\-]", raw_degree):
             degree_value = raw_degree.strip()
         else:
             degree_value = self._normalize_degree(entry["degree"])

@@ -108,7 +108,7 @@ def classify_block(block: Any) -> ClassifiedBlock:
 
     # DEGREE
     for deg in _DEGREES:
-        if lowered.startswith(deg):
+        if re.match(rf"^{re.escape(deg)}(?:$|\s+(?:in|of)\b|[:(/.-])", lowered):
             reasons.append("degree_dict")
             return ClassifiedBlock(original=block, label="DEGREE", score=1.0, reasons=reasons)
 

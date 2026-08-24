@@ -1,8 +1,10 @@
+from pathlib import Path
+from types import SimpleNamespace
+
 from app.extractors.experience import ExperienceExtractor
 from app.pipeline.stages.text_extraction import TextBlock
 from app.pipeline.stages.block_classification import ClassifiedBlock
 from app.pipeline.stages.candidate_grouping import CandidateGroup
-from types import SimpleNamespace
 
 
 def _make_block(text: str) -> TextBlock:
@@ -243,3 +245,88 @@ def test_experience_extractor_from_multiple_candidate_groups():
     assert entries[1]["endDate"] == "2021-12"
     assert "Worked on backend" in entries[1]["description"]
     assert "Built APIs" not in entries[1]["description"]  # No bleed
+
+
+def test_resume_1_experience_grouping_splits_two_jobs():
+    from app.pipeline.stages.text_extraction import PDFExtractor
+    from app.pipeline.stages.reading_order import ReadingOrder
+    from app.pipeline.stages.normalization import TextNormalizer
+    from app.pipeline.stages.sections import SectionDetector
+    from app.pipeline.stages.block_classification import classify_block
+    from app.pipeline.stages.candidate_grouping import group_candidates
+
+    raw_pdf = PDFExtractor.extract(Path("tests/fixtures/resume_1.pdf").read_bytes())
+    blocks = TextNormalizer.normalize_blocks(ReadingOrder.reorder(raw_pdf))
+    sections = SectionDetector().detect(blocks)
+    candidate_groups = group_candidates([classify_block(b) for b in sections["EXPERIENCE"]], "EXPERIENCE")
+
+    assert len(candidate_groups) == 2
+    first = candidate_groups[0]
+    second = candidate_groups[1]
+
+    first_text = "\n".join(cb.original.text for cb in first.blocks)
+    second_text = "\n".join(cb.original.text for cb in second.blocks)
+
+    assert "ADMINISTRATIVE ASSISTANT" in first_text
+    assert "Redford & Sons, Boston, MA / September 2018 - Present" in first_text
+    assert "SECRETARY" in second_text
+    assert "Bright Spot LTD, Boston, MA / June 2015 – August 2018" in second_text
+
+    entries = ExperienceExtractor().extract(sections["EXPERIENCE"], groups=candidate_groups)
+    assert len(entries) == 2
+
+
+def test_resume_1_experience_extractor_parses_actual_group_headers():
+    from app.pipeline.stages.text_extraction import PDFExtractor
+    from app.pipeline.stages.reading_order import ReadingOrder
+    from app.pipeline.stages.normalization import TextNormalizer
+    from app.pipeline.stages.sections import SectionDetector
+    from app.pipeline.stages.block_classification import classify_block
+    from app.pipeline.stages.candidate_grouping import group_candidates
+
+    raw_pdf = PDFExtractor.extract(Path("tests/fixtures/resume_1.pdf").read_bytes())
+    blocks = TextNormalizer.normalize_blocks(ReadingOrder.reorder(raw_pdf))
+    sections = SectionDetector().detect(blocks)
+    groups = group_candidates([classify_block(b) for b in sections["EXPERIENCE"]], "EXPERIENCE")
+
+    assert len(groups) == 2
+
+    entries = ExperienceExtractor().extract(groups=groups)
+    assert len(entries) == 2
+
+    first, second = entries
+
+    assert first["designation"] == "Administrative Assistant"
+    assert first["company"] == "Redford & Sons"
+    assert first["location"] == "Boston, MA"
+    assert first["startDate"] == "2018-09"
+    assert first["endDate"] is None
+    assert first["current"] is True
+    assert first["designation"] != "arrangements for supervisors and managers"
+    assert first["company"] != "Trained 2 administrative assistants during a period of company"
+    assert first["location"] != "Redford & Sons, Boston, MA / September 2018 - Present"
+    assert "arrangements for supervisors and managers" in first["description"]
+
+    assert second["designation"] == "Secretary"
+    assert second["company"] == "Bright Spot LTD"
+    assert second["location"] == "Boston, MA"
+    assert second["startDate"] == "2015-06"
+    assert second["endDate"] == "2018-08"
+    assert second["current"] is False
+    assert second["designation"] != "SECRETARY"
+    assert second["company"] != "Type documents such as correspondence, drafts, memos, and"
+    assert second["location"] != "Type documents such as correspondence, drafts, memos, and"
+
+
+def test_resume_7_experience_extractor_parses_combined_title_date_header():
+    from app.pipeline.parser import ResumeParser
+
+    resume = ResumeParser().parse(Path("tests/fixtures/resume_7.pdf").read_bytes())
+    experience = resume.experience[0]
+
+    assert experience.company == "Luna Web Design"
+    assert experience.designation == "Web Developer"
+    assert experience.location == "New York"
+    assert experience.startDate == "2015-09"
+    assert experience.endDate == "2019-05"
+    assert experience.current is False

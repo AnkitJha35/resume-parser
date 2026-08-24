@@ -182,16 +182,25 @@ class ExperienceExtractor:
             entry = self._new_entry(None)
             description_parts: list[str] = []
 
-            # Extract blocks and their labels from the group
             blocks_in_group = [(cb.original, cb.label) for cb in group.blocks]
 
-            # First pass: identify date, designation, company, location
             for block, label in blocks_in_group:
                 text = block.text.strip() if hasattr(block, "text") else ""
                 if not text:
                     continue
 
-                # Try to parse date
+                combined_title_date = self._parse_combined_title_date(text)
+                if combined_title_date and entry.get("designation") is None and entry.get("startDate") is None:
+                    entry["designation"] = self._canonicalize_title(combined_title_date["title"])
+                    entry["startDate"] = combined_title_date["startDate"]
+                    entry["endDate"] = combined_title_date["endDate"]
+                    entry["current"] = combined_title_date["current"]
+                    continue
+
+                if not entry.get("designation") and self._looks_like_title_header(text):
+                    entry["designation"] = self._canonicalize_title(text)
+                    continue
+
                 date_range = DateRangeParser.parse(text)
                 if date_range and entry.get("startDate") is None:
                     entry["startDate"] = date_range.startDate
@@ -199,26 +208,43 @@ class ExperienceExtractor:
                     entry["current"] = date_range.current
                     continue
 
-                # Use label as a hint (case-insensitive)
+                combined_header = self._parse_combined_company_location_date(text)
+                if combined_header and entry.get("company") is None and entry.get("location") is None and entry.get("startDate") is None:
+                    entry["company"] = combined_header["company"]
+                    entry["location"] = combined_header["location"]
+                    entry["startDate"] = combined_header["startDate"]
+                    entry["endDate"] = combined_header["endDate"]
+                    entry["current"] = combined_header["current"]
+                    continue
+
                 lbl = str(label).upper() if label is not None else ""
                 if lbl == "JOB_TITLE" and not entry.get("designation"):
-                    entry["designation"] = text
+                    entry["designation"] = self._canonicalize_title(text)
                     continue
 
                 if lbl == "COMPANY" and not entry.get("company"):
                     entry["company"] = text
                     continue
 
+                split_company_location = self._parse_company_location(text)
+                if (
+                    lbl == "LOCATION"
+                    and split_company_location
+                    and entry.get("designation")
+                    and entry.get("startDate") is not None
+                    and entry.get("endDate") is not None
+                    and not entry.get("company")
+                    and not entry.get("location")
+                ):
+                    entry["company"] = split_company_location["company"]
+                    entry["location"] = split_company_location["location"]
+                    continue
+
                 if lbl == "LOCATION" and not entry.get("location"):
                     entry["location"] = self._normalize_location(text)
                     continue
 
-                # If label is not decisive, use heuristics
                 if lbl == "UNKNOWN":
-                    if not entry.get("designation") and self._is_job_title(text):
-                        entry["designation"] = text
-                        continue
-
                     if not entry.get("company") and self._is_company_line(text):
                         entry["company"] = text
                         continue
@@ -227,16 +253,19 @@ class ExperienceExtractor:
                         entry["location"] = text
                         continue
 
-                # Treat as description
                 description_parts.append(text)
 
-            # Combine description parts
-            if description_parts:
+            if entry.get("designation") is None:
+                for block, _ in blocks_in_group:
+                    text = block.text.strip() if hasattr(block, "text") else ""
+                    if text and self._looks_like_title_header(text):
+                        entry["designation"] = self._canonicalize_title(text)
+                        break
+
+            if entry.get("description") is None and description_parts:
                 entry["description"] = "\n".join(description_parts).strip()
 
-            # Extract skills from description
             if entry.get("description"):
-                # Clean description before skills extraction and presentation
                 cleaned = self._clean_experience_description(entry.get("description", ""))
                 entry["description"] = cleaned
                 entry["skills"] = [skill["value"] for skill in self.skills_extractor.extract(
@@ -273,15 +302,140 @@ class ExperienceExtractor:
             "confidence": self._confidence.section_extraction(),
         }
 
+    def _parse_combined_company_location_date(self, text: str) -> dict[str, object] | None:
+        if not text or "/" not in text:
+            return None
+
+        left, right = text.split("/", 1)
+        right = right.strip()
+        date_range = DateRangeParser.parse(right)
+        if date_range is None:
+            return None
+
+        left = left.strip()
+        if "," not in left:
+            return None
+
+        left_parts = [part.strip() for part in left.split(",") if part.strip()]
+        if len(left_parts) < 2:
+            return None
+
+        company = left_parts[0]
+        location = ", ".join(left_parts[1:])
+        if not company or not location:
+            return None
+
+        return {
+            "company": company,
+            "location": location,
+            "startDate": date_range.startDate,
+            "endDate": date_range.endDate,
+            "current": date_range.current,
+        }
+
+    def _parse_combined_title_date(self, text: str) -> dict[str, str | bool] | None:
+        match = re.fullmatch(
+            r"(?P<title>.+?)\s+-\s+(?P<start>(?:\d{1,2}[/-]\d{4}|[A-Za-z]+\s+\d{4}|\d{4}))\s+to\s+"
+            r"(?P<end>(?:\d{1,2}[/-]\d{4}|[A-Za-z]+\s+\d{4}|\d{4}|Present|Current|Now))",
+            text.strip(),
+            re.IGNORECASE,
+        )
+        if not match:
+            return None
+
+        date_range = DateRangeParser.parse(f"{match.group('start')} - {match.group('end')}")
+        if date_range is None:
+            return None
+
+        return {
+            "title": match.group("title").strip(),
+            "startDate": date_range.startDate,
+            "endDate": date_range.endDate,
+            "current": date_range.current,
+        }
+
+    def _parse_company_location(self, text: str) -> dict[str, str] | None:
+        match = re.fullmatch(
+            r"(?P<company>[A-Za-z][A-Za-z .&'-]*?)\s+,\s+(?P<location>[A-Za-z][A-Za-z .&'-]*)",
+            text.strip(),
+        )
+        if not match:
+            return None
+
+        company = match.group("company").strip()
+        location = match.group("location").strip()
+        if not company or not location:
+            return None
+
+        return {"company": company, "location": location}
+
+    def _looks_like_title_header(self, text: str) -> bool:
+        value = re.sub(r"\s+", " ", text or "").strip()
+        if not value or len(value) > 60:
+            return False
+        if re.search(r"\b(?:inc|llc|ltd|corp|corporation|company)\b", value, re.I):
+            return False
+        words = value.split()
+        if len(words) > 5:
+            return False
+        if any(ch.isdigit() for ch in value):
+            return False
+
+        lower_words = [word.lower() for word in words]
+        role_words = {
+            "assistant",
+            "secretary",
+            "coordinator",
+            "manager",
+            "analyst",
+            "specialist",
+            "developer",
+            "engineer",
+            "supervisor",
+            "administrator",
+            "associate",
+            "consultant",
+            "director",
+            "executive",
+            "clerk",
+            "intern",
+            "officer",
+            "lead",
+            "teacher",
+            "professor",
+        }
+        if any(word in role_words for word in lower_words):
+            return True
+        if len(words) <= 3 and all(word.isupper() or word[:1].isupper() for word in words):
+            return True
+        return False
+
+    def _canonicalize_title(self, text: str) -> str:
+        value = re.sub(r"\s+", " ", text or "").strip()
+        if not value:
+            return value
+
+        normalized = []
+        for token in value.split():
+            if token.isdigit():
+                normalized.append(token)
+            elif re.fullmatch(r"[A-Z]{2,3}", token):
+                normalized.append(token)
+            elif token.lower() in {"and", "of", "for", "to", "in", "on", "with"}:
+                normalized.append(token.lower())
+            else:
+                normalized.append(token.capitalize())
+        return " ".join(normalized)
+
     def _is_company_line(self, text: str) -> bool:
-        normalized = text.lower().strip()
+        normalized = text.strip()
         if not normalized:
             return False
-        keywords = ["inc", "llc", "ltd", "corp", "company", "technologies"]
-        for keyword in keywords:
-            pattern = rf"(?<![a-z]){re.escape(keyword)}(?![a-z])"
-            if re.search(pattern, normalized):
-                return True
+        lower = normalized.lower()
+        if re.search(r"\b(?:inc|llc|ltd|corp|corporation|co\.|company)\b", lower):
+            return bool(re.search(r"[A-Z]", normalized)) and len(normalized.split()) <= 8
+        if "&" in normalized and len(normalized.split()) <= 6 and any(ch.isupper() for ch in normalized):
+            return True
         return False
 
     def _is_job_title(self, text: str) -> bool:
@@ -295,7 +449,15 @@ class ExperienceExtractor:
         return value.strip()
 
     def _is_location_line(self, text: str) -> bool:
-        return "," in text and any(char.isalpha() for char in text)
+        normalized = text.strip()
+        if not normalized or "/" in normalized or "," not in normalized:
+            return False
+        if normalized.lower().startswith("location:"):
+            location = normalized.split(":", 1)[1].strip()
+            return bool(re.fullmatch(r"[A-Za-z][A-Za-z .&'-]*(?:,\s*[A-Za-z][A-Za-z .&'-]*)+", location)) and len(location.split()) <= 8
+        if bool(re.fullmatch(r"[A-Za-z][A-Za-z .&'-]*,\s*[A-Za-z][A-Za-z .&'-]*", normalized)):
+            return len(normalized.split()) <= 8
+        return False
 
     def _is_bullet_marker(self, s: str) -> bool:
         if not s:

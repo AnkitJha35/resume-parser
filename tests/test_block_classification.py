@@ -83,3 +83,11 @@ def test_location_and_section_and_bullets_and_dates():
     b_edu2 = _make_block("B.SC-IT Magadh University")
     c_edu2 = classify_block(b_edu2)
     assert c_edu2.label in ("DEGREE", "UNKNOWN")
+
+
+def test_degree_alias_matching_rejects_ms_excel_but_keeps_ms_degrees():
+    assert classify_block(_make_block("MS Excel (VLOOKUP, Pivot Tables, Filters)")).label != "DEGREE"
+    assert classify_block(_make_block("MS")).label == "DEGREE"
+    assert classify_block(_make_block("M.S.")).label == "DEGREE"
+    assert classify_block(_make_block("MS in Computer Science")).label == "DEGREE"
+    assert classify_block(_make_block("Master of Science")).label == "DEGREE"

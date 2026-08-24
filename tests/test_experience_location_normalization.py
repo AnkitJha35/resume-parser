@@ -20,6 +20,7 @@ def test_experience_location_label_is_removed_after_extraction():
 
     assert len(entries) == 1
     assert entries[0]["location"] == "Noida, UP, India"
+    assert "Location:" not in entries[0]["description"]
     assert blocks[3].text == "Location: Noida, UP, India"
 
 

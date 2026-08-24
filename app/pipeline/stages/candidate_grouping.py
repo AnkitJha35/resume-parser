@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import List, Iterable, Optional
 
@@ -35,6 +36,84 @@ def _vertical_gap(prev_block, next_block) -> float:
         return abs(getattr(next_block, "y0", 0) - getattr(prev_block, "y0", 0))
     except Exception:
         return float("inf")
+
+
+def _is_obvious_contact_sidebar_block(block) -> bool:
+    text = (getattr(block, "text", "") or "").strip()
+    if not text:
+        return False
+
+    lowered = text.lower()
+    contact_markers = (
+        "contact",
+        "email:",
+        "phone:",
+        "address:",
+        "linkedin:",
+        "github:",
+        "portfolio:",
+    )
+    if lowered in contact_markers or lowered.startswith(contact_markers):
+        return True
+    if "linkedin.com" in lowered or "github.com" in lowered or re.search(r"@\S+\.\S+", lowered):
+        return True
+    return False
+
+
+def _is_strong_new_experience_job(current: Optional["CandidateGroup"], new_block, idx: int, cbs: list[ClassifiedBlock]) -> bool:
+    if current is None:
+        return False
+    if new_block.label not in {"JOB_TITLE", "UNKNOWN"}:
+        return False
+    if not current.blocks:
+        return False
+
+    text = (getattr(new_block.original, "text", "") or "").strip()
+    normalized_text = re.sub(r"[\u200b\u200c\u200d]", "", text).strip()
+    if normalized_text and any(
+        re.sub(r"[\u200b\u200c\u200d]", "", (getattr(existing.original, "text", "") or "")).strip() == normalized_text
+        for existing in current.blocks
+    ):
+        # Resume 1 contains the repeated heading "SECRETARY" for the same role
+        # after the company/date block; treat this as the same job rather than a
+        # new experience split.
+        return False
+
+    # This is intentionally narrow: only split on a short uppercase title-like
+    # block that is immediately followed by a company/date line after an
+    # existing experience group already has content. This preserves the
+    # conservative behavior for regular descriptions while handling the
+    # Resume 1 pattern: "SECRETARY" followed by "Bright Spot LTD, ...".
+    if not text or len(text) > 40:
+        return False
+
+    words = text.split()
+    if len(words) > 3:
+        return False
+    if any(ch.isdigit() for ch in text):
+        return False
+    if not all(ch.isupper() or ch.isspace() or ch in "-&/" for ch in text):
+        return False
+
+    lookahead = cbs[idx + 1 : idx + 4]
+    if not lookahead:
+        return False
+
+    if any(next_cb.label in {"COMPANY", "DATE", "LOCATION"} for next_cb in lookahead):
+        return True
+
+    next_texts = [((getattr(next_cb.original, "text", "") or "").strip()) for next_cb in lookahead]
+    if any(re.search(r"\b(?:inc|llc|ltd|corp|corporation|company|pvt|private)\b", t, re.I) for t in next_texts if t):
+        return True
+
+    if not any(x.label == "JOB_TITLE" for x in current.blocks):
+        return False
+
+    prev_block = current.blocks[-1].original
+    new_x0 = float(getattr(new_block.original, "x0", 0) or 0)
+    prev_x0 = float(getattr(prev_block, "x0", 0) or 0)
+    gap = _vertical_gap(prev_block, new_block.original)
+    return gap > 70 and abs(new_x0 - prev_x0) <= 60
 
 
 def group_candidates(classified_blocks: Iterable[ClassifiedBlock], section: str) -> List[CandidateGroup]:
@@ -116,8 +195,45 @@ def group_candidates(classified_blocks: Iterable[ClassifiedBlock], section: str)
             last_block = None
             continue
 
+        if section == "EXPERIENCE" and _is_obvious_contact_sidebar_block(b):
+            # Keep obvious contact/sidebar content out of the experience stream.
+            # This is kept narrow to explicit contact markers, not a blanket right-column rule.
+            current = None
+            last_block = b
+            continue
+
         gap = _vertical_gap(last_block, b)
         need_new = False
+
+        if section == "EDUCATION" and cb.label == "DATE":
+            matching_group = None
+            for candidate_group in groups:
+                if any(x.label == "DATE" for x in candidate_group.blocks):
+                    continue
+                for existing in candidate_group.blocks:
+                    if existing.label not in ("DEGREE", "INSTITUTION"):
+                        continue
+                    existing_block = existing.original
+                    if (
+                        getattr(existing_block, "page_number", None) == page
+                        and abs(getattr(existing_block, "y0", 0) - getattr(b, "y0", 0)) <= 1.0
+                        and getattr(b, "x0", 0) > getattr(existing_block, "x1", 0)
+                    ):
+                        matching_group = candidate_group
+                        break
+                if matching_group is not None:
+                    break
+
+            if matching_group is not None:
+                header_index = next(
+                    index
+                    for index, existing in enumerate(matching_group.blocks)
+                    if existing.label in ("DEGREE", "INSTITUTION")
+                )
+                matching_group.blocks.insert(header_index + 1, cb)
+                matching_group.end_index = idx
+                last_block = b
+                continue
 
         if current is None:
             need_new = True
@@ -126,15 +242,21 @@ def group_candidates(classified_blocks: Iterable[ClassifiedBlock], section: str)
                 need_new = True
             elif gap > 40:
                 need_new = True
-            elif cb.label == "JOB_TITLE" and any(x.label == "JOB_TITLE" for x in current.blocks):
+            elif section == "EXPERIENCE" and _is_strong_new_experience_job(current, cb, idx, cbs):
                 need_new = True
             elif section == "EDUCATION":
-                # Education is usually a single degree/institution record with dates and location.
-                # A new degree or institution name is the canonical start of a new education entry.
-                if cb.label in ("DEGREE", "INSTITUTION") and any(
-                    x.label in ("DATE", "DEGREE", "INSTITUTION", "LOCATION") for x in current.blocks
-                ):
-                    need_new = True
+                # A repeated institution alone is not enough to start a new education entry.
+                # Only a completed entry (DATE already present) or a new explicit DEGREE after
+                # an existing DEGREE should trigger a split.
+                if cb.label in ("DEGREE", "INSTITUTION"):
+                    has_date = any(x.label == "DATE" for x in current.blocks)
+                    has_identity = any(x.label in ("DEGREE", "INSTITUTION") for x in current.blocks)
+                    starts_degree_like_entry = cb.label == "DEGREE" or (
+                        cb.label == "INSTITUTION"
+                        and re.search(r"\b(?:bachelor|master|mba|b\.?a\.?|b\.?sc|m\.?a\.?|m\.?sc)\b", text, re.I)
+                    )
+                    if has_date or (has_identity and starts_degree_like_entry):
+                        need_new = True
             elif section == "PROJECTS":
                 # Layout-adaptive project grouping.
                 # Signals that a new project likely starts here:
