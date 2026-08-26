@@ -133,6 +133,11 @@ class SectionDetector:
                 if alias == normalized_text:
                     return section
 
+        for section, aliases in self._normalized_aliases.items():
+            for alias in aliases:
+                if len(alias) - len(normalized_text) in (1, 2) and alias.startswith(normalized_text):
+                    return section
+
         for section, patterns in self._header_patterns.items():
             for pattern in patterns:
                 if pattern.match(stripped):

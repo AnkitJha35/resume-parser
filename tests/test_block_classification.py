@@ -91,3 +91,20 @@ def test_degree_alias_matching_rejects_ms_excel_but_keeps_ms_degrees():
     assert classify_block(_make_block("M.S.")).label == "DEGREE"
     assert classify_block(_make_block("MS in Computer Science")).label == "DEGREE"
     assert classify_block(_make_block("Master of Science")).label == "DEGREE"
+
+
+def test_placeholder_degree_lines_are_classified_as_degrees():
+    assert classify_block(_make_block("DEGREE NAME / MAJOR")).label == "DEGREE"
+
+
+def test_descriptive_company_text_is_not_classified_as_location():
+    block = _make_block("Developed new filing and organizational practices, saving the company")
+
+    assert classify_block(block).label != "LOCATION"
+
+
+def test_parenthesized_date_range_is_classified_as_date():
+    result = classify_block(_make_block("(June 2017 – August 2019)"))
+
+    assert result.label == "DATE"
+    assert result.reasons == ["parenthesized_date_pattern"]

@@ -330,3 +330,32 @@ def test_resume_7_experience_extractor_parses_combined_title_date_header():
     assert experience.startDate == "2015-09"
     assert experience.endDate == "2019-05"
     assert experience.current is False
+
+
+def test_resume_2_experience_extractor_parses_parenthesized_date_range():
+    from app.pipeline.parser import ResumeParser
+
+    resume = ResumeParser().parse_with_layout_pipeline(Path("tests/fixtures/resume_2.pdf").read_bytes())
+    experience = resume.experience[0]
+
+    assert experience.startDate == "2019-09"
+    assert experience.endDate is None
+    assert experience.current is True
+
+
+def test_resume_2_experience_extractor_splits_company_location_header():
+    from app.pipeline.parser import ResumeParser
+
+    resume = ResumeParser().parse_with_layout_pipeline(Path("tests/fixtures/resume_2.pdf").read_bytes())
+    experience = resume.experience[0]
+
+    assert experience.company == "REDFORD & SONS"
+    assert experience.location == "Chicago, IL"
+
+
+def test_resume_2_experience_description_removes_pdf_bullet_artifacts():
+    from app.pipeline.parser import ResumeParser
+
+    resume = ResumeParser().parse_with_layout_pipeline(Path("tests/fixtures/resume_2.pdf").read_bytes())
+
+    assert all("\uf0a7" not in (experience.description or "") for experience in resume.experience)

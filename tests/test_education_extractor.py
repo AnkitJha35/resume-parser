@@ -89,6 +89,40 @@ def test_extracts_resume_7_trailing_year_from_degree():
     assert education.endDate is None
 
 
+def test_extracts_parenthesized_date_from_resume_2_layout_path():
+    from app.pipeline.parser import ResumeParser
+
+    resume = ResumeParser().parse_with_layout_pipeline(Path("tests/fixtures/resume_2.pdf").read_bytes())
+    education = resume.education[0]
+
+    assert education.degree == "Bachelor Of Arts in History,"
+    assert education.startDate == "2015-05"
+    assert education.institution == "RIVER BROOK UNIVERSITY"
+
+
+def test_extracts_honors_grade_from_grouped_education_entry():
+    from types import SimpleNamespace
+    from app.pipeline.stages.block_classification import ClassifiedBlock
+    from app.pipeline.stages.candidate_grouping import CandidateGroup
+
+    group = CandidateGroup(
+        section="EDUCATION",
+        blocks=[
+            ClassifiedBlock(original=SimpleNamespace(text="Bachelor of Arts in History"), label="DEGREE", score=1.0, reasons=[]),
+            ClassifiedBlock(original=SimpleNamespace(text="Graduated magna cum laude"), label="UNKNOWN", score=0.0, reasons=[]),
+        ],
+        page_number=1,
+        column_id=0,
+        start_index=0,
+        end_index=1,
+        summary_text="",
+    )
+
+    entries = EducationExtractor().extract(groups=[group])
+
+    assert entries[0]["grade"] == "Graduated magna cum laude"
+
+
 def test_extracts_from_candidate_groups():
     # Simulate two CandidateGroups produced by grouping for the resume
     from types import SimpleNamespace

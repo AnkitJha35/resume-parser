@@ -19,6 +19,14 @@ from app.pipeline.stages.reading_order import ReadingOrder
 from app.pipeline.stages.block_classification import classify_block
 from app.pipeline.stages.candidate_grouping import group_candidates
 from app.pipeline.stages.sections import SECTION_NAMES
+from app.domain.document import document_from_text_blocks
+from app.pipeline.stages.layout import interpret_layout
+from app.pipeline.stages.reconstruction import reconstruct_document
+from app.pipeline.stages.semantic_compat import (
+    semantic_header_to_text_blocks,
+    semantic_sections_to_text_blocks,
+)
+from app.pipeline.stages.semantic_paths import detect_region_aware_sections
 
 
 class PipelineError(Exception):
@@ -95,6 +103,57 @@ class ResumeParser:
 
         context.resume = validate_resume(context.partial_result)
         return context.resume
+
+    def parse_with_layout_pipeline(self, raw_pdf_bytes: bytes) -> Resume:
+        """Run semantic extraction from the opt-in layout-aware compatibility path."""
+        detection = self.pdf_detector.detect(raw_pdf_bytes)
+        if not detection.is_pdf:
+            raise PipelineError("INVALID_PDF", "The file is not a valid PDF.")
+        if not detection.has_text:
+            raise PipelineError("PDF_EXTRACTION_FAILED", "Unable to extract meaningful text.")
+
+        physical_document = document_from_text_blocks(PDFExtractor.extract(raw_pdf_bytes))
+        reconstructed_document = reconstruct_document(physical_document)
+        layout_document = interpret_layout(reconstructed_document)
+        semantic_document = detect_region_aware_sections(layout_document, self.section_detector)
+        sections = semantic_sections_to_text_blocks(semantic_document)
+        classified_sections = {
+            section: [classify_block(block) for block in blocks]
+            for section, blocks in sections.items()
+        }
+        candidate_groups = {
+            section: group_candidates(classified, section)
+            for section, classified in classified_sections.items()
+            if section != "UNASSIGNED"
+        }
+
+        header_blocks = semantic_header_to_text_blocks(semantic_document)
+        partial_result: dict[str, Any] = {
+            "parserVersion": "1.0.0",
+            "personal": self.contact_extractor.extract(header_blocks),
+            "skills": [
+                skill["value"]
+                for skill in self.skills_extractor.extract(
+                    sections.get("SKILLS", []), section_name="SKILLS"
+                )
+            ],
+            "experience": self.experience_extractor.extract(
+                sections.get("EXPERIENCE", []), groups=candidate_groups.get("EXPERIENCE")
+            ),
+            "education": self.education_extractor.extract(
+                [block.text for block in sections.get("EDUCATION", [])],
+                groups=candidate_groups.get("EDUCATION"),
+            ),
+            "projects": self.project_extractor.extract(
+                sections.get("PROJECTS", []), groups=candidate_groups.get("PROJECTS")
+            ),
+            "summary": " ".join(block.text.strip() for block in sections.get("SUMMARY", [])) or None,
+            "certifications": self.certification_extractor.extract(sections.get("CERTIFICATIONS", [])),
+            "achievements": [block.text for block in sections.get("ACHIEVEMENTS", [])],
+            "languages": [block.text for block in sections.get("LANGUAGES", [])],
+            "metadata": {"pageCount": detection.page_count, "ocrUsed": False},
+        }
+        return validate_resume(partial_result)
 
     def _build_resume(self, partial_result: dict[str, Any]) -> Resume:
         return Resume(

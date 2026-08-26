@@ -99,6 +99,11 @@ def classify_block(block: Any) -> ClassifiedBlock:
         reasons.append("date_pattern")
         return ClassifiedBlock(original=block, label="DATE", score=1.0, reasons=reasons)
 
+    parenthesized_date = re.fullmatch(r"\(\s*(.+?)\s*\)", text_stripped)
+    if parenthesized_date and _is_date(parenthesized_date.group(1)):
+        reasons.append("parenthesized_date_pattern")
+        return ClassifiedBlock(original=block, label="DATE", score=1.0, reasons=reasons)
+
     lowered = text_stripped.lower()
 
     # BULLET: require explicit bullet characters or numeric list markers
@@ -111,6 +116,10 @@ def classify_block(block: Any) -> ClassifiedBlock:
         if re.match(rf"^{re.escape(deg)}(?:$|\s+(?:in|of)\b|[:(/.-])", lowered):
             reasons.append("degree_dict")
             return ClassifiedBlock(original=block, label="DEGREE", score=1.0, reasons=reasons)
+
+    if re.search(r"\bdegree\b", lowered) and "/" in text_stripped and len(text_stripped) <= 60:
+        reasons.append("degree_placeholder_pattern")
+        return ClassifiedBlock(original=block, label="DEGREE", score=0.8, reasons=reasons)
 
     # SECTION HEADER
     if text_stripped.strip().lower() in getattr(_ensure_resources, "_sections", set()):
@@ -160,7 +169,7 @@ def classify_block(block: Any) -> ClassifiedBlock:
         reasons.append("location_label")
         return ClassifiedBlock(original=block, label="LOCATION", score=1.0, reasons=reasons)
     if "," in text_stripped:
-        if any(tok in lowered for tok in geo_tokens):
+        if any(re.search(rf"\b{re.escape(tok)}\b", lowered) for tok in geo_tokens):
             reasons.append("geo_token+comma")
             return ClassifiedBlock(original=block, label="LOCATION", score=0.9, reasons=reasons)
 

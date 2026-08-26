@@ -27,6 +27,11 @@ def _column_id_for_block(block) -> int:
         return 0
 
 
+def _is_placeholder_degree(text: str) -> bool:
+    normalized = (text or "").strip().lower()
+    return "degree" in normalized and "/" in normalized
+
+
 def _vertical_gap(prev_block, next_block) -> float:
     if prev_block is None or next_block is None:
         return float("inf")
@@ -66,6 +71,8 @@ def _is_strong_new_experience_job(current: Optional["CandidateGroup"], new_block
     if new_block.label not in {"JOB_TITLE", "UNKNOWN"}:
         return False
     if not current.blocks:
+        return False
+    if all(existing.label == "DATE" for existing in current.blocks):
         return False
 
     text = (getattr(new_block.original, "text", "") or "").strip()
@@ -255,6 +262,8 @@ def group_candidates(classified_blocks: Iterable[ClassifiedBlock], section: str)
                         cb.label == "INSTITUTION"
                         and re.search(r"\b(?:bachelor|master|mba|b\.?a\.?|b\.?sc|m\.?a\.?|m\.?sc)\b", text, re.I)
                     )
+                    if cb.label == "DEGREE" and _is_placeholder_degree(text):
+                        starts_degree_like_entry = False
                     if has_date or (has_identity and starts_degree_like_entry):
                         need_new = True
             elif section == "PROJECTS":

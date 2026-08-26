@@ -1,0 +1,63 @@
+---
+description: Production resume/CV parser — architecture, boundaries, and hardening rules for AI agents
+alwaysApply: true
+---
+
+# Resume Parser — Agent Rules
+
+This repository implements a **generic production resume/CV parser** (PDF → structured `Resume`). Do not optimize for individual test fixtures.
+
+## Before editing
+
+1. Read `docs/PARSER_ARCHITECTURE.md` and trace the actual execution path (`ResumeParser.parse` vs `parse_with_layout_pipeline`).
+2. Inspect `git diff` and recent test changes before modifying existing work.
+3. Identify the **earliest layer** where information is lost (extraction → reconstruction → layout → semantic sectioning → classification → grouping → extractors → schema).
+
+## Architectural boundaries
+
+| Layer | Owns | Does NOT own |
+|-------|------|----------------|
+| Semantic sectioning | SECTION bucket (SUMMARY, EXPERIENCE, SKILLS, UNKNOWN, …) | Field values |
+| `classify_block` | Block role (DATE, JOB_TITLE, BULLET, …) | Section ownership |
+| `group_candidates` | Entry-level block clusters within a section | Cross-section routing |
+| Extractors | Fields within assigned section content | Fixing wrong section assignment |
+
+**Production default:** `PARSER_MODE` other than `legacy` uses `parse_with_layout_pipeline`.
+
+## Core principles
+
+- **Provenance:** Preserve `line_id`, `source_span_ids`, bbox, page, region/path, typography, `reconstruction_method`. Prefer creating replacement objects with merged provenance over mutating in place without audit trail.
+- **Structural evidence** over lexical coincidence (dates, layout, typography, list structure, corroboration).
+- **Semantic inference is conservative:** `UNKNOWN` is preferable to a weak classification.
+- **Heading hints cannot independently classify content.** Content must establish category eligibility before heading tokens strengthen it.
+- **No keyword hacks** or single-token decisive rules for semantic ownership.
+- **Never hardcode a specific resume fixture** in production code.
+
+## When fixing bugs
+
+1. Fix at the earliest correct layer — do not patch extractors for upstream semantic failures.
+2. Add **focused regression tests** for every generic change (adversarial or unit; avoid fixture-only locks unless protecting an intentional contract).
+3. Run the **smallest relevant tests first** (e.g. `test_semantic_inference.py` before full parser integration).
+4. **Stop at the first unrelated regression** — do not chase with broad weakening.
+5. Do not remove existing architectural protections to make one fixture pass.
+6. Do not silently revert prior generic fixes (wrapped-line protection, role-title protection, UNKNOWN fallback, provenance preservation).
+
+## Resources
+
+- `section_aliases.json`, `skills.json`, `degrees.json`, `job_titles.json` — extend for vocabulary gaps; keep alias lookup deterministic.
+- `SemanticResources` caches inference vocabularies separately from extractors.
+
+## Required change report
+
+After each substantive fix attempt, report:
+
+```
+STATUS:        (pass / fail / blocked)
+FIRST FAILURE: (test name or symptom)
+ROOT CAUSE:    (what went wrong)
+ARCHITECTURAL LAYER: (extraction | reconstruction | layout | semantic | classification | grouping | extractor | schema)
+CHANGE:        (what you changed)
+TESTS:         (what you ran / added)
+REGRESSIONS:   (any unrelated failures)
+NEXT STEP:     (one concrete follow-up)
+```

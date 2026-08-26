@@ -222,6 +222,29 @@ def test_fresher_hr_education_groups_match_right_column_dates():
     assert all(group not in ({"2024 – 2026"}, {"2020 – 2023"}) for group in map(set, group_texts))
 
 
+def test_resume_2_experience_date_starts_group_with_following_title():
+    from pathlib import Path
+
+    from app.domain.document import document_from_text_blocks
+    from app.pipeline.stages.layout import interpret_layout
+    from app.pipeline.stages.reconstruction import reconstruct_document
+    from app.pipeline.stages.semantic_compat import semantic_sections_to_text_blocks
+    from app.pipeline.stages.semantic_paths import detect_region_aware_sections
+    from app.pipeline.stages.text_extraction import PDFExtractor
+
+    raw = PDFExtractor.extract(Path("tests/fixtures/resume_2.pdf").read_bytes())
+    document = interpret_layout(reconstruct_document(document_from_text_blocks(raw)))
+    semantic = detect_region_aware_sections(document)
+    blocks = semantic_sections_to_text_blocks(semantic)["EXPERIENCE"]
+    groups = group_candidates([classify_block(block) for block in blocks], "EXPERIENCE")
+
+    assert any(
+        [cb.original.text for cb in group.blocks][:3]
+        == ["(June 2017 – August 2019)", "SECRETARY", "BRIGHT SPOT LTD – Boston, MA"]
+        for group in groups
+    )
+
+
 def test_projects_horizontal_title_date_layout():
     # Title at x0=100, date at same y but x0=420 (to the right). Description below.
     blocks = []

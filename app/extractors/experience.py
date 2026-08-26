@@ -189,6 +189,13 @@ class ExperienceExtractor:
                 if not text:
                     continue
 
+                parenthesized_date = self._parse_parenthesized_date_range(text)
+                if parenthesized_date and entry.get("startDate") is None:
+                    entry["startDate"] = parenthesized_date.startDate
+                    entry["endDate"] = parenthesized_date.endDate
+                    entry["current"] = parenthesized_date.current
+                    continue
+
                 combined_title_date = self._parse_combined_title_date(text)
                 if combined_title_date and entry.get("designation") is None and entry.get("startDate") is None:
                     entry["designation"] = self._canonicalize_title(combined_title_date["title"])
@@ -218,6 +225,18 @@ class ExperienceExtractor:
                     continue
 
                 lbl = str(label).upper() if label is not None else ""
+                split_company_location = self._parse_company_location(text)
+                if (
+                    split_company_location
+                    and entry.get("designation")
+                    and entry.get("startDate") is not None
+                    and not entry.get("company")
+                    and not entry.get("location")
+                ):
+                    entry["company"] = split_company_location["company"]
+                    entry["location"] = split_company_location["location"]
+                    continue
+
                 if lbl == "JOB_TITLE" and not entry.get("designation"):
                     entry["designation"] = self._canonicalize_title(text)
                     continue
@@ -226,7 +245,6 @@ class ExperienceExtractor:
                     entry["company"] = text
                     continue
 
-                split_company_location = self._parse_company_location(text)
                 if (
                     lbl == "LOCATION"
                     and split_company_location
@@ -354,9 +372,15 @@ class ExperienceExtractor:
             "current": date_range.current,
         }
 
+    def _parse_parenthesized_date_range(self, text: str):
+        match = re.fullmatch(r"\(\s*(.+?)\s*\)", text.strip())
+        if not match:
+            return None
+        return DateRangeParser.parse(match.group(1))
+
     def _parse_company_location(self, text: str) -> dict[str, str] | None:
         match = re.fullmatch(
-            r"(?P<company>[A-Za-z][A-Za-z .&'-]*?)\s+,\s+(?P<location>[A-Za-z][A-Za-z .&'-]*)",
+            r"(?P<company>[A-Za-z][A-Za-z .&'-]*?)(?:\s+,\s+|\s+[–—]\s+)(?P<location>[A-Za-z][A-Za-z .&'-]*(?:,\s*[A-Za-z][A-Za-z .&'-]*)*)",
             text.strip(),
         )
         if not match:
@@ -481,7 +505,7 @@ class ExperienceExtractor:
             line = raw_line.strip()
             if not line:
                 continue
-            if self._is_bullet_marker(line) and line in ("•", "\u2022", "\u2023", "\u25E6", "●", "\u00B7"):
+            if self._is_bullet_marker(line) and not any(ch.isalnum() for ch in line):
                 continue
             cleaned_lines.append(line)
 

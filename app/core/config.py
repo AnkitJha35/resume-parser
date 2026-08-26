@@ -1,4 +1,5 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from typing import Literal
 
 LOW_CONFIDENCE_THRESHOLD = 0.70
 
@@ -22,6 +23,7 @@ class Settings(BaseSettings):
 
     # Parser version
     parser_version: str = "1.0.0"
+    parser_mode: Literal["auto", "legacy", "layout"] = "auto"
 
     # pydantic-settings v2 configuration
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")

@@ -67,3 +67,25 @@ def test_resume_1_skill_values_are_recognized():
         "Critical Thinking",
         "Handling Pressure",
     ]
+
+
+def test_skills_extractor_recognizes_microsoft_office():
+    skills = SkillsExtractor().extract([_make_block("Microsoft Office")], section_name="SKILLS")
+
+    assert [item["value"] for item in skills] == ["Microsoft Office"]
+
+
+def test_skills_extractor_matches_typing_spanish_and_quickbooks_aliases():
+    blocks = [
+        _make_block("120 WPM Typist"),
+        _make_block("typing speed"),
+        _make_block("WPM"),
+        _make_block("Fluent Spanish"),
+        _make_block("Spanish language"),
+        _make_block("Quick Books"),
+        _make_block("QuickBooks"),
+    ]
+
+    skills = SkillsExtractor().extract(blocks, section_name="SKILLS")
+
+    assert {item["value"] for item in skills} == {"Typing", "Spanish", "QuickBooks"}

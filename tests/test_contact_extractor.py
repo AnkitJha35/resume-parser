@@ -86,3 +86,85 @@ def test_contact_extractor_prefers_letter_spaced_name_over_role_title():
     assert result["name"]["value"] == "ANGELA WILKINSO"
     assert result["email"]["value"] == "youremail@gmail.com"
     assert result["phone"]["value"] == "895 555 555"
+
+
+def test_contact_extractor_supports_scheme_less_linkedin():
+    result = ContactExtractor.extract([
+        _make_block("John Doe"),
+        _make_block("linkedin.com/in/johndoe"),
+    ])
+
+    assert result["linkedin"]["value"] == "linkedin.com/in/johndoe"
+
+
+def test_contact_extractor_normalizes_ligatures_in_linkedin():
+    result = ContactExtractor.extract([_make_block("linkedin.com/in/yourproﬁle")])
+
+    assert result["linkedin"]["value"] == "linkedin.com/in/yourprofile"
+
+
+def test_contact_extractor_prefers_prominent_name_over_spaced_role_title():
+    blocks = [
+        _make_block("DAVID PÉREZ"),
+        _make_block("A d m i n i s t r a t i v e A s s i s t a n t"),
+    ]
+    blocks[0].font_size = 28
+    blocks[1].font_size = 11
+
+    result = ContactExtractor.extract(blocks)
+
+    assert result["name"]["value"] == "DAVID PÉREZ"
+
+
+def test_contact_extractor_combines_spaced_name_fragments_across_header_text():
+    blocks = [
+        _make_block("J O H N"),
+        _make_block("PROFILE"),
+        _make_block("D O E"),
+    ]
+
+    result = ContactExtractor.extract(blocks)
+
+    assert result["name"]["value"] == "JOHN DOE"
+
+
+def test_contact_extractor_preserves_spaced_name_word_boundary():
+    result = ContactExtractor.extract([_make_block("M A R G A R E T  T H O M A S O")])
+
+    assert result["name"]["value"] == "MARGARET THOMASO"
+
+
+def test_contact_extractor_accepts_single_spaced_name_fragment():
+    result = ContactExtractor.extract([_make_block("J O H N")])
+
+    assert result["name"]["value"] == "JOHN"
+
+
+def test_contact_extractor_normalizes_unicode_whitespace_in_phone():
+    result = ContactExtractor.extract([_make_block("895 555\xa0555")])
+
+    assert result["phone"]["value"] == "895 555 555"
+
+
+def test_contact_extractor_rejects_structural_and_non_location_text():
+    assert ContactExtractor._find_location(["Summary", "Software Engineer", "A concise profile sentence."], None, None, None, None, None) is None
+
+
+def test_contact_extractor_rejects_standalone_skill_as_location():
+    assert ContactExtractor._find_location(["Innovative"], None, None, None, None, None) is None
+
+
+def test_contact_extractor_accepts_international_location_structure():
+    assert ContactExtractor._find_location(["Singapore"], None, None, None, None, None) == "Singapore"
+    assert ContactExtractor._find_location(["Singapore, Singapore"], None, None, None, None, None) == "Singapore, Singapore"
+
+
+def test_contact_extractor_combines_two_line_address():
+    assert ContactExtractor._find_location(
+        ["4397 Aaron Smith Drive", "Harrisburg, PA 17101"],
+        None, None, None, None, None,
+    ) == "4397 Aaron Smith Drive, Harrisburg, PA 17101"
+
+
+def test_contact_extractor_keeps_standalone_location_support():
+    assert ContactExtractor._find_location(["Singapore"], None, None, None, None, None) == "Singapore"

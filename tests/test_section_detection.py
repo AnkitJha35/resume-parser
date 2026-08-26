@@ -90,6 +90,7 @@ def test_section_detection_spaced_letter_headings_and_known_aliases():
     assert detector._find_section_header("SUMMARY") == "SUMMARY"
     assert detector._find_section_header("EXPERIENCE") == "EXPERIENCE"
     assert detector._find_section_header("EDUCATION") == "EDUCATION"
+    assert detector._find_section_header("EDUCATIO") == "EDUCATION"
     assert detector._find_section_header("PROJECTS") == "PROJECTS"
     assert detector._find_section_header("PROFESSIONAL  EXPERIENCE") == "EXPERIENCE"
     assert detector._find_section_header("SKILL  HIGHLIGHTS") == "SKILLS"

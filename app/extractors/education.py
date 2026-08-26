@@ -63,6 +63,11 @@ class EducationExtractor:
             if current_entry is None:
                 continue
 
+            single_date = self._parse_parenthesized_date(normalized)
+            if single_date:
+                current_entry["startDate"] = single_date
+                continue
+
             if self._contains_date_range(normalized):
                 date_range = self._date_parser.parse(normalized)
                 if date_range:
@@ -125,6 +130,11 @@ class EducationExtractor:
                     entry["endDate"] = date_range.endDate or "Present"
                     continue
 
+                single_date = self._parse_parenthesized_date(text)
+                if single_date and entry["startDate"] is None:
+                    entry["startDate"] = single_date
+                    continue
+
                 lbl = str(getattr(cb, "label", "")).upper()
                 if lbl == "DEGREE" and entry["degree"] is None:
                     trailing_year = re.fullmatch(r"(?P<degree>.+?)\s*[-–—]\s*(?P<year>\d{4})", text)
@@ -136,7 +146,11 @@ class EducationExtractor:
                         entry["degree"] = text
                     continue
                 if lbl == "INSTITUTION" and entry["institution"] is None:
-                    entry["institution"] = text
+                    entry["institution"] = self._split_institution_location(text)[0]
+                    continue
+
+                if entry["grade"] is None and self._looks_like_grade(text):
+                    entry["grade"] = text
                     continue
 
                 # Unknown label: use existing line heuristics
@@ -220,15 +234,30 @@ class EducationExtractor:
     def _contains_date_range(self, text: str) -> bool:
         return self._date_parser.parse(text) is not None
 
+    def _parse_parenthesized_date(self, text: str) -> str | None:
+        match = re.fullmatch(r"\(\s*(?P<date>[A-Za-z]+\s+\d{4}|\d{4})\s*\)", text)
+        if not match:
+            return None
+        return DateRangeParser._parse_date_token(match.group("date"))
+
     def _looks_like_institution(self, text: str) -> bool:
         return bool(re.search(r"\b(university|college|institute|school|academy|polytechnic)\b", text, re.I))
 
     def _looks_like_grade(self, text: str) -> bool:
-        return bool(re.search(r"\b(grade|cgpa|gpa|percentage|distinction|honors|honours|marks)\b", text, re.I))
+        return bool(re.search(r"\b(grade|cgpa|gpa|percentage|distinction|honors|honours|marks|cum\s+laude|graduated?)\b", text, re.I))
 
     def _normalize_institution(self, text: str) -> str:
         text = re.sub(r"\s*,\s*", ", ", text.strip())
         return " ".join(text.split())
+
+    def _split_institution_location(self, text: str) -> tuple[str, str | None]:
+        match = re.fullmatch(
+            r"(?P<institution>.+?)\s*[–—-]\s*(?P<location>[A-Za-z][A-Za-z .'-]*(?:,\s*[A-Za-z][A-Za-z .'-]*)+)",
+            text.strip(),
+        )
+        if not match:
+            return text, None
+        return self._normalize_institution(match.group("institution")), self._normalize_institution(match.group("location"))
 
     def _looks_like_field_of_study(self, text: str) -> bool:
         return bool(re.search(r"\b(computer science|information technology|electronics|mechanical|civil|business administration|commerce|finance|mathematics|physics|data science|machine learning)\b", text, re.I))
