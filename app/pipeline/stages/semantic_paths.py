@@ -97,7 +97,9 @@ def detect_region_aware_sections(
                 matched_section = detector._find_section_header(line.text)
                 content_line = False
                 if matched_section is None and _is_unknown_heading_line(line, path.lines, index, detector, current_section):
-                    end = _next_section_boundary(path.lines, index + 1, detector)
+                    end = _next_section_boundary(
+                        path.lines, index + 1, detector, current_section
+                    )
                     content = path.lines[index + 1 : end]
                     inference = infer_section(line.text, [item.text for item in content])
                     result.unknown_candidates.append(
@@ -106,6 +108,11 @@ def detect_region_aware_sections(
                     if inference.section != "UNKNOWN":
                         section_lines.setdefault(inference.section, []).extend(content)
                         current_section = inference.section
+                    elif current_section is not None:
+                        # False unknown heading inside an active section: keep
+                        # ownership. Do not drop the title line or the span.
+                        section_lines.setdefault(current_section, []).append(line)
+                        section_lines.setdefault(current_section, []).extend(content)
                     else:
                         current_section = None
                     index = end
@@ -188,12 +195,19 @@ def _is_unknown_heading_line(
     return index + 1 < len(lines)
 
 
-def _next_section_boundary(lines: list[Line], start: int, detector: SectionDetector) -> int:
+def _next_section_boundary(
+    lines: list[Line],
+    start: int,
+    detector: SectionDetector,
+    current_section: str | None = None,
+) -> int:
     for index in range(start, len(lines)):
         line = lines[index]
         if detector._find_section_header(line.text) is not None:
             return index
-        if index > start and _is_unknown_heading_line(line, lines, index, detector):
+        if index > start and _is_unknown_heading_line(
+            line, lines, index, detector, current_section
+        ):
             return index
     return len(lines)
 
@@ -227,20 +241,46 @@ def _is_wrapped_content_line(previous: Line, current: Line) -> bool:
     return same_style and same_indent and close_vertical and previous_continues and current_continues
 
 
+_ITEM_ROLE_WORDS = {
+    "assistant",
+    "secretary",
+    "coordinator",
+    "manager",
+    "analyst",
+    "specialist",
+    "developer",
+    "engineer",
+    "supervisor",
+    "administrator",
+    "associate",
+    "consultant",
+    "director",
+    "executive",
+    "clerk",
+    "intern",
+    "officer",
+    "lead",
+    "picker",
+    "packer",
+    "teacher",
+    "professor",
+}
+
+
 def _looks_like_item_heading(line: Line, lines: list[Line], index: int, section: str) -> bool:
     following = [item for item in lines[index + 1 : index + 4] if not _is_list_marker(item.text)]
     texts = [item.text.strip() for item in following if item.text.strip()]
     if not texts:
         return False
     has_date = any(DateRangeParser.parse(text) is not None or re.search(r"\b(?:19|20)\d{2}\b", text) for text in texts)
-    has_company_or_location = any(
-        re.search(r"\b(?:inc|llc|ltd|corp|company|co\.)\b", text, re.IGNORECASE)
-        or "," in text
-        or " / " in text
-        for text in texts
-    )
+    has_company_or_location = any(_looks_like_org_or_location(text) for text in texts)
+    title_like = _looks_like_entry_title_line(line)
     if section == "EXPERIENCE":
-        return has_date and has_company_or_location
+        # Combined org/date line still wins. Split stacks (title / unsuffixed
+        # org / date) are also in-section entries, not new headings.
+        if has_date and has_company_or_location:
+            return True
+        return title_like and (has_date or has_company_or_location)
     if section == "EDUCATION":
         return has_date and any(re.search(r"\b(?:university|college|school|institute|academy)\b", text, re.IGNORECASE) for text in texts)
     if section == "CERTIFICATIONS":
@@ -248,7 +288,51 @@ def _looks_like_item_heading(line: Line, lines: list[Line], index: int, section:
     if section == "PROJECTS":
         return any(re.search(r"\b(?:built|created|developed|implemented|designed)\b", text, re.IGNORECASE) or re.search(r"https?://", text, re.IGNORECASE) for text in texts)
     if section == "ACHIEVEMENTS":
-        return any(re.search(r"\b(?:award|awarded|recognized|recognition|employee\s+of|increased|reduced|improved|achieved)\b", text, re.IGNORECASE) or re.search(r"\b\d+(?:\.\d+)?%\b", text) for text in texts)
+        recognition = any(
+            re.search(
+                r"\b(?:award|awarded|recognized|recognition|employee\s+of|increased|reduced|improved|achieved)\b",
+                text,
+                re.IGNORECASE,
+            )
+            or re.search(r"\b\d+(?:\.\d+)?%\b", text)
+            for text in texts
+        )
+        if recognition:
+            return True
+        # Title-like award row + year/org is an entry, not a new section.
+        # A lone year must not retarget EDUCATION via unknown-heading inference.
+        if title_like and (has_date or has_company_or_location):
+            return True
+        return False
+    return False
+
+
+def _looks_like_entry_title_line(line: Line) -> bool:
+    value = (line.text or "").strip()
+    words = value.split()
+    if not value or len(words) > 6 or any(char.isdigit() for char in value):
+        return False
+    if value.endswith((".", ":", ";", ",")):
+        return False
+    tokens = {token.lower() for token in re.findall(r"[A-Za-z]+", value)}
+    if tokens & _ITEM_ROLE_WORDS:
+        return True
+    upper_like = value.upper() == value and any(char.isalpha() for char in value)
+    title_case = all(word[:1].isupper() for word in words if word)
+    emphasized = bool(line.style.bold) or upper_like or title_case
+    return emphasized and len(words) <= 5
+
+
+def _looks_like_org_or_location(text: str) -> bool:
+    value = (text or "").strip()
+    if not value:
+        return False
+    if re.search(r"\b(?:inc|llc|ltd|corp|company|co\.)\b", value, re.IGNORECASE):
+        return True
+    if "," in value or " / " in value:
+        return True
+    if "&" in value and 1 < len(value.split()) <= 8:
+        return True
     return False
 
 

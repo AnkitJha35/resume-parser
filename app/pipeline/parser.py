@@ -27,6 +27,9 @@ from app.pipeline.stages.semantic_compat import (
     semantic_sections_to_text_blocks,
 )
 from app.pipeline.stages.semantic_paths import detect_region_aware_sections
+from app.pipeline.stages.structural_roles import build_structural_blocks
+from app.pipeline.stages.candidate_sections import build_candidate_sections
+from app.pipeline.stages.candidate_entries import build_candidate_entries
 
 
 class PipelineError(Exception):
@@ -115,6 +118,12 @@ class ResumeParser:
         physical_document = document_from_text_blocks(PDFExtractor.extract(raw_pdf_bytes))
         reconstructed_document = reconstruct_document(physical_document)
         layout_document = interpret_layout(reconstructed_document)
+        # Phase 1–3 seams: StructuralBlocks → CandidateSections → CandidateEntries.
+        # Resume assembly still uses detect_region_aware_sections until equivalence
+        # is proven for multi-path continuation and extractor inputs.
+        structural_blocks = build_structural_blocks(layout_document)
+        candidate_sections = build_candidate_sections(structural_blocks, self.section_detector)
+        build_candidate_entries(candidate_sections)
         semantic_document = detect_region_aware_sections(layout_document, self.section_detector)
         sections = semantic_sections_to_text_blocks(semantic_document)
         classified_sections = {

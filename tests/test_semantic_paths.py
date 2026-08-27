@@ -3,7 +3,9 @@ from pathlib import Path
 from app.domain.document import BoundingBox, Document, Line, Page, Region, Span, TextStyle, document_from_text_blocks
 from app.pipeline.stages.layout import interpret_layout
 from app.pipeline.stages.reconstruction import reconstruct_document
+from app.pipeline.stages.sections import SectionDetector
 from app.pipeline.stages.semantic_paths import (
+    _is_unknown_heading_line,
     build_semantic_paths,
     detect_region_aware_sections,
 )
@@ -134,3 +136,229 @@ def test_real_fixtures_have_lossless_unique_semantic_paths():
         path_ids = [span.span_id for path in result.paths for line in path.lines for span in line.spans]
         assert sorted(source_ids) == sorted(path_ids)
         assert len(path_ids) == len(set(path_ids))
+
+
+def _styled_line(line_id, text, y0, *, font_size=11.0, bold=False, x0=10.0):
+    bbox = BoundingBox(x0, y0, x0 + max(40.0, len(text) * 6.0), y0 + 12.0)
+    span = Span(f"{line_id}-span", text, bbox, font_size=font_size, bold=bold)
+    return Line(
+        line_id,
+        1,
+        bbox,
+        [span],
+        text,
+        TextStyle(font_size=font_size, bold=bold),
+        reading_order=int(y0),
+        source_span_ids=[span.span_id],
+        reconstruction_method="physical",
+    )
+
+
+def _single_column(lines):
+    bbox = BoundingBox(
+        min(line.bbox.x0 for line in lines),
+        min(line.bbox.y0 for line in lines),
+        max(line.bbox.x1 for line in lines),
+        max(line.bbox.y1 for line in lines),
+    )
+    return Document(
+        pages=[Page(1, regions=[Region("page-1-region-0", "physical_region", bbox, lines, 0, 0)])]
+    )
+
+
+def _texts(result, section):
+    return [line.text for item in result.sections[section] for line in item.lines]
+
+
+def _ids(result, section):
+    return {line.line_id for item in result.sections[section] for line in item.lines}
+
+
+def _unassigned_ids(result):
+    return {line.line_id for line in result.unassigned_lines}
+
+
+def test_active_achievements_keeps_title_org_year_stack():
+    document = _single_column([
+        _styled_line("h", "AWARDS", 10, font_size=14, bold=True),
+        _styled_line("t", "Honor Citation", 30, font_size=12, bold=True),
+        _styled_line("o", "Civic League", 50),
+        _styled_line("y", "2015", 70),
+    ])
+    result = detect_region_aware_sections(document)
+    owned = _ids(result, "ACHIEVEMENTS")
+    assert owned >= {"t", "o", "y"}
+    assert "t" not in _unassigned_ids(result)
+    assert "o" not in _ids(result, "EDUCATION")
+    assert "y" not in _ids(result, "EDUCATION")
+    assert _texts(result, "EDUCATION") == []
+
+
+def test_active_achievements_keeps_multiple_award_entries():
+    document = _single_column([
+        _styled_line("h", "AWARDS", 10, font_size=14, bold=True),
+        _styled_line("t1", "Honor Citation", 30, font_size=12, bold=True),
+        _styled_line("o1", "Civic League", 50),
+        _styled_line("y1", "2019", 70),
+        _styled_line("t2", "Service Medal", 90, font_size=12, bold=True),
+        _styled_line("o2", "County Board", 110),
+        _styled_line("y2", "2021", 130),
+    ])
+    result = detect_region_aware_sections(document)
+    owned = _ids(result, "ACHIEVEMENTS")
+    assert owned >= {"t1", "o1", "y1", "t2", "o2", "y2"}
+    assert not ({"t1", "t2", "y1", "y2"} & _ids(result, "EDUCATION"))
+    assert _texts(result, "EDUCATION") == []
+
+
+def test_education_degree_stack_stays_education():
+    document = _single_column([
+        _styled_line("h", "EDUCATION", 10, font_size=14, bold=True),
+        _styled_line("d", "Bachelor of Science", 30, font_size=12, bold=True),
+        _styled_line("u", "State University", 50),
+        _styled_line("y", "2018", 70),
+    ])
+    result = detect_region_aware_sections(document)
+    owned = _ids(result, "EDUCATION")
+    assert owned >= {"d", "u", "y"}
+    assert _texts(result, "ACHIEVEMENTS") == []
+
+
+def test_highlights_infer_skills_when_no_active_section():
+    document = _single_column([
+        _styled_line("h", "HIGHLIGHTS", 10, font_size=14, bold=True),
+        _styled_line("a", "Team player", 30),
+        _styled_line("b", "Safety-conscious", 50),
+        _styled_line("c", "Problem solving", 70),
+    ])
+    result = detect_region_aware_sections(document)
+    skills = _texts(result, "SKILLS")
+    assert "Team player" in skills
+    assert "Safety-conscious" in skills
+    assert result.unknown_candidates
+    assert result.unknown_candidates[0].inference.section == "SKILLS"
+
+
+def test_active_experience_job_stack_not_education():
+    document = _single_column([
+        _styled_line("h", "EXPERIENCE", 10, font_size=14, bold=True),
+        _styled_line("t", "Software Engineer", 30, font_size=12, bold=True),
+        _styled_line("c", "Example Corp LLC", 50),
+        _styled_line("d", "2020 - 2023", 70),
+    ])
+    result = detect_region_aware_sections(document)
+    owned = _ids(result, "EXPERIENCE")
+    assert owned >= {"t", "c", "d"}
+    assert _texts(result, "EDUCATION") == []
+
+
+def test_summary_year_in_prose_does_not_become_education():
+    document = _single_column([
+        _styled_line("h", "SUMMARY", 10, font_size=14, bold=True),
+        _styled_line("p", "Platform engineer with production work since 2018.", 30),
+        _styled_line("q", "Seeking a senior role delivering reliable services.", 50),
+    ])
+    result = detect_region_aware_sections(document)
+    assert any("2018" in text for text in _texts(result, "SUMMARY"))
+    assert _texts(result, "EDUCATION") == []
+
+
+def test_active_experience_keeps_split_job_title_and_unsuffixed_org():
+    """Job title + unsuffixed org + separate date stay in EXPERIENCE (not unassigned)."""
+    document = _single_column([
+        _styled_line("h", "EXPERIENCE", 10, font_size=14, bold=True),
+        _styled_line("t", "Software Engineer", 30, font_size=12, bold=True),
+        _styled_line("c", "Northwind Partners", 50),
+        _styled_line("d", "2018 - 2021", 70),
+        _styled_line("b", "• Built internal scheduling tools.", 90),
+    ])
+    result = detect_region_aware_sections(document)
+    experience = _texts(result, "EXPERIENCE")
+    assert "Software Engineer" in experience
+    assert "Northwind Partners" in experience
+    assert "2018 - 2021" in experience
+    assert any("scheduling tools" in text for text in experience)
+    assigned = {line.line_id for item in result.sections["EXPERIENCE"] for line in item.lines}
+    assert "t" in assigned
+    assert "t" not in {line.line_id for line in result.unassigned_lines}
+
+
+def test_ampersand_organization_is_entry_metadata_not_a_section_heading():
+    document = _single_column([
+        _styled_line("h", "EXPERIENCE", 10, font_size=14, bold=True),
+        _styled_line("t", "Administrative Assistant", 30, font_size=12, bold=True),
+        _styled_line("c", "Redford & Sons", 50),
+        _styled_line("d", "2018 - 2021", 70),
+        _styled_line("b", "• Managed schedules.", 90),
+    ])
+    result = detect_region_aware_sections(document)
+    experience = _texts(result, "EXPERIENCE")
+    assert "Administrative Assistant" in experience
+    assert "Redford & Sons" in experience
+    assert {line.line_id for line in result.unassigned_lines} == {"h"}
+
+
+def test_combined_company_date_line_still_protects_item_heading():
+    lines = [
+        _styled_line("role", "ADMINISTRATIVE ASSISTANT", 10, font_size=12, bold=True),
+        _styled_line("company", "Example Company, Boston, MA / September 2018 - Present", 30),
+        _styled_line("description", "Schedule and coordinate meetings", 50),
+    ]
+    assert _is_unknown_heading_line(lines[0], lines, 0, SectionDetector(), "EXPERIENCE") is False
+
+
+def test_career_history_infers_experience_when_no_active_section():
+    document = _single_column([
+        _styled_line("h", "CAREER HISTORY", 10, font_size=14, bold=True),
+        _styled_line("t", "Software Engineer", 30, font_size=12, bold=True),
+        _styled_line("c", "Example Corp LLC", 50),
+        _styled_line("d", "2020 - 2023", 70),
+        _styled_line("b", "Delivered production services for internal teams.", 90),
+    ])
+    result = detect_region_aware_sections(document)
+    assert result.unknown_candidates
+    assert result.unknown_candidates[0].heading.text == "CAREER HISTORY"
+    experience = _texts(result, "EXPERIENCE")
+    assert "Example Corp LLC" in experience or "Software Engineer" in experience or experience
+
+
+def test_summary_with_experience_like_prose_stays_summary():
+    document = _single_column([
+        _styled_line("h", "SUMMARY", 10, font_size=14, bold=True),
+        _styled_line("p", "Experienced software engineer seeking a platform role.", 30),
+        _styled_line("q", "Led delivery of distributed systems from 2020 to 2023.", 50),
+    ])
+    result = detect_region_aware_sections(document)
+    summary = _texts(result, "SUMMARY")
+    assert any("platform role" in text for text in summary)
+    assert _texts(result, "EXPERIENCE") == []
+
+
+def test_wrapped_experience_body_stays_in_experience():
+    document = _single_column([
+        _styled_line("h", "EXPERIENCE", 10, font_size=14, bold=True),
+        _styled_line("t", "Software Engineer", 30, font_size=12, bold=True),
+        _styled_line("c", "Example Corp LLC", 50),
+        _styled_line("d", "2018 - Present", 70),
+        _styled_line("b1", "Arrangements for supervisors and managers", 90),
+        _styled_line("b2", "across regional offices during peak season.", 102),
+    ])
+    result = detect_region_aware_sections(document)
+    experience = _texts(result, "EXPERIENCE")
+    assert any("regional offices" in text for text in experience)
+    assert "b2" not in {line.line_id for line in result.unassigned_lines}
+
+
+def test_ambiguous_unknown_heading_stays_unassigned_without_active_section():
+    document = _single_column([
+        _styled_line("h", "MISCELLANEOUS NOTES", 10, font_size=14, bold=True),
+        _styled_line("a", "Independent research notes.", 30),
+        _styled_line("b", "Not a job stack.", 50),
+    ])
+    result = detect_region_aware_sections(document)
+    assert result.unknown_candidates
+    assert result.unknown_candidates[0].inference.section == "UNKNOWN"
+    for name in ("EXPERIENCE", "SKILLS", "SUMMARY", "EDUCATION"):
+        assert _texts(result, name) == []
+    unassigned = {line.line_id for line in result.unassigned_lines}
+    assert {"h", "a", "b"} <= unassigned
