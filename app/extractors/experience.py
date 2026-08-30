@@ -8,12 +8,32 @@ from typing import Iterable, Optional
 from app.pipeline.stages.confidence import ConfidenceScorer
 from app.extractors.date_parser import DateRangeParser
 from app.extractors.skills import SkillsExtractor
+from app.pipeline.stages.normalization import TextNormalizer
 from app.pipeline.stages.text_extraction import TextBlock
 from app.pipeline.stages.block_classification import ClassifiedBlock
 from app.pipeline.stages.candidate_grouping import CandidateGroup
 
 RESOURCE_DIR = Path(__file__).resolve().parents[1] / "resources"
 JOB_TITLES_PATH = RESOURCE_DIR / "job_titles.json"
+
+# Decorative PDF icon glyphs (calendar, map pin, ...) frequently decode to a
+# short leading run that carries no letters -- a control character such as
+# U+0011, or a fraction-like artifact such as "1<U+2044>2" -- followed by
+# whitespace before the real value. Bullet markers are explicitly excluded so
+# that description lines are never rewritten by this rule.
+_ICON_PREFIX_PATTERN = re.compile(
+    r"^(?![•‣◦·\-\*])[^A-Za-z\s]{1,3}\s+"
+)
+
+# Punctuation that may wrap an acronym or roman-numeral token in a job title
+# ("-II", "(SDE)") and must not defeat case preservation.
+_TITLE_TOKEN_TRIM = ".,;:()[]{}\"'-–—/\\"
+
+# A plausible bare place name: a few capitalised alphabetic words, no digits.
+_PLACE_NAME_PATTERN = re.compile(r"[A-Za-z][A-Za-z .'-]*(?:,\s*[A-Za-z][A-Za-z .'-]*)*")
+
+# A plausible organisation line: short, printable, no label colon.
+_COMPANY_CANDIDATE_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9 .,&'()\-/]*")
 
 
 def _load_job_titles() -> list[str]:
@@ -195,6 +215,13 @@ class ExperienceExtractor:
                 if not text:
                     continue
 
+                # Block classification labels blocks from TextNormalizer-normalized
+                # text, so the group path must parse dates through the same view.
+                # Otherwise an icon glyph that decodes to a control character
+                # ("\x11 Sep 2024 - Present") is labelled DATE upstream but fails
+                # to parse here, and the entry silently loses its date range.
+                normalized_text = TextNormalizer.normalize_text(text)
+
                 parenthesized_date = self._parse_parenthesized_date_range(text)
                 if parenthesized_date and entry.get("startDate") is None:
                     entry["startDate"] = parenthesized_date.startDate
@@ -214,7 +241,7 @@ class ExperienceExtractor:
                     entry["designation"] = self._canonicalize_title(text)
                     continue
 
-                date_range = DateRangeParser.parse(text)
+                date_range = DateRangeParser.parse(normalized_text)
                 if date_range and entry.get("startDate") is None:
                     entry["startDate"] = date_range.startDate
                     entry["endDate"] = date_range.endDate
@@ -273,8 +300,46 @@ class ExperienceExtractor:
                         entry["company"] = text
                         continue
 
-                    if not entry.get("location") and self._is_location_line(text):
+                    # Mirror the block path's positional invariant: a location may
+                    # only be recognised while we are still in the entry's metadata
+                    # region. Once body content has started, an UNKNOWN comma clause
+                    # is wrapped prose, not a place.
+                    in_metadata_region = not description_parts
+
+                    if (
+                        not entry.get("location")
+                        and in_metadata_region
+                        and self._is_location_line(text)
+                    ):
                         entry["location"] = text
+                        continue
+
+                    # A bare city carries no comma, so _is_location_line cannot see
+                    # it. Accept it only when the source itself supplied structural
+                    # evidence in the form of a stripped icon glyph ("<pin> Noida"),
+                    # which keeps plain company names such as "Accenture" ineligible.
+                    deglyphed = self._strip_icon_prefix(text)
+                    if (
+                        not entry.get("location")
+                        and in_metadata_region
+                        and deglyphed != text
+                        and self._looks_like_place_name(deglyphed)
+                    ):
+                        entry["location"] = self._normalize_location(deglyphed)
+                        continue
+
+                    # Structural company fallback, matching the block path: a short
+                    # undecided line that follows the designation and precedes the
+                    # date, location and body content is most likely the employer.
+                    if (
+                        entry.get("designation")
+                        and not entry.get("company")
+                        and not entry.get("location")
+                        and entry.get("startDate") is None
+                        and in_metadata_region
+                        and self._looks_like_company_candidate(text)
+                    ):
+                        entry["company"] = text
                         continue
 
                 description_parts.append(text)
@@ -452,13 +517,61 @@ class ExperienceExtractor:
         for token in value.split():
             if token.isdigit():
                 normalized.append(token)
-            elif re.fullmatch(r"[A-Z]{2,3}", token):
+            elif self._is_case_preserving_token(token):
                 normalized.append(token)
             elif token.lower() in {"and", "of", "for", "to", "in", "on", "with"}:
                 normalized.append(token.lower())
             else:
                 normalized.append(token.capitalize())
         return " ".join(normalized)
+
+    def _is_case_preserving_token(self, token: str) -> bool:
+        """True for acronym / roman-numeral tokens whose case must survive.
+
+        The token's alphabetic core is examined so that adjacent punctuation
+        ("-II", "(SDE)") does not defeat the check, which is what silently
+        lowercased seniority suffixes into "-ii".
+        """
+        core = token.strip(_TITLE_TOKEN_TRIM)
+        if not core:
+            return False
+        if re.fullmatch(r"[A-Z]{2,3}", core):
+            return True
+        return bool(re.fullmatch(r"[IVX]+", core))
+
+    def _strip_icon_prefix(self, text: str) -> str:
+        """Drop a short leading glyph artifact ("<pin> Noida" -> "Noida")."""
+        return _ICON_PREFIX_PATTERN.sub("", text or "", count=1).strip()
+
+    def _looks_like_place_name(self, text: str) -> bool:
+        value = re.sub(r"\s+", " ", text or "").strip()
+        if not value or len(value) > 60:
+            return False
+        words = value.split()
+        if len(words) > 4:
+            return False
+        if any(ch.isdigit() for ch in value):
+            return False
+        if not _PLACE_NAME_PATTERN.fullmatch(value):
+            return False
+        return all(word[:1].isupper() for word in words if word[:1].isalpha())
+
+    def _looks_like_company_candidate(self, text: str) -> bool:
+        value = re.sub(r"\s+", " ", text or "").strip()
+        if not value or len(value) > 60:
+            return False
+        if self._is_bullet_marker(value):
+            return False
+        if ":" in value:
+            return False
+        words = value.split()
+        if not 1 <= len(words) <= 6:
+            return False
+        if not any(ch.isalpha() for ch in value):
+            return False
+        if not any(ch.isupper() for ch in value):
+            return False
+        return bool(_COMPANY_CANDIDATE_PATTERN.fullmatch(value))
 
     def _is_company_line(self, text: str) -> bool:
         normalized = text.strip()
