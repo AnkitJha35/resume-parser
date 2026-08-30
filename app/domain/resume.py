@@ -41,6 +41,7 @@ class ProjectItem(BaseModel):
     technologies: list[str] | None = None
     startDate: str | None = None
     endDate: str | None = None
+    current: bool | None = None
     url: str | None = None
     confidence: float | None = None
 

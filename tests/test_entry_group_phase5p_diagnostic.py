@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from tests.conftest import require_fixture
 from app.domain.candidate_entry import EntryType
 from app.domain.document import document_from_text_blocks
 from app.pipeline.stages.block_classification import classify_block
@@ -21,7 +22,7 @@ from app.pipeline.stages.text_extraction import PDFExtractor
 
 
 def _layout_document(pdf_name: str):
-    raw = PDFExtractor.extract(Path(f"tests/fixtures/{pdf_name}").read_bytes())
+    raw = PDFExtractor.extract(require_fixture(pdf_name).read_bytes())
     return interpret_layout(reconstruct_document(document_from_text_blocks(raw)))
 
 

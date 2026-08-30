@@ -50,7 +50,8 @@ class ProjectExtractor:
                 current_entry = self._new_entry()
                 if date_range:
                     current_entry["startDate"] = date_range.startDate
-                    current_entry["endDate"] = date_range.endDate or "Present"
+                    current_entry["endDate"] = date_range.endDate
+                    current_entry["current"] = date_range.current
                 continue
 
             if self._is_url(text):
@@ -98,6 +99,7 @@ class ProjectExtractor:
             "technologies": [],
             "startDate": None,
             "endDate": None,
+            "current": False,
             "url": None,
             "confidence": self._confidence.section_extraction(),
         }
@@ -160,7 +162,8 @@ class ProjectExtractor:
                 entry["name"] = title
             if date_range:
                 entry["startDate"] = date_range.startDate
-                entry["endDate"] = date_range.endDate or "Present"
+                entry["endDate"] = date_range.endDate
+                entry["current"] = date_range.current
 
             # description: all blocks after the DATE
             desc_parts: list[str] = []

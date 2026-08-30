@@ -1,3 +1,4 @@
+from tests.conftest import require_fixture
 from types import SimpleNamespace
 
 from app.pipeline.stages.block_classification import classify_block, ClassifiedBlock
@@ -232,7 +233,7 @@ def test_resume_2_experience_date_starts_group_with_following_title():
     from app.pipeline.stages.semantic_paths import detect_region_aware_sections
     from app.pipeline.stages.text_extraction import PDFExtractor
 
-    raw = PDFExtractor.extract(Path("tests/fixtures/resume_2.pdf").read_bytes())
+    raw = PDFExtractor.extract(require_fixture("resume_2.pdf").read_bytes())
     document = interpret_layout(reconstruct_document(document_from_text_blocks(raw)))
     semantic = detect_region_aware_sections(document)
     blocks = semantic_sections_to_text_blocks(semantic)["EXPERIENCE"]

@@ -83,13 +83,37 @@ def _merge_lines(previous: Line, current: Line) -> Line:
 
 
 def _is_continuation(previous: str, current: str) -> bool:
-    return previous.endswith(("/", "-", "@", ".")) or current.startswith(('.', ',', '/', ')', ':', ';'))
+    return previous.endswith(("/", "-", "@", ".", "(", "[", "{")) or current.startswith(
+        (".", ",", "/", ")", ":", ";", "-", "@", "]", "}")
+    )
+
+
+def _atomic_previous_width(previous: Line) -> float:
+    """Width of the immediately preceding physical fragment, not the merged run."""
+    if previous.spans:
+        last = previous.spans[-1]
+        return max(last.bbox.x1 - last.bbox.x0, 0.0)
+    return max(previous.bbox.x1 - previous.bbox.x0, 0.0)
 
 
 def _is_compact_adjacent_fragment(previous: Line, current: Line) -> bool:
-    previous_width = max(previous.bbox.x1 - previous.bbox.x0, 0.0)
+    """True for punctuation-tight attaches to the prior atomic fragment only.
+
+    Must not use the accumulated merged bbox width: after several word merges that
+    width grows and falsely treats short words like \"and\" as compact.
+    """
+    previous_width = _atomic_previous_width(previous)
     current_width = max(current.bbox.x1 - current.bbox.x0, 0.0)
-    return current_width <= previous_width * 0.2 and current.bbox.x0 >= previous.bbox.x1
+    if current_width > previous_width * 0.2:
+        return False
+    if current.bbox.x0 < previous.bbox.x1:
+        return False
+    font_size = current.style.font_size or previous.style.font_size or 0.0
+    gap = current.bbox.x0 - previous.bbox.x1
+    # Normal inter-word gaps are ~1em; compact/punctuation attaches are tighter.
+    if gap > max(font_size * 0.45, 2.0):
+        return False
+    return True
 
 
 def _is_wrapped_continuation(previous: Line, current: Line) -> bool:

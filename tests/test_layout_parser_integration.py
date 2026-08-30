@@ -1,3 +1,4 @@
+from tests.conftest import require_fixture
 from pathlib import Path
 
 from app.domain.document import document_from_text_blocks
@@ -13,14 +14,14 @@ from app.pipeline.stages.text_extraction import PDFExtractor
 def test_opt_in_layout_parser_preserves_existing_fixture_contracts():
     parser = ResumeParser()
 
-    resume_1 = parser.parse_with_layout_pipeline(Path("tests/fixtures/resume_1.pdf").read_bytes())
+    resume_1 = parser.parse_with_layout_pipeline(require_fixture("resume_1.pdf").read_bytes())
     assert [(item.designation, item.company, item.location, item.startDate, item.endDate, item.current) for item in resume_1.experience] == [
         ("Administrative Assistant", "Redford & Sons", "Boston, MA", "2018-09", None, True),
         ("Secretary", "Bright Spot LTD", "Boston, MA", "2015-06", "2018-08", False),
     ]
     assert resume_1.experience[0].designation == "Administrative Assistant"
 
-    resume_7 = parser.parse_with_layout_pipeline(Path("tests/fixtures/resume_7.pdf").read_bytes())
+    resume_7 = parser.parse_with_layout_pipeline(require_fixture("resume_7.pdf").read_bytes())
     assert (resume_7.experience[0].company, resume_7.experience[0].designation, resume_7.experience[0].location) == ("Luna Web Design", "Web Developer", "New York")
     assert (resume_7.experience[0].startDate, resume_7.experience[0].endDate) == ("2015-09", "2019-05")
     assert resume_7.experience[0].startDate == "2015-09"
@@ -33,13 +34,13 @@ def test_opt_in_layout_parser_preserves_existing_fixture_contracts():
 
 
 def test_resume_1_layout_parser_extracts_education_after_truncated_heading():
-    resume = ResumeParser().parse_with_layout_pipeline(Path("tests/fixtures/resume_1.pdf").read_bytes())
+    resume = ResumeParser().parse_with_layout_pipeline(require_fixture("resume_1.pdf").read_bytes())
 
     assert resume.education
 
 
 def test_resume_2_layout_parser_exposes_correct_semantic_inputs():
-    path = Path("tests/fixtures/resume_2.pdf")
+    path = require_fixture("resume_2.pdf")
     document = interpret_layout(reconstruct_document(document_from_text_blocks(PDFExtractor.extract(path.read_bytes()))))
     semantic = detect_region_aware_sections(document)
     sections = semantic_sections_to_text_blocks(semantic)

@@ -1,3 +1,4 @@
+from tests.conftest import require_fixture
 from pathlib import Path
 
 from app.pipeline.stages.text_extraction import PDFExtractor
@@ -8,7 +9,8 @@ FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 
 
 def load_fixture(name: str) -> bytes:
-    return (FIXTURES_DIR / name).read_bytes()
+    return require_fixture(name).read_bytes()
+
 
 
 def test_reading_order_single_column_preserves_order():

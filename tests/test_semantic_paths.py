@@ -1,3 +1,4 @@
+from tests.conftest import require_fixture
 from pathlib import Path
 
 from app.domain.document import BoundingBox, Document, Line, Page, Region, Span, TextStyle, document_from_text_blocks
@@ -112,7 +113,7 @@ def test_existing_alias_resource_recognizes_common_heading_variants():
 
 
 def test_real_resume_2_preserves_region_specific_section_paths():
-    raw = PDFExtractor.extract(Path("tests/fixtures/resume_2.pdf").read_bytes())
+    raw = PDFExtractor.extract(require_fixture("resume_2.pdf").read_bytes())
     document = interpret_layout(reconstruct_document(document_from_text_blocks(raw)))
     result = detect_region_aware_sections(document)
 
@@ -129,7 +130,7 @@ def test_real_resume_2_preserves_region_specific_section_paths():
 
 def test_real_fixtures_have_lossless_unique_semantic_paths():
     for filename in ("resume_1.pdf", "resume_2.pdf", "resume_7.pdf", "fresher_hr_resume.pdf"):
-        raw = PDFExtractor.extract(Path("tests/fixtures", filename).read_bytes())
+        raw = PDFExtractor.extract(require_fixture(filename).read_bytes())
         source = reconstruct_document(document_from_text_blocks(raw))
         result = detect_region_aware_sections(interpret_layout(source))
         source_ids = [span.span_id for page in source.pages for region in page.regions for line in region.lines for span in line.spans]
@@ -362,3 +363,211 @@ def test_ambiguous_unknown_heading_stays_unassigned_without_active_section():
         assert _texts(result, name) == []
     unassigned = {line.line_id for line in result.unassigned_lines}
     assert {"h", "a", "b"} <= unassigned
+
+
+def _prose(line_id: str, text: str, y0: float) -> Line:
+    return _styled_line(line_id, text, y0, font_size=10.0)
+
+
+def _header_then_body(header_lines: list[Line], body_lines: list[Line]) -> Document:
+    header_bbox = BoundingBox(
+        min(line.bbox.x0 for line in header_lines),
+        min(line.bbox.y0 for line in header_lines),
+        max(line.bbox.x1 for line in header_lines),
+        max(line.bbox.y1 for line in header_lines),
+    )
+    body_bbox = BoundingBox(
+        min(line.bbox.x0 for line in body_lines),
+        min(line.bbox.y0 for line in body_lines),
+        max(line.bbox.x1 for line in body_lines),
+        max(line.bbox.y1 for line in body_lines),
+    )
+    regions = [
+        Region("page-1-region-0", "header", header_bbox, header_lines, 0, None),
+        Region("page-1-region-1", "physical_region", body_bbox, body_lines, 1, None),
+    ]
+    return Document(pages=[Page(1, regions=regions)])
+
+
+def test_headingless_paragraph_before_education_may_be_summary():
+    document = _header_then_body(
+        [
+            _styled_line("n", "Jordan Blake", 10, font_size=18),
+            _styled_line("e", "jordan@example.com", 30),
+        ],
+        [
+            _prose("p1", "A motivated candidate with experience across operations and delivery of programs for several teams.", 70),
+            _prose("p2", "Eager to contribute to team outcomes while continuing to develop professional skills on the job.", 84),
+            _prose("p3", "Comfortable collaborating across functions in a fast-paced environment with shifting priorities.", 98),
+            _prose("p4", "Looking ahead to apply academic training while supporting day to day operational work.", 112),
+            _styled_line("d", "Bachelor of Science | State University", 180),
+            _styled_line("y", "2020-2024", 180, x0=450.0),
+        ],
+    )
+    result = detect_region_aware_sections(document)
+    summary = _texts(result, "SUMMARY")
+    assert "p1" in _ids(result, "SUMMARY")
+    assert any("motivated candidate" in text for text in summary)
+    assert any("Bachelor of Science" in text for text in _texts(result, "EDUCATION"))
+
+
+def test_short_headingless_prose_before_education_stays_unassigned():
+    document = _header_then_body(
+        [
+            _styled_line("n", "Jordan Blake", 10, font_size=18),
+            _styled_line("e", "jordan@example.com", 30),
+        ],
+        [
+            _prose("p1", "Here is a brief note about recent independent study work.", 70),
+            _prose("p2", "It continues onto a second line without more structure.", 84),
+            _styled_line("d", "Bachelor of Science | State University", 140),
+        ],
+    )
+    result = detect_region_aware_sections(document)
+    assert "p1" not in _ids(result, "SUMMARY")
+    assert "p2" not in _ids(result, "SUMMARY")
+    assert any("Bachelor of Science" in text for text in _texts(result, "EDUCATION"))
+
+
+def test_one_line_tagline_before_education_is_not_summary():
+    document = _header_then_body(
+        [
+            _styled_line("n", "Jordan Blake", 10, font_size=18),
+            _styled_line("e", "jordan@example.com", 30),
+        ],
+        [
+            _styled_line("t", "Seeking internships", 70, bold=True),
+            _styled_line("d", "Bachelor of Science | State University", 120),
+        ],
+    )
+    result = detect_region_aware_sections(document)
+    assert _texts(result, "SUMMARY") == []
+    assert "t" not in _ids(result, "SUMMARY")
+
+
+def test_skill_list_before_education_is_not_summary():
+    document = _header_then_body(
+        [
+            _styled_line("n", "Jordan Blake", 10, font_size=18),
+            _styled_line("e", "jordan@example.com", 30),
+        ],
+        [
+            _styled_line("h", "Skills", 70, font_size=13, bold=True),
+            _styled_line("b1", "•", 90),
+            _styled_line("s1", "Python", 90, x0=30.0),
+            _styled_line("b2", "•", 110),
+            _styled_line("s2", "SQL", 110, x0=30.0),
+            _styled_line("d", "Bachelor of Science | State University", 160),
+        ],
+    )
+    result = detect_region_aware_sections(document)
+    assert "Python" not in _texts(result, "SUMMARY")
+    assert "Python" in _texts(result, "SKILLS")
+
+
+def test_date_organization_stack_is_not_summary():
+    document = _header_then_body(
+        [
+            _styled_line("n", "Jordan Blake", 10, font_size=18),
+            _styled_line("e", "jordan@example.com", 30),
+        ],
+        [
+            _styled_line("h", "Experience", 70, font_size=13, bold=True),
+            _styled_line("d", "2019-2022", 90),
+            _styled_line("c", "Example Corp LLC", 110),
+            _styled_line("b", "• Delivered internal tools for operations teams.", 130),
+        ],
+    )
+    result = detect_region_aware_sections(document)
+    assert _texts(result, "SUMMARY") == []
+    assert "Example Corp LLC" in _texts(result, "EXPERIENCE")
+
+
+def test_degree_institution_at_body_start_is_education_not_summary():
+    document = _header_then_body(
+        [
+            _styled_line("n", "Jordan Blake", 10, font_size=18),
+            _styled_line("e", "jordan@example.com", 30),
+        ],
+        [
+            _styled_line("d", "Bachelor of Science | State University", 70),
+            _styled_line("y", "2020-2024", 70, x0=450.0),
+            _styled_line("b", "Completed coursework in statistics and writing.", 90),
+        ],
+    )
+    result = detect_region_aware_sections(document)
+    assert _texts(result, "SUMMARY") == []
+    assert "Bachelor of Science | State University" in _texts(result, "EDUCATION")
+
+
+def test_explicit_summary_heading_behavior_unchanged():
+    document = _single_column([
+        _styled_line("h", "SUMMARY", 10, font_size=14, bold=True),
+        _styled_line("p", "Platform engineer with production work since 2018.", 30),
+        _styled_line("q", "Seeking a senior role delivering reliable services.", 50),
+    ])
+    result = detect_region_aware_sections(document)
+    assert any("2018" in text for text in _texts(result, "SUMMARY"))
+    assert "h" not in _ids(result, "SUMMARY")
+
+
+def test_summary_heading_on_header_path_related_body_column_unchanged():
+    header = [
+        _styled_line("n", "Jordan Blake", 10, font_size=18),
+        _styled_line("e", "jordan@example.com", 30),
+        _styled_line("h", "SUMMARY", 50, font_size=14, bold=True),
+    ]
+    left = [
+        _prose("l1", "I am a results-driven engineer with several years of backend delivery experience.", 80),
+        _prose("l2", "I have a strong background in building services and deploying them to production.", 94),
+        _prose("l3", "I am adept at application interfaces, messaging, and cloud based rollout work.", 108),
+        _styled_line("sk", "SKILLS", 140, font_size=13, bold=True),
+        _styled_line("sv", "Java, SQL", 160),
+    ]
+    right = [
+        _styled_line("ph", "PROJECTS", 78, font_size=13, bold=True, x0=180.0),
+        _styled_line("pt", "Head End System", 100, x0=180.0),
+        _styled_line("pd", "Date : 02/2025 – present", 120, x0=180.0),
+    ]
+    document = Document(
+        pages=[
+            Page(
+                1,
+                regions=[
+                    Region("page-1-region-0", "header", BoundingBox(10, 10, 200, 64), header, 0, None),
+                    Region("page-1-region-1", "column", BoundingBox(10, 80, 250, 180), left, 1, 0),
+                    Region("page-1-region-2", "column", BoundingBox(180, 78, 500, 140), right, 2, 1),
+                ],
+            )
+        ]
+    )
+    result = detect_region_aware_sections(document)
+    summary = _texts(result, "SUMMARY")
+    assert any("results-driven engineer" in text for text in summary)
+    assert "Head End System" in _texts(result, "PROJECTS")
+    assert "Java, SQL" in _texts(result, "SKILLS")
+
+
+def test_explicit_profile_alias_on_resume_a_unchanged():
+    path = Path("tests/fixtures/AditCV_SOL.pdf")
+    if not path.exists():
+        return
+    document = interpret_layout(reconstruct_document(document_from_text_blocks(PDFExtractor.extract(path.read_bytes()))))
+    result = detect_region_aware_sections(document)
+    summary = _texts(result, "SUMMARY")
+    assert any("Results-oriented MBA graduate" in text for text in summary)
+    assert any("Seeking an opportunity" in text for text in summary)
+
+
+def test_headingless_profile_on_resume_b_is_summary_when_paragraph_evidence_holds():
+    path = Path("tests/fixtures/fresher_hr_resume.pdf")
+    if not path.exists():
+        return
+    document = interpret_layout(reconstruct_document(document_from_text_blocks(PDFExtractor.extract(path.read_bytes()))))
+    result = detect_region_aware_sections(document)
+    summary = _texts(result, "SUMMARY")
+    assert any("ambitious MBA student" in text for text in summary)
+    education = _texts(result, "EDUCATION")
+    assert any("School Of Open Learning" in text for text in education)
+    assert any("BIR Tikendrajit" in text for text in education)
+    assert "MS Excel (VLOOKUP, Pivot Tables, Filters)" in _texts(result, "SKILLS")

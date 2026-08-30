@@ -65,6 +65,33 @@ def _is_obvious_contact_sidebar_block(block) -> bool:
     return False
 
 
+def _experience_group_looks_complete(current: "CandidateGroup") -> bool:
+    """True when an EXPERIENCE group already has DATE plus post-date body evidence."""
+    seen_date = False
+    for existing in current.blocks:
+        if existing.label == "DATE":
+            seen_date = True
+            continue
+        if not seen_date:
+            continue
+        if existing.label in {"JOB_TITLE", "COMPANY", "LOCATION", "DATE"}:
+            continue
+        text = re.sub(
+            r"[\u200b\u200c\u200d]",
+            "",
+            (getattr(existing.original, "text", "") or ""),
+        ).strip()
+        if not text:
+            continue
+        if existing.label == "BULLET":
+            return True
+        if existing.label in {"DESCRIPTION", "UNKNOWN"} and (
+            len(text) > 3 or any(char.isalnum() for char in text)
+        ):
+            return True
+    return False
+
+
 def _is_strong_new_experience_job(current: Optional["CandidateGroup"], new_block, idx: int, cbs: list[ClassifiedBlock]) -> bool:
     if current is None:
         return False
@@ -86,11 +113,9 @@ def _is_strong_new_experience_job(current: Optional["CandidateGroup"], new_block
         # new experience split.
         return False
 
-    # This is intentionally narrow: only split on a short uppercase title-like
-    # block that is immediately followed by a company/date line after an
-    # existing experience group already has content. This preserves the
-    # conservative behavior for regular descriptions while handling the
-    # Resume 1 pattern: "SECRETARY" followed by "Bright Spot LTD, ...".
+    # Short title-shaped opener. Uppercase path preserves Resume-1 SECRETARY
+    # stacks; completed-entry path also allows mixed-case JOB_TITLE when the
+    # current group already has DATE + body and lookahead corroborates a job.
     if not text or len(text) > 40:
         return False
 
@@ -99,28 +124,39 @@ def _is_strong_new_experience_job(current: Optional["CandidateGroup"], new_block
         return False
     if any(ch.isdigit() for ch in text):
         return False
-    if not all(ch.isupper() or ch.isspace() or ch in "-&/" for ch in text):
-        return False
 
     lookahead = cbs[idx + 1 : idx + 4]
     if not lookahead:
         return False
 
-    if any(next_cb.label in {"COMPANY", "DATE", "LOCATION"} for next_cb in lookahead):
-        return True
-
+    has_meta_corroboration = any(
+        next_cb.label in {"COMPANY", "DATE", "LOCATION"} for next_cb in lookahead
+    )
     next_texts = [((getattr(next_cb.original, "text", "") or "").strip()) for next_cb in lookahead]
     if any(re.search(r"\b(?:inc|llc|ltd|corp|corporation|company|pvt|private)\b", t, re.I) for t in next_texts if t):
-        return True
+        has_meta_corroboration = True
 
-    if not any(x.label == "JOB_TITLE" for x in current.blocks):
+    uppercase = all(ch.isupper() or ch.isspace() or ch in "-&/" for ch in text)
+    if uppercase:
+        if has_meta_corroboration:
+            return True
+
+        if not any(x.label == "JOB_TITLE" for x in current.blocks):
+            return False
+
+        prev_block = current.blocks[-1].original
+        new_x0 = float(getattr(new_block.original, "x0", 0) or 0)
+        prev_x0 = float(getattr(prev_block, "x0", 0) or 0)
+        gap = _vertical_gap(prev_block, new_block.original)
+        return gap > 70 and abs(new_x0 - prev_x0) <= 60
+
+    # Mixed-case JOB_TITLE after a completed prior job: require local meta
+    # corroboration so ordinary body lines do not open a new group.
+    if new_block.label != "JOB_TITLE":
         return False
-
-    prev_block = current.blocks[-1].original
-    new_x0 = float(getattr(new_block.original, "x0", 0) or 0)
-    prev_x0 = float(getattr(prev_block, "x0", 0) or 0)
-    gap = _vertical_gap(prev_block, new_block.original)
-    return gap > 70 and abs(new_x0 - prev_x0) <= 60
+    if not _experience_group_looks_complete(current):
+        return False
+    return has_meta_corroboration
 
 
 def group_candidates(classified_blocks: Iterable[ClassifiedBlock], section: str) -> List[CandidateGroup]:

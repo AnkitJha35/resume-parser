@@ -1,3 +1,4 @@
+from tests.conftest import require_fixture
 from pathlib import Path
 
 from app.domain.document import BoundingBox, Document, Line, Page, Region, Span, TextStyle, document_from_text_blocks
@@ -361,7 +362,7 @@ def test_compat_adapter_excludes_heading_from_section_content():
 
 
 def test_resume_1_experience_invariant_unchanged():
-    resume = ResumeParser().parse_with_layout_pipeline(Path("tests/fixtures/resume_1.pdf").read_bytes())
+    resume = ResumeParser().parse_with_layout_pipeline(require_fixture("resume_1.pdf").read_bytes())
     assert [(item.designation, item.company, item.location, item.startDate, item.endDate, item.current) for item in resume.experience] == [
         ("Administrative Assistant", "Redford & Sons", "Boston, MA", "2018-09", None, True),
         ("Secretary", "Bright Spot LTD", "Boston, MA", "2015-06", "2018-08", False),
@@ -369,7 +370,7 @@ def test_resume_1_experience_invariant_unchanged():
 
 
 def test_resume_6_highlights_skills_invariant_unchanged():
-    resume = ResumeParser().parse_with_layout_pipeline(Path("tests/fixtures/resume_6.pdf").read_bytes())
+    resume = ResumeParser().parse_with_layout_pipeline(require_fixture("resume_6.pdf").read_bytes())
     assert {
         "Warehouse Equipment Operation",
         "Resourceful Problem Solver",
@@ -381,14 +382,14 @@ def test_resume_6_highlights_skills_invariant_unchanged():
 
 
 def test_resume_1_candidate_sections_keep_experience_alias():
-    raw = PDFExtractor.extract(Path("tests/fixtures/resume_1.pdf").read_bytes())
+    raw = PDFExtractor.extract(require_fixture("resume_1.pdf").read_bytes())
     document = interpret_layout(reconstruct_document(document_from_text_blocks(raw)))
     sections = build_candidate_sections(build_structural_blocks(document))
     assert any(section.semantic_label == "EXPERIENCE" and section.origin == SectionOrigin.KNOWN_ALIAS for section in sections)
 
 
 def test_resume_6_candidate_sections_infer_highlights():
-    raw = PDFExtractor.extract(Path("tests/fixtures/resume_6.pdf").read_bytes())
+    raw = PDFExtractor.extract(require_fixture("resume_6.pdf").read_bytes())
     document = interpret_layout(reconstruct_document(document_from_text_blocks(raw)))
     sections = build_candidate_sections(build_structural_blocks(document))
     highlights = [
@@ -732,7 +733,7 @@ def test_resume_2_page_two_date_stack_is_continued_experience():
 
     Production code must not key off this path id or employer string.
     """
-    raw = PDFExtractor.extract(Path("tests/fixtures/resume_2.pdf").read_bytes())
+    raw = PDFExtractor.extract(require_fixture("resume_2.pdf").read_bytes())
     document = interpret_layout(reconstruct_document(document_from_text_blocks(raw)))
     blocks = build_structural_blocks(document)
     sections = build_candidate_sections(blocks)

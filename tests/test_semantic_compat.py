@@ -1,3 +1,4 @@
+from tests.conftest import require_fixture
 from pathlib import Path
 
 from app.domain.document import BoundingBox, Document, Line, Page, Region, Span, TextStyle, document_from_text_blocks
@@ -94,7 +95,7 @@ def test_conversion_is_deterministic_and_preserves_all_source_lines():
 
 
 def test_resume_2_compatibility_representation_keeps_region_sections():
-    raw = PDFExtractor.extract(Path("tests/fixtures/resume_2.pdf").read_bytes())
+    raw = PDFExtractor.extract(require_fixture("resume_2.pdf").read_bytes())
     document = interpret_layout(reconstruct_document(document_from_text_blocks(raw)))
     semantic = detect_region_aware_sections(document)
     sections = semantic_sections_to_text_blocks(semantic)

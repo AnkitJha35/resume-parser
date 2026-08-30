@@ -1,3 +1,4 @@
+from tests.conftest import require_fixture
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -5,6 +6,7 @@ from app.extractors.experience import ExperienceExtractor
 from app.pipeline.stages.text_extraction import TextBlock
 from app.pipeline.stages.block_classification import ClassifiedBlock
 from app.pipeline.stages.candidate_grouping import CandidateGroup
+
 
 
 def _make_block(text: str) -> TextBlock:
@@ -255,7 +257,7 @@ def test_resume_1_experience_grouping_splits_two_jobs():
     from app.pipeline.stages.block_classification import classify_block
     from app.pipeline.stages.candidate_grouping import group_candidates
 
-    raw_pdf = PDFExtractor.extract(Path("tests/fixtures/resume_1.pdf").read_bytes())
+    raw_pdf = PDFExtractor.extract(require_fixture("resume_1.pdf").read_bytes())
     blocks = TextNormalizer.normalize_blocks(ReadingOrder.reorder(raw_pdf))
     sections = SectionDetector().detect(blocks)
     candidate_groups = group_candidates([classify_block(b) for b in sections["EXPERIENCE"]], "EXPERIENCE")
@@ -284,7 +286,7 @@ def test_resume_1_experience_extractor_parses_actual_group_headers():
     from app.pipeline.stages.block_classification import classify_block
     from app.pipeline.stages.candidate_grouping import group_candidates
 
-    raw_pdf = PDFExtractor.extract(Path("tests/fixtures/resume_1.pdf").read_bytes())
+    raw_pdf = PDFExtractor.extract(require_fixture("resume_1.pdf").read_bytes())
     blocks = TextNormalizer.normalize_blocks(ReadingOrder.reorder(raw_pdf))
     sections = SectionDetector().detect(blocks)
     groups = group_candidates([classify_block(b) for b in sections["EXPERIENCE"]], "EXPERIENCE")
@@ -321,7 +323,7 @@ def test_resume_1_experience_extractor_parses_actual_group_headers():
 def test_resume_7_experience_extractor_parses_combined_title_date_header():
     from app.pipeline.parser import ResumeParser
 
-    resume = ResumeParser().parse(Path("tests/fixtures/resume_7.pdf").read_bytes())
+    resume = ResumeParser().parse(require_fixture("resume_7.pdf").read_bytes())
     experience = resume.experience[0]
 
     assert experience.company == "Luna Web Design"
@@ -335,7 +337,7 @@ def test_resume_7_experience_extractor_parses_combined_title_date_header():
 def test_resume_2_experience_extractor_parses_parenthesized_date_range():
     from app.pipeline.parser import ResumeParser
 
-    resume = ResumeParser().parse_with_layout_pipeline(Path("tests/fixtures/resume_2.pdf").read_bytes())
+    resume = ResumeParser().parse_with_layout_pipeline(require_fixture("resume_2.pdf").read_bytes())
     experience = resume.experience[0]
 
     assert experience.startDate == "2019-09"
@@ -346,7 +348,7 @@ def test_resume_2_experience_extractor_parses_parenthesized_date_range():
 def test_resume_2_experience_extractor_splits_company_location_header():
     from app.pipeline.parser import ResumeParser
 
-    resume = ResumeParser().parse_with_layout_pipeline(Path("tests/fixtures/resume_2.pdf").read_bytes())
+    resume = ResumeParser().parse_with_layout_pipeline(require_fixture("resume_2.pdf").read_bytes())
     experience = resume.experience[0]
 
     assert experience.company == "REDFORD & SONS"
@@ -356,6 +358,6 @@ def test_resume_2_experience_extractor_splits_company_location_header():
 def test_resume_2_experience_description_removes_pdf_bullet_artifacts():
     from app.pipeline.parser import ResumeParser
 
-    resume = ResumeParser().parse_with_layout_pipeline(Path("tests/fixtures/resume_2.pdf").read_bytes())
+    resume = ResumeParser().parse_with_layout_pipeline(require_fixture("resume_2.pdf").read_bytes())
 
     assert all("\uf0a7" not in (experience.description or "") for experience in resume.experience)

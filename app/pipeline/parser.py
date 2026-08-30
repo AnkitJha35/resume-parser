@@ -7,6 +7,7 @@ from app.extractors.certifications import CertificationExtractor
 from app.extractors.contact import ContactExtractor
 from app.extractors.education import EducationExtractor
 from app.extractors.experience import ExperienceExtractor
+from app.extractors.languages import clean_language_blocks
 from app.extractors.projects import ProjectExtractor
 from app.extractors.skills import SkillsExtractor
 from app.pipeline.context import PipelineContext
@@ -98,7 +99,7 @@ class ResumeParser:
         context.partial_result["summary"] = summary_text or None
         context.partial_result["certifications"] = self.certification_extractor.extract(context.sections.get("CERTIFICATIONS", []) or [])
         context.partial_result["achievements"] = [block.text for block in context.sections.get("ACHIEVEMENTS", []) or []]
-        context.partial_result["languages"] = [block.text for block in context.sections.get("LANGUAGES", []) or []]
+        context.partial_result["languages"] = clean_language_blocks(context.sections.get("LANGUAGES", []) or [])
         context.partial_result["metadata"] = {
             "pageCount": context.pdf_detection.page_count,
             "ocrUsed": False,
@@ -159,7 +160,7 @@ class ResumeParser:
             "summary": " ".join(block.text.strip() for block in sections.get("SUMMARY", [])) or None,
             "certifications": self.certification_extractor.extract(sections.get("CERTIFICATIONS", [])),
             "achievements": [block.text for block in sections.get("ACHIEVEMENTS", [])],
-            "languages": [block.text for block in sections.get("LANGUAGES", [])],
+            "languages": clean_language_blocks(sections.get("LANGUAGES", [])),
             "metadata": {"pageCount": detection.page_count, "ocrUsed": False},
         }
         return validate_resume(partial_result)

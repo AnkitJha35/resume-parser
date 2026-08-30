@@ -1,3 +1,4 @@
+from tests.conftest import require_fixture
 from pathlib import Path
 
 import fitz
@@ -73,7 +74,7 @@ def test_resume_parser_rejects_invalid_pdf_bytes():
 def test_real_fixture_parser_contracts():
     parser = ResumeParser()
 
-    resume_1 = parser.parse(Path("tests/fixtures/resume_1.pdf").read_bytes())
+    resume_1 = parser.parse(require_fixture("resume_1.pdf").read_bytes())
     assert [(entry.designation, entry.company, entry.location, entry.startDate, entry.endDate, entry.current) for entry in resume_1.experience] == [
         ("Administrative Assistant", "Redford & Sons", "Boston, MA", "2018-09", None, True),
         ("Secretary", "Bright Spot LTD", "Boston, MA", "2015-06", "2018-08", False),
@@ -81,7 +82,7 @@ def test_real_fixture_parser_contracts():
     assert resume_1.certifications[0].name == "CERTIFICATION #1"
     assert resume_1.certifications[0].issuingOrganization == "University, Location"
 
-    resume_7 = parser.parse(Path("tests/fixtures/resume_7.pdf").read_bytes())
+    resume_7 = parser.parse(require_fixture("resume_7.pdf").read_bytes())
     assert (resume_7.experience[0].company, resume_7.experience[0].designation, resume_7.experience[0].location) == (
         "Luna Web Design", "Web Developer", "New York"
     )

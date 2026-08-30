@@ -15,6 +15,14 @@ PHONE_REGEX = re.compile(
     r"(\+?\d{1,3}[ \-/.]?)?(?:\(\d{2,4}\)|\d{2,4})[ \-/.]?\d{3,4}[ \-/.]?\d{3,4}"
 )
 LINKEDIN_REGEX = re.compile(r"(?:https?://)?(?:www\.)?linkedin\.com/[A-Za-z0-9_\-/]+", re.IGNORECASE)
+LINKEDIN_LABEL_HANDLE_REGEX = re.compile(
+    r"^\s*(?:linkedin(?:\s+profile)?|linked\s*in)\s*[:\-]\s*(?P<handle>.+?)\s*$",
+    re.IGNORECASE,
+)
+LINKEDIN_HANDLE_TOKEN_REGEX = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9_-]{0,98}[A-Za-z0-9])?$")
+_INVALID_LINKEDIN_HANDLES = frozenset(
+    {"n/a", "na", "none", "-", "--", "nil", "null", "tbd", "todo"}
+)
 GITHUB_REGEX = re.compile(r"https?://(?:www\.)?github\.com/[A-Za-z0-9_\-/]+", re.IGNORECASE)
 URL_REGEX = re.compile(r"https?://[^\s]+", re.IGNORECASE)
 LOCATION_PATTERN = re.compile(r"[A-Za-z ]+(?:,\s*[A-Za-z ]+)+")
@@ -78,7 +86,30 @@ class ContactExtractor:
             match = LINKEDIN_REGEX.search(normalized_line)
             if match:
                 return match.group(0).strip()
+            handle_url = ContactExtractor._linkedin_from_labeled_handle(normalized_line)
+            if handle_url:
+                return handle_url
         return None
+
+    @staticmethod
+    def _linkedin_from_labeled_handle(line: str) -> str | None:
+        """Accept labeled bare handles; never invent LinkedIn from unlabeled text."""
+        match = LINKEDIN_LABEL_HANDLE_REGEX.match(line or "")
+        if not match:
+            return None
+        handle = (match.group("handle") or "").strip().strip("/")
+        if not handle:
+            return None
+        lowered = handle.lower()
+        if lowered in _INVALID_LINKEDIN_HANDLES:
+            return None
+        if "@" in handle or "://" in handle or "/" in handle or "." in handle:
+            # Emails, foreign URLs, and path-like values are not bare handles.
+            # LinkedIn URLs are already handled by LINKEDIN_REGEX on the full line.
+            return None
+        if not LINKEDIN_HANDLE_TOKEN_REGEX.fullmatch(handle):
+            return None
+        return f"https://www.linkedin.com/in/{handle}"
 
     @staticmethod
     def _find_github(lines: list[str]) -> str | None:

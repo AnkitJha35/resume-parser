@@ -1,3 +1,4 @@
+from tests.conftest import require_fixture
 from pathlib import Path
 
 from app.domain.document import BoundingBox, Document, Line, Page, Region, Span, TextStyle, document_from_text_blocks
@@ -202,7 +203,7 @@ def test_provenance_survives_structural_block_creation():
 
 
 def test_resume_1_role_titles_are_entry_titles_not_section_headings():
-    raw = PDFExtractor.extract(Path("tests/fixtures/resume_1.pdf").read_bytes())
+    raw = PDFExtractor.extract(require_fixture("resume_1.pdf").read_bytes())
     document = interpret_layout(reconstruct_document(document_from_text_blocks(raw)))
     blocks = build_structural_blocks(document)
     titles = [
@@ -221,7 +222,7 @@ def test_resume_1_role_titles_are_entry_titles_not_section_headings():
 
 
 def test_resume_6_highlights_is_structural_section_heading():
-    raw = PDFExtractor.extract(Path("tests/fixtures/resume_6.pdf").read_bytes())
+    raw = PDFExtractor.extract(require_fixture("resume_6.pdf").read_bytes())
     document = interpret_layout(reconstruct_document(document_from_text_blocks(raw)))
     blocks = build_structural_blocks(document)
     highlights = [block for block in blocks if block.text.strip().upper() == "HIGHLIGHTS"]
@@ -230,7 +231,7 @@ def test_resume_6_highlights_is_structural_section_heading():
 
 
 def test_layout_parser_resume_1_experience_invariant_unchanged():
-    resume = ResumeParser().parse_with_layout_pipeline(Path("tests/fixtures/resume_1.pdf").read_bytes())
+    resume = ResumeParser().parse_with_layout_pipeline(require_fixture("resume_1.pdf").read_bytes())
     assert [(item.designation, item.company, item.location, item.startDate, item.endDate, item.current) for item in resume.experience] == [
         ("Administrative Assistant", "Redford & Sons", "Boston, MA", "2018-09", None, True),
         ("Secretary", "Bright Spot LTD", "Boston, MA", "2015-06", "2018-08", False),
@@ -238,7 +239,7 @@ def test_layout_parser_resume_1_experience_invariant_unchanged():
 
 
 def test_layout_parser_resume_6_highlights_skills_invariant_unchanged():
-    resume = ResumeParser().parse_with_layout_pipeline(Path("tests/fixtures/resume_6.pdf").read_bytes())
+    resume = ResumeParser().parse_with_layout_pipeline(require_fixture("resume_6.pdf").read_bytes())
     assert {
         "Warehouse Equipment Operation",
         "Resourceful Problem Solver",

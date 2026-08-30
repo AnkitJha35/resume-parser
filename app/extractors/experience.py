@@ -164,7 +164,13 @@ class ExperienceExtractor:
             desc_text = entry.get("description") or ""
             cleaned = self._clean_experience_description(desc_text)
             entry["description"] = cleaned
-            entry["skills"] = [skill["value"] for skill in self.skills_extractor.extract([TextBlock(text=cleaned, page_number=1, x0=0, y0=0, x1=0, y1=0)], section_name=None)]
+            entry["skills"] = [
+                skill["value"]
+                for skill in self.skills_extractor.extract(
+                    [TextBlock(text=cleaned, page_number=1, x0=0, y0=0, x1=0, y1=0)],
+                    mode="experience_description",
+                )
+            ]
             entry["confidence"] = self._confidence.section_extraction()
 
         return entries
@@ -286,10 +292,13 @@ class ExperienceExtractor:
             if entry.get("description"):
                 cleaned = self._clean_experience_description(entry.get("description", ""))
                 entry["description"] = cleaned
-                entry["skills"] = [skill["value"] for skill in self.skills_extractor.extract(
-                    [TextBlock(text=cleaned, page_number=1, x0=0, y0=0, x1=0, y1=0)],
-                    section_name=None
-                )]
+                entry["skills"] = [
+                    skill["value"]
+                    for skill in self.skills_extractor.extract(
+                        [TextBlock(text=cleaned, page_number=1, x0=0, y0=0, x1=0, y1=0)],
+                        mode="experience_description",
+                    )
+                ]
             else:
                 entry["skills"] = []
 

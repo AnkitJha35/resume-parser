@@ -1,3 +1,4 @@
+from tests.conftest import require_fixture
 from pathlib import Path
 
 from app.pipeline.stages.sections import SectionDetector
@@ -175,7 +176,7 @@ def test_section_detection_resume_1_objective_education_certification_boundaries
     from app.pipeline.stages.text_extraction import PDFExtractor
 
     blocks = TextNormalizer.normalize_blocks(
-        ReadingOrder.reorder(PDFExtractor.extract(Path("tests/fixtures/resume_1.pdf").read_bytes()))
+        ReadingOrder.reorder(PDFExtractor.extract(require_fixture("resume_1.pdf").read_bytes()))
     )
     sections = SectionDetector().detect(blocks)
 
@@ -205,7 +206,7 @@ def test_section_detection_resume_7_parallel_skill_column():
     from pathlib import Path
     from app.pipeline.stages.text_extraction import PDFExtractor
 
-    path = Path("tests/fixtures/resume_7.pdf")
+    path = require_fixture("resume_7.pdf")
     blocks = PDFExtractor.extract(path.read_bytes())
 
     detector = SectionDetector()

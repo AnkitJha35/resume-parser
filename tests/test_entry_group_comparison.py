@@ -1,3 +1,4 @@
+from tests.conftest import require_fixture
 from pathlib import Path
 
 from app.domain.candidate_entry import EntryType
@@ -447,12 +448,12 @@ def test_provenance_not_derived_from_first_block_only():
 
 
 def test_resume_1_parser_invariant_unchanged():
-    resume = ResumeParser().parse_with_layout_pipeline(Path("tests/fixtures/resume_1.pdf").read_bytes())
+    resume = ResumeParser().parse_with_layout_pipeline(require_fixture("resume_1.pdf").read_bytes())
     assert [(item.designation, item.company, item.location, item.startDate, item.endDate, item.current) for item in resume.experience] == [
         ("Administrative Assistant", "Redford & Sons", "Boston, MA", "2018-09", None, True),
         ("Secretary", "Bright Spot LTD", "Boston, MA", "2015-06", "2018-08", False),
     ]
-    raw = PDFExtractor.extract(Path("tests/fixtures/resume_1.pdf").read_bytes())
+    raw = PDFExtractor.extract(require_fixture("resume_1.pdf").read_bytes())
     document = interpret_layout(reconstruct_document(document_from_text_blocks(raw)))
     report = compare_document(document)
     assert report.entry_count >= 1
@@ -460,7 +461,7 @@ def test_resume_1_parser_invariant_unchanged():
 
 
 def test_resume_6_parser_skills_invariant_unchanged():
-    resume = ResumeParser().parse_with_layout_pipeline(Path("tests/fixtures/resume_6.pdf").read_bytes())
+    resume = ResumeParser().parse_with_layout_pipeline(require_fixture("resume_6.pdf").read_bytes())
     assert {
         "Warehouse Equipment Operation",
         "Resourceful Problem Solver",

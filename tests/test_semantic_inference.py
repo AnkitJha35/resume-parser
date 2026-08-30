@@ -200,7 +200,6 @@ def test_item_heading_with_employment_metadata_stays_in_active_section():
 
 
 def test_resume_6_highlights_are_inferred_as_skills():
-    from pathlib import Path
     from app.domain.document import document_from_text_blocks
     from app.pipeline.parser import ResumeParser
     from app.pipeline.stages.layout import interpret_layout
@@ -208,8 +207,9 @@ def test_resume_6_highlights_are_inferred_as_skills():
     from app.pipeline.stages.semantic_compat import semantic_sections_to_text_blocks
     from app.pipeline.stages.semantic_paths import detect_region_aware_sections
     from app.pipeline.stages.text_extraction import PDFExtractor
+    from tests.conftest import require_fixture
 
-    raw = (Path.home() / "Downloads" / "resume_6.pdf").read_bytes()
+    raw = require_fixture("resume_6.pdf").read_bytes()
     document = interpret_layout(reconstruct_document(document_from_text_blocks(PDFExtractor.extract(raw))))
     semantic = detect_region_aware_sections(document)
     skills = semantic_sections_to_text_blocks(semantic)["SKILLS"]

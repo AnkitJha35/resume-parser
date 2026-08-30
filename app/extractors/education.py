@@ -139,14 +139,18 @@ class EducationExtractor:
                 if lbl == "DEGREE" and entry["degree"] is None:
                     trailing_year = re.fullmatch(r"(?P<degree>.+?)\s*[-–—]\s*(?P<year>\d{4})", text)
                     if trailing_year:
-                        entry["degree"] = trailing_year.group("degree").strip()
+                        self._apply_degree_text(entry, trailing_year.group("degree").strip())
                         entry["startDate"] = trailing_year.group("year")
                         entry["_preserve_degree_text"] = True
                     else:
-                        entry["degree"] = text
+                        self._apply_degree_text(entry, text)
                     continue
                 if lbl == "INSTITUTION" and entry["institution"] is None:
-                    entry["institution"] = self._split_institution_location(text)[0]
+                    # Pipe lines may embed DEGREE (FIELD) | INSTITUTION in one block.
+                    if "|" in text and entry["degree"] is None and self._is_degree_line(text.split("|", 1)[0].strip()):
+                        self._apply_degree_text(entry, text)
+                    else:
+                        entry["institution"] = self._split_institution_location(text)[0]
                     continue
 
                 if entry["grade"] is None and self._looks_like_grade(text):
@@ -156,7 +160,7 @@ class EducationExtractor:
                 # Unknown label: use existing line heuristics
                 if lbl == "UNKNOWN":
                     if entry["degree"] is None and self._is_degree_line(text):
-                        entry["degree"] = text
+                        self._apply_degree_text(entry, text)
                         continue
                     if entry["institution"] is None and self._looks_like_institution(text):
                         entry["institution"] = text
@@ -169,10 +173,12 @@ class EducationExtractor:
                     if t and not self._contains_date_range(t):
                         # Try to split compact 'degree institution' lines
                         deg, inst, field = self._extract_degree_line(t)
-                        if inst is not None:
+                        if inst is not None or field is not None:
                             entry["degree"] = deg
-                            entry["institution"] = inst
-                            entry["fieldOfStudy"] = field
+                            if inst is not None:
+                                entry["institution"] = inst
+                            if field is not None:
+                                entry["fieldOfStudy"] = field
                         else:
                             entry["degree"] = t
                         break
@@ -188,9 +194,25 @@ class EducationExtractor:
                     if field and not entry.get("fieldOfStudy"):
                         entry["fieldOfStudy"] = field
 
+            # Peel parenthetical specialization from degree before normalization.
+            if entry["degree"] and not entry.get("fieldOfStudy"):
+                deg, _inst, field = self._extract_degree_line(entry["degree"])
+                if field:
+                    entry["degree"] = deg
+                    entry["fieldOfStudy"] = field
+
             results.append(self._build_entry(entry))
 
         return results
+
+    def _apply_degree_text(self, entry: dict[str, Any], text: str) -> None:
+        """Assign degree (+ optional field/institution) before canonicalization."""
+        deg, inst, field = self._extract_degree_line(text)
+        entry["degree"] = deg
+        if field and not entry.get("fieldOfStudy"):
+            entry["fieldOfStudy"] = field
+        if inst and not entry.get("institution"):
+            entry["institution"] = inst
 
     def _is_degree_line(self, text: str) -> bool:
         return bool(self._degree_pattern.match(text))
@@ -202,34 +224,64 @@ class EducationExtractor:
             institution = self._normalize_institution(institution_text)
         else:
             degree_text = text
-            # Heuristic: handle common compact formats like "M.C.A NIT Calicut" or
-            # "B.SC-IT Magadh University" where degree and institution appear
-            # on the same line separated by whitespace. Only split when the
-            # leading token looks like an acronym/degree (contains dots or
-            # hyphens) or is an all-caps short token to avoid false positives.
-            m = re.match(r"^(?P<deg>[A-Za-z0-9]+(?:[.\-][A-Za-z0-9]+)+)\s+(?P<inst>.+)$", text)
+
+        field_of_study = None
+        paren = re.fullmatch(
+            r"(?P<degree>.+?)\s*\((?P<field>[^)]+)\)\s*",
+            degree_text.strip(),
+        )
+        if paren and self._is_parenthetical_specialization(paren.group("field")):
+            degree_text = paren.group("degree").strip()
+            field_of_study = paren.group("field").strip()
+
+        # Compact degree+institution on one line (e.g. "M.C.A NIT Calicut").
+        # Do not treat a lone parenthetical remainder as an institution.
+        if institution is None and "|" not in text:
+            m = re.match(
+                r"^(?P<deg>[A-Za-z0-9]+(?:[.\-][A-Za-z0-9]+)+)\s+(?P<inst>.+)$",
+                degree_text,
+            )
             if not m:
-                # also match short all-caps tokens (e.g., "MCA NIT Calicut")
-                m2 = re.match(r"^(?P<deg>[A-Z]{2,6})\s+(?P<inst>.+)$", text)
-                if m2:
-                    m = m2
+                m = re.match(r"^(?P<deg>[A-Z]{2,6})\s+(?P<inst>.+)$", degree_text)
 
             if m:
                 inst_candidate = m.group("inst").strip()
-                # Avoid splitting when the remainder is a field-of-study like
-                # 'in Electronics' or starts with 'of ...', which should be
-                # interpreted as degree + field, not degree + institution.
-                if not re.match(r"^(in|of)\b", inst_candidate, re.I):
+                if re.fullmatch(r"\([^)]*\)", inst_candidate):
+                    pass
+                elif not re.match(r"^(in|of)\b", inst_candidate, re.I):
                     degree_text = m.group("deg").strip()
                     institution = self._normalize_institution(inst_candidate)
 
-        field_of_study = None
-        match = re.match(r"^(?P<degree>.+?)\s+in\s+(?P<field>.+)$", degree_text, re.I)
-        if match:
-            degree_text = match.group("degree").strip()
-            field_of_study = match.group("field").strip()
+        if field_of_study is None:
+            match = re.match(r"^(?P<degree>.+?)\s+in\s+(?P<field>.+)$", degree_text, re.I)
+            if match:
+                degree_text = match.group("degree").strip()
+                field_of_study = match.group("field").strip()
 
         return degree_text, institution, field_of_study
+
+    def _is_parenthetical_specialization(self, text: str) -> bool:
+        """True when parentheses look like a field/specialization, not honors/date/school."""
+        value = (text or "").strip()
+        if len(value) < 2 or not re.search(r"[A-Za-z]", value):
+            return False
+        if re.fullmatch(r"hons\.?|honou?rs\.?", value, re.IGNORECASE):
+            return False
+        if re.fullmatch(r"general", value, re.IGNORECASE):
+            return False
+        if re.search(r"\b(?:hons\.?|honou?rs)\b", value, re.IGNORECASE) and len(value.split()) <= 2:
+            return False
+        if re.fullmatch(r"[\d\s./\-–—]+", value):
+            return False
+        if re.search(r"\b(?:19|20)\d{2}\b", value) and re.search(r"[-–—/]", value):
+            return False
+        if re.fullmatch(r"(?:19|20)\d{2}", value):
+            return False
+        if self._contains_date_range(value):
+            return False
+        if self._looks_like_institution(value):
+            return False
+        return True
 
     def _contains_date_range(self, text: str) -> bool:
         return self._date_parser.parse(text) is not None

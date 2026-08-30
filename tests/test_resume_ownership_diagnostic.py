@@ -1,3 +1,4 @@
+from tests.conftest import require_fixture
 from pathlib import Path
 
 from app.domain.document import BoundingBox, Document, Line, Page, Region, Span, TextStyle, document_from_text_blocks
@@ -48,7 +49,7 @@ def _single_column(lines: list[Line], *, region_id: str = "page-1-region-0") -> 
 
 
 def _layout_pdf(name: str) -> Document:
-    raw = Path("tests/fixtures", name).read_bytes()
+    raw = require_fixture(name).read_bytes()
     return interpret_layout(reconstruct_document(document_from_text_blocks(PDFExtractor.extract(raw))))
 
 
@@ -207,7 +208,7 @@ def test_heading_plus_bullets_diagnostic():
 
 
 def test_resume_1_field_diagnostic_does_not_change_production():
-    production = ResumeParser().parse_with_layout_pipeline(Path("tests/fixtures/resume_1.pdf").read_bytes())
+    production = ResumeParser().parse_with_layout_pipeline(require_fixture("resume_1.pdf").read_bytes())
     assert [(item.designation, item.company) for item in production.experience] == [
         ("Administrative Assistant", "Redford & Sons"),
         ("Secretary", "Bright Spot LTD"),
@@ -223,7 +224,7 @@ def test_resume_1_field_diagnostic_does_not_change_production():
 
 
 def test_resume_6_field_diagnostic_does_not_change_production():
-    production = ResumeParser().parse_with_layout_pipeline(Path("tests/fixtures/resume_6.pdf").read_bytes())
+    production = ResumeParser().parse_with_layout_pipeline(require_fixture("resume_6.pdf").read_bytes())
     required = {
         "Warehouse Equipment Operation",
         "Resourceful Problem Solver",
@@ -244,7 +245,7 @@ def test_resume_2_diagnostic_documents_baseline_without_fixing():
     tests/test_education_extractor.py::test_extracts_parenthesized_date_from_resume_2_layout_path
     tests/test_layout_parser_integration.py::test_resume_2_layout_parser_exposes_correct_semantic_inputs
     """
-    production = ResumeParser().parse_with_layout_pipeline(Path("tests/fixtures/resume_2.pdf").read_bytes())
+    production = ResumeParser().parse_with_layout_pipeline(require_fixture("resume_2.pdf").read_bytes())
     diagnostic = diagnose_resume_ownership(_layout_pdf("resume_2.pdf"), page_count=production.metadata.get("pageCount"))
     assert diagnostic.current_resume.personal.name == production.personal.name
     # Baseline: production layout path loses contact fields; do not treat CandidateSection

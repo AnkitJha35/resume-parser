@@ -1,3 +1,4 @@
+from tests.conftest import require_fixture
 from pathlib import Path
 
 from app.pipeline.stages.pdf_detection import PDFDetector
@@ -7,7 +8,7 @@ FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 
 
 def load_fixture(name: str) -> bytes:
-    return (FIXTURES_DIR / name).read_bytes()
+    return require_fixture(name).read_bytes()
 
 
 def test_pdf_detection_single_column_has_text():

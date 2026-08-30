@@ -1,3 +1,4 @@
+from tests.conftest import require_fixture
 from pathlib import Path
 
 from app.domain.candidate_section import SectionOrigin
@@ -401,12 +402,12 @@ def test_extraction_input_stream_helper_does_not_require_parser_change():
 
 
 def test_resume_1_ownership_diagnostic_lock():
-    resume = ResumeParser().parse_with_layout_pipeline(Path("tests/fixtures/resume_1.pdf").read_bytes())
+    resume = ResumeParser().parse_with_layout_pipeline(require_fixture("resume_1.pdf").read_bytes())
     assert [(item.designation, item.company) for item in resume.experience] == [
         ("Administrative Assistant", "Redford & Sons"),
         ("Secretary", "Bright Spot LTD"),
     ]
-    raw = PDFExtractor.extract(Path("tests/fixtures/resume_1.pdf").read_bytes())
+    raw = PDFExtractor.extract(require_fixture("resume_1.pdf").read_bytes())
     document = interpret_layout(reconstruct_document(document_from_text_blocks(raw)))
     comparison = compare_semantic_ownership(document)
     assert comparison.line_records
@@ -416,7 +417,7 @@ def test_resume_1_ownership_diagnostic_lock():
 
 
 def test_resume_6_highlights_skills_diagnostic_lock():
-    resume = ResumeParser().parse_with_layout_pipeline(Path("tests/fixtures/resume_6.pdf").read_bytes())
+    resume = ResumeParser().parse_with_layout_pipeline(require_fixture("resume_6.pdf").read_bytes())
     assert {
         "Warehouse Equipment Operation",
         "Resourceful Problem Solver",
@@ -425,7 +426,7 @@ def test_resume_6_highlights_skills_diagnostic_lock():
         "Safety-Conscious",
         "Team Player",
     }.issubset(set(resume.skills))
-    raw = PDFExtractor.extract(Path("tests/fixtures/resume_6.pdf").read_bytes())
+    raw = PDFExtractor.extract(require_fixture("resume_6.pdf").read_bytes())
     document = interpret_layout(reconstruct_document(document_from_text_blocks(raw)))
     comparison = compare_semantic_ownership(document)
     sections = _cs(document)

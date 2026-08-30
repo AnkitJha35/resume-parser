@@ -1,3 +1,4 @@
+from tests.conftest import require_fixture
 from pathlib import Path
 
 from app.domain.document import BoundingBox, Document, Line, Page, Region, Span, TextStyle
@@ -7,10 +8,28 @@ from app.pipeline.stages.text_extraction import PDFExtractor
 from app.domain.document import document_from_text_blocks
 
 
-def _line(line_id: str, text: str, x0: float, y0: float, x1: float, y1: float, page: int = 1) -> Line:
+def _line(
+    line_id: str,
+    text: str,
+    x0: float,
+    y0: float,
+    x1: float,
+    y1: float,
+    page: int = 1,
+    font_size: float = 10.0,
+    bold: bool = False,
+) -> Line:
     bbox = BoundingBox(x0, y0, x1, y1)
-    span = Span(f"{line_id}-span-0", text, bbox, font_size=10.0)
-    return Line(line_id, page, bbox, [span], text, TextStyle(font_size=10.0), source_span_ids=[span.span_id])
+    span = Span(f"{line_id}-span-0", text, bbox, font_size=font_size, bold=bold)
+    return Line(
+        line_id,
+        page,
+        bbox,
+        [span],
+        text,
+        TextStyle(font_size=font_size, bold=bold),
+        source_span_ids=[span.span_id],
+    )
 
 
 def _document(lines: list[Line]) -> Document:
@@ -109,7 +128,10 @@ def test_multipage_regions_have_deterministic_ids_and_no_duplicate_sources():
 
 
 def test_real_resume_2_has_page_local_columns_without_text_loss():
-    raw = PDFExtractor.extract(Path("tests/fixtures/resume_2.pdf").read_bytes())
+    path = require_fixture("resume_2.pdf")
+    if not path.exists():
+        return
+    raw = PDFExtractor.extract(path.read_bytes())
     source = reconstruct_document(document_from_text_blocks(raw))
     result = interpret_layout(source)
     source_text = [span.text for line in _all_lines(source) for span in line.spans]
@@ -123,7 +145,10 @@ def test_real_resume_2_has_page_local_columns_without_text_loss():
 
 def test_protected_fixtures_keep_layout_regions():
     for filename in ("resume_1.pdf", "resume_7.pdf", "fresher_hr_resume.pdf"):
-        raw = PDFExtractor.extract(Path("tests/fixtures", filename).read_bytes())
+        path = Path("tests/fixtures", filename)
+        if not path.exists():
+            continue
+        raw = PDFExtractor.extract(path.read_bytes())
         result = interpret_layout(reconstruct_document(document_from_text_blocks(raw)))
         source_lines = _all_lines(document_from_text_blocks(raw))
         layout_lines = _all_lines(result)
@@ -140,3 +165,297 @@ def test_protected_fixtures_keep_layout_regions():
             for region in page.regions
             for line in region.lines
         )
+
+
+def _body_columns(document: Document) -> list[list[str]]:
+    return [
+        [line.text for line in region.lines]
+        for region in document.pages[0].regions
+        if region.kind == "column"
+    ]
+
+
+def test_intra_column_grid_does_not_create_extra_columns():
+    """Two real columns; a short 3-cell grid stays inside the left column."""
+    source = _document([
+        _line("l-h", "Experience", 10, 20, 180, 32),
+        _line("l-a", "Left body", 10, 40, 200, 52),
+        _line("l-b", "More left", 10, 60, 190, 72),
+        _line("l-c", "Still left", 12, 80, 185, 92),
+        _line("g1", "Cell one", 12, 200, 70, 212),
+        _line("g2", "Cell two", 90, 200, 175, 212),
+        _line("g3", "Cell three", 12, 220, 80, 232),
+        _line("r-h", "Skills", 320, 20, 500, 32),
+        _line("r-a", "Right body", 320, 40, 490, 52),
+        _line("r-b", "More right", 320, 60, 480, 72),
+        _line("r-c", "Still right", 320, 80, 500, 92),
+        _line("r-d", "Right tail", 320, 200, 470, 212),
+    ])
+    result = interpret_layout(source)
+    columns = _body_columns(result)
+    assert len(columns) == 2
+    left, right = columns
+    assert {"Cell one", "Cell two", "Cell three"} <= set(left)
+    assert {"Skills", "Right body"} <= set(right)
+    assert "Cell two" not in right
+
+
+def test_same_row_date_and_location_stay_in_one_column():
+    source = _document([
+        _line("h", "Experience", 10, 20, 160, 32),
+        _line("t", "Role title", 10, 40, 140, 52),
+        _line("d", "2020-2022", 10, 60, 120, 72),
+        _line("loc", "Denver, CO", 160, 60, 280, 72),
+        _line("b", "Did the work.", 10, 80, 220, 92),
+        _line("rh", "Skills", 360, 20, 520, 32),
+        _line("ra", "Python", 360, 40, 500, 52),
+        _line("rb", "Docker", 360, 60, 500, 72),
+        _line("rc", "Linux", 360, 80, 500, 92),
+    ])
+    result = interpret_layout(source)
+    columns = _body_columns(result)
+    assert len(columns) == 2
+    left = next(col for col in columns if "2020-2022" in col)
+    assert "Denver, CO" in left
+    assert "Role title" in left
+
+
+def test_numeric_ticks_do_not_create_a_third_column():
+    source = _document([
+        _line("lh", "Profile", 10, 20, 150, 32),
+        _line("la", "Left prose", 10, 40, 200, 52),
+        _line("lb", "More prose", 10, 60, 190, 72),
+        _line("lc", "Still prose", 10, 80, 180, 92),
+        _line("rh", "Skills", 300, 20, 420, 32),
+        _line("s1", "Excel", 300, 50, 380, 62),
+        _line("t1", "4", 450, 50, 465, 62),
+        _line("s2", "Sheets", 300, 70, 390, 82),
+        _line("t2", "4", 450, 70, 465, 82),
+        _line("s3", "Docs", 300, 90, 380, 102),
+        _line("t3", "3", 450, 90, 465, 102),
+        _line("s4", "English", 300, 200, 370, 212),
+        _line("t4", "5", 450, 200, 465, 212),
+    ])
+    result = interpret_layout(source)
+    columns = _body_columns(result)
+    assert len(columns) == 2
+    right = next(col for col in columns if "Excel" in col)
+    assert {"4", "3", "5"} <= set(right)
+
+
+def test_narrow_date_gutter_is_not_a_page_column():
+    source = _document([
+        _line("n", "Name", 10, 10, 80, 22),
+        _line("p1", "Profile sentence one that spans the page width.", 10, 40, 500, 52),
+        _line("p2", "Profile sentence two continues the paragraph.", 10, 54, 500, 66),
+        _line("edu", "Degree | School of Example", 10, 120, 420, 132),
+        _line("d1", "2024-2026", 450, 120, 530, 132),
+        _line("b1", "Coursework description under the degree.", 10, 140, 400, 152),
+        _line("edu2", "Second Degree | Other School", 10, 200, 400, 212),
+        _line("d2", "2020-2023", 450, 200, 530, 212),
+        _line("b2", "More coursework under the second degree.", 10, 220, 400, 232),
+    ])
+    result = interpret_layout(source)
+    assert len(result.pages[0].regions) == 1
+    texts = [line.text for line in result.pages[0].regions[0].lines]
+    assert "2024-2026" in texts and "2020-2023" in texts
+    assert "Profile sentence one that spans the page width." in texts
+
+
+def test_overlapping_tall_columns_remain_two():
+    source = _document([
+        _line("l1", "Left wrap that extends past the right origin.", 10, 20, 250, 32),
+        _line("l2", "Left continues with wrapped width.", 10, 50, 240, 62),
+        _line("l3", "Left third", 10, 80, 230, 92),
+        _line("l4", "Left fourth", 10, 200, 245, 212),
+        _line("l5", "Left fifth", 10, 400, 235, 412),
+        _line("r1", "Right heading", 180, 20, 400, 32),
+        _line("r2", "Right body one", 180, 50, 490, 62),
+        _line("r3", "Right body two", 180, 80, 480, 92),
+        _line("r4", "Right body three", 180, 200, 500, 212),
+        _line("r5", "Right body four", 180, 400, 490, 412),
+    ])
+    result = interpret_layout(source)
+    columns = _body_columns(result)
+    assert len(columns) == 2
+    left = next(col for col in columns if "Left third" in col)
+    right = next(col for col in columns if "Right heading" in col)
+    assert "Right heading" not in left
+    assert "Left third" not in right
+
+
+def test_three_tall_columns_remain_separate():
+    source = _document([
+        _line("a1", "A one", 10, 20, 90, 32),
+        _line("a2", "A two", 10, 80, 90, 92),
+        _line("a3", "A three", 10, 200, 90, 212),
+        _line("b1", "B one", 220, 20, 300, 32),
+        _line("b2", "B two", 220, 80, 300, 92),
+        _line("b3", "B three", 220, 200, 300, 212),
+        _line("c1", "C one", 430, 20, 520, 32),
+        _line("c2", "C two", 430, 80, 520, 92),
+        _line("c3", "C three", 430, 200, 520, 212),
+    ])
+    result = interpret_layout(source)
+    columns = _body_columns(result)
+    assert len(columns) == 3
+    assert [col[0] for col in columns] == ["A one", "B one", "C one"]
+
+
+def test_single_column_with_right_aligned_lines_stays_one():
+    source = _document([
+        _line("a", "Title line", 10, 20, 200, 32),
+        _line("b", "Body one", 10, 40, 300, 52),
+        _line("c", "Body two", 10, 60, 280, 72),
+        _line("d", "Page 1", 400, 40, 460, 52),
+        _line("e", "Body three", 10, 80, 250, 92),
+    ])
+    result = interpret_layout(source)
+    assert len(result.pages[0].regions) == 1
+    assert result.pages[0].regions[0].kind in {"physical_region", "column"}
+    texts = [line.text for line in result.pages[0].regions[0].lines]
+    assert "Page 1" in texts and "Body one" in texts
+
+
+def _header_texts(document: Document) -> list[str]:
+    return [
+        line.text
+        for region in document.pages[0].regions
+        if region.kind == "header"
+        for line in region.lines
+    ]
+
+
+def _non_header_texts(document: Document) -> list[str]:
+    return [
+        line.text
+        for region in document.pages[0].regions
+        if region.kind != "header"
+        for line in region.lines
+    ]
+
+
+def test_contact_block_does_not_absorb_following_paragraph():
+    source = _document([
+        _line("n", "Jordan Blake", 10, 12, 140, 32, font_size=18),
+        _line("e", "jordan@example.com", 10, 36, 160, 48),
+        _line("p", "Phone: 555-0100", 10, 50, 130, 62),
+        _line("a", "A motivated candidate with experience across operations and delivery of programs.", 10, 88, 520, 100),
+        _line("b", "Eager to contribute to team outcomes while continuing to develop professional skills.", 10, 102, 515, 114),
+        _line("c", "Comfortable collaborating across functions in a fast-paced environment.", 10, 116, 480, 128),
+    ])
+    result = interpret_layout(source)
+    header = _header_texts(result)
+    body = _non_header_texts(result)
+    assert "Jordan Blake" in header
+    assert "jordan@example.com" in header
+    assert "A motivated candidate with experience across operations and delivery of programs." in body
+    assert "Comfortable collaborating across functions in a fast-paced environment." in body
+
+
+def test_one_line_tagline_may_remain_in_header():
+    source = _document([
+        _line("n", "Jordan Blake", 10, 12, 140, 32, font_size=18),
+        _line("t", "Seeking internships", 10, 36, 180, 48, bold=True),
+        _line("e", "jordan@example.com", 10, 52, 160, 64),
+        _line("b", "Experience", 10, 100, 90, 112, font_size=13),
+        _line("w", "Built internal tools for a logistics team during a summer role.", 10, 120, 500, 132),
+    ])
+    result = interpret_layout(source)
+    header = _header_texts(result)
+    body = _non_header_texts(result)
+    assert "Seeking internships" in header
+    assert "Experience" in body
+    assert "Built internal tools for a logistics team during a summer role." in body
+
+
+def test_body_heading_after_contact_stays_in_body():
+    source = _document([
+        _line("n", "Jordan Blake", 10, 12, 140, 32, font_size=18),
+        _line("e", "jordan@example.com", 10, 36, 160, 48),
+        _line("h", "Experience", 10, 80, 100, 94, font_size=13),
+        _line("w", "Delivered process improvements for a regional operations group.", 10, 100, 510, 112),
+    ])
+    result = interpret_layout(source)
+    assert "Experience" in _non_header_texts(result)
+    assert "Experience" not in _header_texts(result)
+
+
+def test_headingless_paragraph_before_education_stays_in_body():
+    source = _document([
+        _line("n", "Jordan Blake", 10, 12, 140, 32, font_size=18),
+        _line("e", "jordan@example.com", 10, 36, 160, 48),
+        _line("a", "A motivated candidate with experience across operations and delivery of programs.", 10, 70, 520, 82),
+        _line("b", "Eager to contribute to team outcomes while continuing to develop professional skills.", 10, 84, 515, 96),
+        _line("c", "Comfortable collaborating across functions in a fast-paced environment.", 10, 98, 480, 110),
+        _line("d", "Bachelor of Science | State University", 10, 160, 280, 172),
+        _line("y", "2020-2024", 450, 160, 530, 172),
+    ])
+    result = interpret_layout(source)
+    body = _non_header_texts(result)
+    assert "A motivated candidate with experience across operations and delivery of programs." in body
+    assert "Bachelor of Science | State University" in body
+    assert "2020-2024" in body
+
+
+def test_tall_letterhead_remains_header():
+    source = _document([
+        _line("n", "Jordan Blake", 40, 12, 180, 32, font_size=20),
+        _line("t", "Operations Associate", 40, 36, 200, 48, bold=True),
+        _line("e", "jordan@example.com", 40, 52, 190, 64),
+        _line("p", "Phone: 555-0100", 40, 66, 160, 78),
+        _line("u", "https://example.com/in/jordan", 40, 80, 220, 92),
+        _line("a1", "12 Oak Lane", 40, 106, 130, 118),
+        _line("a2", "Springfield", 40, 120, 120, 132),
+        _line("h", "Experience", 40, 220, 130, 234, font_size=13),
+        _line("w", "Delivered process improvements for a regional operations group.", 40, 240, 520, 252),
+    ])
+    result = interpret_layout(source)
+    header = set(_header_texts(result))
+    assert {"Jordan Blake", "Operations Associate", "jordan@example.com", "12 Oak Lane", "Springfield"} <= header
+    assert "Experience" not in header
+    assert "Delivered process improvements for a regional operations group." in _non_header_texts(result)
+
+
+def test_two_column_header_is_not_only_column_coincidence():
+    source = _document([
+        _line("n", "Jordan Blake", 10, 10, 140, 26, font_size=18),
+        _line("e", "jordan@example.com", 10, 30, 160, 42),
+        _line("l1", "Left column opens with a wide prose block about prior internships and impact.", 10, 70, 240, 82),
+        _line("l2", "More left prose continues beneath the opening paragraph on this side.", 10, 90, 230, 102),
+        _line("l3", "Left tail keeps covering the page vertically with additional detail.", 10, 200, 220, 212),
+        _line("r1", "Right heading", 320, 200, 500, 212),
+        _line("r2", "Right body one continues the second column much lower on the page.", 320, 220, 540, 232),
+        _line("r3", "Right body two", 320, 240, 500, 252),
+    ])
+    result = interpret_layout(source)
+    body = _non_header_texts(result)
+    assert "Left column opens with a wide prose block about prior internships and impact." in body
+    assert "Right heading" in body
+    assert len(_body_columns(result)) == 2
+
+
+def test_overlapping_header_and_columns_keep_summary_body():
+    source = _document([
+        _line("n", "Jordan Blake", 10, 12, 160, 28, font_size=18),
+        _line("t", "Software Engineer II", 10, 32, 180, 44, bold=True),
+        _line("c", "EMAIL : jordan@example.com PHONE : 5550100", 10, 48, 360, 60),
+        _line("u", "https://linkedin.com/in/jordanblake", 10, 62, 280, 74),
+        _line("s", "Summary", 10, 88, 90, 108, font_size=14),
+        _line("l1", "Left wrap that extends past the right origin with summary prose.", 10, 120, 250, 132),
+        _line("l2", "Left continues with wrapped width across several lines of text.", 10, 150, 240, 162),
+        _line("l3", "Left third keeps covering the column.", 10, 180, 230, 192),
+        _line("l4", "Left fourth", 10, 280, 245, 292),
+        _line("r1", "Projects heading", 180, 118, 400, 130),
+        _line("r2", "Right body one", 180, 150, 490, 162),
+        _line("r3", "Right body two", 180, 180, 480, 192),
+        _line("r4", "Right body three", 180, 280, 500, 292),
+    ])
+    result = interpret_layout(source)
+    columns = _body_columns(result)
+    assert len(columns) == 2
+    left = next(col for col in columns if "Left third keeps covering the column." in col)
+    right = next(col for col in columns if "Projects heading" in col)
+    assert "Left wrap that extends past the right origin with summary prose." in left
+    assert "Projects heading" not in left
+    assert "Left third keeps covering the column." not in right

@@ -1,3 +1,4 @@
+from tests.conftest import require_fixture
 from pathlib import Path
 
 from app.extractors.education import EducationExtractor
@@ -80,7 +81,7 @@ def test_extracts_fresher_hr_resume_education_entries():
 def test_extracts_resume_7_trailing_year_from_degree():
     from app.pipeline.parser import ResumeParser
 
-    resume = ResumeParser().parse(Path("tests/fixtures/resume_7.pdf").read_bytes())
+    resume = ResumeParser().parse(require_fixture("resume_7.pdf").read_bytes())
     education = resume.education[0]
 
     assert education.degree == "Bachelor of Science: Computer Information Systems"
@@ -92,7 +93,7 @@ def test_extracts_resume_7_trailing_year_from_degree():
 def test_extracts_parenthesized_date_from_resume_2_layout_path():
     from app.pipeline.parser import ResumeParser
 
-    resume = ResumeParser().parse_with_layout_pipeline(Path("tests/fixtures/resume_2.pdf").read_bytes())
+    resume = ResumeParser().parse_with_layout_pipeline(require_fixture("resume_2.pdf").read_bytes())
     education = resume.education[0]
 
     assert education.degree == "Bachelor Of Arts in History,"

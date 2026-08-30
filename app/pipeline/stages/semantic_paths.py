@@ -72,6 +72,11 @@ def detect_region_aware_sections(
     """Detect sections independently inside each physical path."""
     detector = section_detector or SectionDetector()
     paths = build_semantic_paths(document)
+    region_kind_by_id = {
+        region.region_id: region.kind
+        for page in document.pages
+        for region in page.regions
+    }
     result = SemanticDocument(paths=paths)
     previous_paths: list[tuple[SemanticPath, str]] = []
 
@@ -92,6 +97,13 @@ def detect_region_aware_sections(
                 current_section = None
             section_lines: dict[str, list[Line]] = {}
             index = 0
+            region_kind = region_kind_by_id.get(path.region_id)
+            lead_end = _leading_headingless_summary_end(
+                path.lines, detector, region_kind, current_section
+            )
+            if lead_end:
+                section_lines.setdefault("SUMMARY", []).extend(path.lines[:lead_end])
+                index = lead_end
             while index < len(path.lines):
                 line = path.lines[index]
                 matched_section = detector._find_section_header(line.text)
@@ -108,6 +120,11 @@ def detect_region_aware_sections(
                     if inference.section != "UNKNOWN":
                         section_lines.setdefault(inference.section, []).extend(content)
                         current_section = inference.section
+                    elif _is_skills_like_unknown_section(line, content):
+                        # Narrow bypass of UNKNOWN+active keep: skills token in
+                        # the heading plus short chip/grid content evidence.
+                        section_lines.setdefault("SKILLS", []).extend(content)
+                        current_section = "SKILLS"
                     elif current_section is not None:
                         # False unknown heading inside an active section: keep
                         # ownership. Do not drop the title line or the span.
@@ -162,6 +179,138 @@ def detect_region_aware_sections(
     ]
 
     return result
+
+
+_BODY_REGION_KINDS = frozenset({"column", "physical_region"})
+_MIN_HEADINGLESS_SUMMARY_LINES = 3
+_MIN_HEADINGLESS_SUMMARY_WORDS = 30
+_MIN_PROSE_LINE_WORDS = 8
+
+
+def _leading_headingless_summary_end(
+    lines: list[Line],
+    detector: SectionDetector,
+    region_kind: str | None,
+    current_section: str | None,
+) -> int | None:
+    """Return exclusive end index of a leading body paragraph, or None.
+
+    Ownership is structural: a wrapped multi-line prose run at the start of a
+    body path, before a later section opener. Does not call infer_section.
+    """
+    if current_section is not None or region_kind not in _BODY_REGION_KINDS or not lines:
+        return None
+    if detector._find_section_header(lines[0].text) is not None:
+        return None
+
+    end = 0
+    while end < len(lines) and _is_paragraph_prose_line(lines[end], detector):
+        if end > 0 and not _is_paragraph_continuation(lines[end - 1], lines[end]):
+            break
+        end += 1
+    if end < _MIN_HEADINGLESS_SUMMARY_LINES:
+        return None
+    word_count = sum(len((line.text or "").split()) for line in lines[:end])
+    if word_count < _MIN_HEADINGLESS_SUMMARY_WORDS:
+        return None
+    if end >= len(lines) or not _is_strong_section_opener(lines[end], detector):
+        return None
+    return end
+
+
+def _is_paragraph_prose_line(line: Line, detector: SectionDetector) -> bool:
+    text = (line.text or "").strip()
+    words = text.split()
+    if len(words) < _MIN_PROSE_LINE_WORDS:
+        return False
+    if _is_list_marker(text):
+        return False
+    if detector._find_section_header(text) is not None:
+        return False
+    if detector._looks_like_education_header(text):
+        return False
+    if DateRangeParser.parse(text) is not None:
+        return False
+    return True
+
+
+def _is_paragraph_continuation(previous: Line, current: Line) -> bool:
+    same_indent = abs(previous.bbox.x0 - current.bbox.x0) <= max(
+        previous.bbox.y1 - previous.bbox.y0,
+        current.bbox.y1 - current.bbox.y0,
+        8.0,
+    )
+    gap = current.bbox.y0 - previous.bbox.y1
+    line_height = max(
+        previous.bbox.y1 - previous.bbox.y0,
+        current.bbox.y1 - current.bbox.y0,
+        1.0,
+    )
+    close_vertical = gap <= line_height * 1.75
+    same_size = abs((previous.style.font_size or 0.0) - (current.style.font_size or 0.0)) <= 1.5
+    return same_indent and close_vertical and same_size
+
+
+def _is_strong_section_opener(line: Line, detector: SectionDetector) -> bool:
+    text = (line.text or "").strip()
+    if detector._find_section_header(text) is not None:
+        return True
+    if detector._looks_like_education_header(text):
+        return True
+    if DateRangeParser.parse(text) is not None:
+        return True
+    return False
+
+
+_SKILLS_HEADING_TOKENS = frozenset({"skill", "skills"})
+_MAX_SKILL_CHIP_WORDS = 4
+_MAX_SKILL_CHIP_WORDS_HARD = 6
+_MIN_SKILL_CHIP_ITEMS = 2
+_EDU_OR_JOB_CONTENT_RE = re.compile(
+    r"\b(?:bachelor|master|mba|phd|b\.?s\.?|m\.?s\.?|university|college|"
+    r"school|institute|academy|degree|inc|llc|ltd|corp|company)\b",
+    re.IGNORECASE,
+)
+_YEAR_TOKEN_RE = re.compile(r"\b(?:19|20)\d{2}\b")
+
+
+def _heading_has_skills_signal(text: str) -> bool:
+    """True when a normalized heading contains a skills token (skill/skills)."""
+    tokens = set(re.findall(r"[a-z]+", (text or "").lower()))
+    return bool(tokens & _SKILLS_HEADING_TOKENS)
+
+
+def _content_looks_like_skill_list(content: list[Line]) -> bool:
+    """True for short chip/grid spans without education/experience structure."""
+    texts = [
+        (line.text or "").strip()
+        for line in content
+        if (line.text or "").strip() and not _is_list_marker(line.text)
+    ]
+    if len(texts) < _MIN_SKILL_CHIP_ITEMS:
+        return False
+    if any(DateRangeParser.parse(text) is not None for text in texts):
+        return False
+    if any(_YEAR_TOKEN_RE.search(text) for text in texts):
+        return False
+    if any(_EDU_OR_JOB_CONTENT_RE.search(text) for text in texts):
+        return False
+    word_counts = [len(text.split()) for text in texts]
+    avg_words = sum(word_counts) / len(word_counts)
+    if avg_words > _MAX_SKILL_CHIP_WORDS:
+        return False
+    if any(count > _MAX_SKILL_CHIP_WORDS_HARD for count in word_counts):
+        return False
+    # Reject prose paragraphs mistaken for chips.
+    if any(len(text) > 60 or (text.endswith(".") and len(text.split()) > 8) for text in texts):
+        return False
+    short_items = sum(1 for count in word_counts if 1 <= count <= _MAX_SKILL_CHIP_WORDS)
+    return short_items >= _MIN_SKILL_CHIP_ITEMS
+
+
+def _is_skills_like_unknown_section(heading: Line, content: list[Line]) -> bool:
+    """Open SKILLS only when heading and following content both evidence skills."""
+    return _heading_has_skills_signal(heading.text) and _content_looks_like_skill_list(content)
 
 
 def _is_unknown_heading_line(
