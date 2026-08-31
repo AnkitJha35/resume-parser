@@ -26,8 +26,8 @@
   "rest": "REST",
   "graphql": "GraphQL",
   "html": "HTML",
-  "css": "CSS"
-  ,
+  "css": "CSS",
+  "mvc": "MVC",
   "mysql": "MySQL",
   "mongodb": "MongoDB",
   "mongo db": "MongoDB",

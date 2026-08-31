@@ -212,20 +212,15 @@ def test_shubham_has_exactly_three_experience_entries(shubham_resume):
 def test_shubham_chips_surface_in_skills(shubham_resume):
     """Canonical values, because SkillsExtractor emits canonicals not raw text.
 
-    ``skills.json`` maps ``react -> React`` and ``aws -> AWS``; ``\\breact\\b``
-    matches inside the raw chip "React JS".
+    ``skills.json`` maps ``react -> React``, ``aws -> AWS``, and ``mvc -> MVC``;
+    ``\\breact\\b`` matches inside the raw chip "React JS".
     """
     assert "React" in shubham_resume.skills
     assert "AWS" in shubham_resume.skills
+    assert "MVC" in shubham_resume.skills
 
 
-def test_mvc_is_blocked_on_skills_vocabulary_not_on_layout():
-    """MVC reaches the SKILLS *section* but has no alias in skills.json.
-
-    Characterized, not fixed: adding ``"mvc": "MVC"`` to the shared vocabulary
-    also changes SemanticResources / section inference, which is an
-    architecture-authority decision and out of scope for Phase 7B-4.
-    """
+def test_mvc_surfaces_in_skills_vocabulary():
     from app.extractors.skills import SkillsExtractor
 
-    assert "mvc" not in SkillsExtractor().skills
+    assert "mvc" in SkillsExtractor().skills

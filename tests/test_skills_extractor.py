@@ -89,3 +89,8 @@ def test_skills_extractor_matches_typing_spanish_and_quickbooks_aliases():
     skills = SkillsExtractor().extract(blocks, section_name="SKILLS")
 
     assert {item["value"] for item in skills} == {"Typing", "Spanish", "QuickBooks"}
+
+
+def test_skills_extractor_recognizes_mvc():
+    skills = SkillsExtractor().extract([_make_block("MVC")], section_name="SKILLS")
+    assert [item["value"] for item in skills] == ["MVC"]
