@@ -118,8 +118,12 @@ def detect_region_aware_sections(
                         UnknownSectionCandidate(heading=line, content=list(content), inference=inference)
                     )
                     if inference.section != "UNKNOWN":
-                        section_lines.setdefault(inference.section, []).extend(content)
-                        current_section = inference.section
+                        if inference.section == current_section:
+                            section_lines.setdefault(current_section, []).append(line)
+                            section_lines.setdefault(current_section, []).extend(content)
+                        else:
+                            section_lines.setdefault(inference.section, []).extend(content)
+                            current_section = inference.section
                     elif _is_skills_like_unknown_section(line, content):
                         # Narrow bypass of UNKNOWN+active keep: skills token in
                         # the heading plus short chip/grid content evidence.

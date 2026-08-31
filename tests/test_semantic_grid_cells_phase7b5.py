@@ -116,7 +116,82 @@ def test_genuine_heading_on_new_visual_row_remains_eligible():
     assert _is_unknown_heading_line(unknown_hdr, lines, 2, detector, current_section="EXPERIENCE") is True
 
 
-def test_shubham_mvc_ownership_and_no_regression():
+def test_same_section_inferred_heading_retained_in_active_skills():
+    detector = SectionDetector()
+    heading_line = _make_line("h1", "SKILLS", 10.0, 50.0, 100.0, 62.0, font_size=14.0, bold=True)
+    c1 = _make_line("c1", "Python", 10.0, 70.0, 60.0, 80.0)
+    c2 = _make_line("c2", "Django", 10.0, 85.0, 60.0, 95.0)
+    # SQL / MYSQL on a new row inside SKILLS
+    sql_line = _make_line("sql", "SQL / MYSQL", 10.0, 105.0, 80.0, 115.0)
+    c3 = _make_line("c3", "MongoDB", 90.0, 105.0, 140.0, 115.0)
+    c4 = _make_line("c4", "Git", 10.0, 125.0, 30.0, 135.0)
+
+    lines = [heading_line, c1, c2, sql_line, c3, c4]
+    doc = Document(
+        pages=[
+            Page(
+                1,
+                regions=[
+                    Region(
+                        region_id="reg-1",
+                        kind="column",
+                        bbox=BoundingBox(10.0, 50.0, 300.0, 150.0),
+                        lines=lines,
+                    )
+                ],
+            )
+        ]
+    )
+
+    sem_doc = detect_region_aware_sections(doc, detector)
+    skills_lines = [l.text for sec in sem_doc.sections.get("SKILLS", []) for l in sec.lines]
+
+    assert "SQL / MYSQL" in skills_lines
+    assert "MongoDB" in skills_lines
+    assert "Git" in skills_lines
+    assert not any(l.text == "SQL / MYSQL" for l in sem_doc.unassigned_lines)
+
+
+def test_cross_section_inferred_heading_remains_consumed():
+    detector = SectionDetector()
+    heading_line = _make_line("h1", "EXPERIENCE", 10.0, 50.0, 100.0, 62.0, font_size=14.0, bold=True)
+    job = _make_line("j1", "Software Engineer", 10.0, 70.0, 150.0, 80.0)
+    comp = _make_line("c1", "Acme Corp LLC", 10.0, 85.0, 120.0, 95.0)
+    # Cross-section transition heading: CORE SKILLS
+    skills_hdr = _make_line("sk_hdr", "CORE SKILLS", 10.0, 110.0, 100.0, 122.0, font_size=12.0, bold=True)
+    s1 = _make_line("s1", "Python", 10.0, 130.0, 60.0, 140.0)
+    s2 = _make_line("s2", "Django", 10.0, 145.0, 60.0, 155.0)
+
+    lines = [heading_line, job, comp, skills_hdr, s1, s2]
+    doc = Document(
+        pages=[
+            Page(
+                1,
+                regions=[
+                    Region(
+                        region_id="reg-1",
+                        kind="column",
+                        bbox=BoundingBox(10.0, 50.0, 300.0, 170.0),
+                        lines=lines,
+                    )
+                ],
+            )
+        ]
+    )
+
+    sem_doc = detect_region_aware_sections(doc, detector)
+    exp_lines = [l.text for sec in sem_doc.sections.get("EXPERIENCE", []) for l in sec.lines]
+    skills_lines = [l.text for sec in sem_doc.sections.get("SKILLS", []) for l in sec.lines]
+
+    # Inferred heading CORE SKILLS is consumed as section transition
+    assert "Software Engineer" in exp_lines
+    assert "Python" in skills_lines
+    assert "Django" in skills_lines
+    assert "CORE SKILLS" not in skills_lines
+    assert "CORE SKILLS" not in exp_lines
+
+
+def test_shubham_mvc_and_sql_mysql_ownership_and_no_regression():
     fixture_path = _shubham_fixture()
     raw = fixture_path.read_bytes()
     layout_doc = interpret_layout(
@@ -128,21 +203,37 @@ def test_shubham_mvc_ownership_and_no_regression():
     experience_texts = [line.text for sec in sem_doc.sections.get("EXPERIENCE", []) for line in sec.lines]
     unassigned_texts = [line.text for line in sem_doc.unassigned_lines]
 
-    # 1. MVC is owned by SKILLS
+    # 1. MVC and SQL / MYSQL are owned by SKILLS
     assert "MVC" in skills_texts, f"'MVC' must be in SKILLS, got: {skills_texts}"
+    assert "SQL / MYSQL" in skills_texts, f"'SQL / MYSQL' must be in SKILLS, got: {skills_texts}"
 
-    # 2. MVC is not UNASSIGNED
+    # 2. Neither is UNASSIGNED
     assert "MVC" not in unassigned_texts, f"'MVC' must not be unassigned"
+    assert "SQL / MYSQL" not in unassigned_texts, f"'SQL / MYSQL' must not be unassigned"
 
-    # 3. MVC is not owned by EXPERIENCE
+    # 3. Neither is owned by EXPERIENCE
     assert "MVC" not in experience_texts, f"'MVC' must not be in EXPERIENCE"
+    assert "SQL / MYSQL" not in experience_texts, f"'SQL / MYSQL' must not be in EXPERIENCE"
 
-    # 4. React JS, AWS must not regress
-    for chip in ("React JS", "AWS", "Android Development", "Problem Solving", "MongoDB", "Git"):
+    # 4. React JS, AWS, and all skills chips remain owned by SKILLS
+    for chip in (
+        "Python",
+        "Django",
+        "Java",
+        "Spring Boot",
+        "React JS",
+        "React Native",
+        "Microservices",
+        "JavaScript",
+        "AWS",
+        "Android Development",
+        "Problem Solving",
+        "MVC",
+        "SQL / MYSQL",
+        "MongoDB",
+        "Agile Methodology",
+        "Git",
+    ):
         assert chip in skills_texts, f"{chip!r} must be in SKILLS"
         assert chip not in experience_texts, f"{chip!r} must not be in EXPERIENCE"
-
-    # SQL / MYSQL remains unassigned pending separate heading retention fix (Phase 7B-6/7)
-    # and must not regress into EXPERIENCE
-    assert "SQL / MYSQL" not in experience_texts
 
