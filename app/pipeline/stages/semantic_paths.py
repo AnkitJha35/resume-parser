@@ -337,6 +337,8 @@ def _is_unknown_heading_line(
         return False
     if index > 0 and _is_wrapped_content_line(lines[index - 1], line):
         return False
+    if index > 0 and _is_same_visual_row(lines[index - 1], line):
+        return False
     if not is_unknown_heading(line.text, line.style.font_size, line.style.bold):
         return False
     if current_section and _looks_like_item_heading(line, lines, index, current_section):
@@ -388,6 +390,10 @@ def _is_wrapped_content_line(previous: Line, current: Line) -> bool:
     previous_continues = not previous_text.endswith((".", "!", "?", ":", ";"))
     current_continues = current_text[:1].islower() or len(previous_text.split()) >= 5
     return same_style and same_indent and close_vertical and previous_continues and current_continues
+
+
+def _is_same_visual_row(previous: Line, current: Line) -> bool:
+    return abs(previous.bbox.y0 - current.bbox.y0) <= 1.0
 
 
 _ITEM_ROLE_WORDS = {

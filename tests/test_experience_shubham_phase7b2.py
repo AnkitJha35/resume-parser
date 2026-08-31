@@ -208,26 +208,23 @@ def test_shubham_locations_are_not_prose(shubham_experience):
         assert len(location.split()) <= 4
 
 
-# --- Known remaining defect: Phase 7B-3 ------------------------------------
+# --- Fixed in Phase 7B-4 ----------------------------------------------------
 
 
-def test_bogus_fourth_experience_group_is_a_known_remaining_defect(shubham_experience):
-    """React JS / AWS / MVC is a skills grid wrongly owned by EXPERIENCE.
+def test_no_bogus_fourth_experience_group(shubham_experience):
+    """React JS / AWS / MVC is a skills grid that EXPERIENCE used to own.
 
-    This is an upstream layout / semantic-ownership problem and is explicitly
-    out of scope for Phase 7B-2. The assertion records the defect so that
-    Phase 7B-3 has a failing-to-passing signal to work against; it must not be
-    "fixed" here by special-casing the extractor.
+    Phase 7B-2 characterized this as a known upstream defect (a bogus 4th
+    entry). Phase 7B-3 localized it to ``layout``: embedded-column parents were
+    ranked by width, so the chip cluster was awarded to the wider left column
+    instead of the right column that fully contains it. Phase 7B-4 fixed the
+    ranking, so the 4th group is gone.
     """
     designations = [entry.designation for entry in shubham_experience]
-    assert designations[:3] == [
+    assert designations == [
         "Software Engineer -II",
         "Software Engineer",
         "Software Engineer Intern",
     ]
-    assert len(shubham_experience) == 4, (
-        "expected the known bogus 4th group to still be present; "
-        f"got designations={designations}"
-    )
-    assert shubham_experience[3].designation == "React JS"
-    assert shubham_experience[3].startDate is None
+    for chip in ("React JS", "AWS", "MVC"):
+        assert chip not in designations

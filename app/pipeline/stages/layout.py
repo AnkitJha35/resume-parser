@@ -118,13 +118,17 @@ def _merge_embedded_column_groups(groups: list[list[Line]]) -> list[list[Line]]:
         embed_index = None
         parent_index = None
         for index, cluster in enumerate(merged):
-            parent = _widest_containing_sibling(index, bounds)
-            if parent is None:
-                continue
-            if not _is_embedded_subcolumn(cluster, merged[parent], bounds[index], bounds[parent]):
+            # Candidates are ranked containment-first, so a marginally wider
+            # sibling that does not overlap cannot out-rank one that actually
+            # contains the cluster. Try each in turn: a rejected first choice
+            # must not orphan a cluster a later candidate would accept.
+            for parent in _containing_sibling_candidates(index, bounds):
+                if _is_embedded_subcolumn(cluster, merged[parent], bounds[index], bounds[parent]):
+                    parent_index = parent
+                    break
+            if parent_index is None:
                 continue
             embed_index = index
-            parent_index = parent
             break
         if embed_index is None or parent_index is None:
             break
@@ -136,17 +140,31 @@ def _merge_embedded_column_groups(groups: list[list[Line]]) -> list[list[Line]]:
 
 
 def _widest_containing_sibling(index: int, bounds: list[BoundingBox]) -> int | None:
+    """Best-ranked sibling eligible to adopt ``bounds[index]``, or None."""
+    candidates = _containing_sibling_candidates(index, bounds)
+    return candidates[0] if candidates else None
+
+
+def _containing_sibling_candidates(index: int, bounds: list[BoundingBox]) -> list[int]:
+    """Sibling indices eligible to adopt ``bounds[index]``, best candidate first.
+
+    Ranked by horizontal containment, then by width. Width alone is not a proxy
+    for ownership: a wider sibling with no horizontal overlap is a different page
+    column, not a parent. Admission gates below are unchanged -- only the
+    ordering, and the fact that all admitted candidates are returned rather than
+    just one, is new.
+    """
     cluster = bounds[index]
     cluster_width = max(cluster.x1 - cluster.x0, 1.0)
-    best: tuple[float, int] | None = None
+    ranked: list[tuple[float, float, int]] = []
     for sibling_index, sibling in enumerate(bounds):
         if sibling_index == index:
             continue
         sibling_width = max(sibling.x1 - sibling.x0, 1.0)
         if sibling_width <= cluster_width:
             continue
-        overlap = _horizontal_overlap(cluster, sibling)
-        if overlap / cluster_width < _EMBEDDED_OVERLAP:
+        overlap_ratio = _horizontal_overlap(cluster, sibling) / cluster_width
+        if overlap_ratio < _EMBEDDED_OVERLAP:
             indented = sibling.x0 - 4.0 <= cluster.x0 <= sibling.x1
             gutter = cluster.x0 - sibling.x1
             tick_gutter = 0.0 <= gutter <= max(48.0, sibling_width * 0.25)
@@ -159,9 +177,9 @@ def _widest_containing_sibling(index: int, bounds: list[BoundingBox]) -> int | N
                 continue
         if cluster.x0 + _INDEPENDENT_LEFT_SLACK < sibling.x0:
             continue
-        if best is None or sibling_width > best[0]:
-            best = (sibling_width, sibling_index)
-    return None if best is None else best[1]
+        ranked.append((overlap_ratio, sibling_width, sibling_index))
+    ranked.sort(key=lambda item: (-item[0], -item[1], item[2]))
+    return [item[2] for item in ranked]
 
 
 def _is_embedded_subcolumn(
