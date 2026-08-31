@@ -8,6 +8,7 @@ from app.pipeline.stages.candidate_grouping import CandidateGroup
 
 from app.pipeline.stages.confidence import ConfidenceScorer
 from app.extractors.date_parser import DateRangeParser
+from app.pipeline.stages.normalization import TextNormalizer
 
 RESOURCE_DIR = Path(__file__).resolve().parents[1] / "resources"
 DEGREES_PATH = RESOURCE_DIR / "degrees.json"
@@ -42,7 +43,7 @@ class EducationExtractor:
         current_entry: dict[str, Any] | None = None
 
         for line in lines:
-            normalized = line.strip()
+            normalized = TextNormalizer.normalize_text(line).strip()
             if not normalized:
                 continue
 
@@ -127,14 +128,16 @@ class EducationExtractor:
                 if not text:
                     continue
 
+                normalized_text = TextNormalizer.normalize_text(text)
+
                 # Date
-                date_range = self._date_parser.parse(text)
+                date_range = self._date_parser.parse(normalized_text)
                 if date_range and entry["startDate"] is None:
                     entry["startDate"] = date_range.startDate
                     entry["endDate"] = date_range.endDate or "Present"
                     continue
 
-                single_date = self._parse_parenthesized_date(text)
+                single_date = self._parse_parenthesized_date(normalized_text)
                 if single_date and entry["startDate"] is None:
                     entry["startDate"] = single_date
                     continue
@@ -297,10 +300,11 @@ class EducationExtractor:
         return True
 
     def _contains_date_range(self, text: str) -> bool:
-        return self._date_parser.parse(text) is not None
+        return self._date_parser.parse(TextNormalizer.normalize_text(text)) is not None
 
     def _parse_parenthesized_date(self, text: str) -> str | None:
-        match = re.fullmatch(r"\(\s*(?P<date>[A-Za-z]+\s+\d{4}|\d{4})\s*\)", text)
+        normalized = TextNormalizer.normalize_text(text)
+        match = re.fullmatch(r"\(\s*(?P<date>[A-Za-z]+\s+\d{4}|\d{4})\s*\)", normalized)
         if not match:
             return None
         return DateRangeParser._parse_date_token(match.group("date"))

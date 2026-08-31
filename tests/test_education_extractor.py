@@ -243,6 +243,57 @@ def test_education_institution_fallback_does_not_capture_date_or_grade_as_instit
     assert entries[0]["grade"] == "Graduated with First Class"
 
 
+def test_education_date_normalization_handles_icon_glyphs():
+    from types import SimpleNamespace
+    from app.pipeline.stages.block_classification import ClassifiedBlock
+    from app.pipeline.stages.candidate_grouping import CandidateGroup
+
+    # 1. Date line with leading icon/control glyph \x11
+    g1 = CandidateGroup(
+        section="EDUCATION",
+        blocks=[
+            ClassifiedBlock(original=SimpleNamespace(text="Bachelor of Technology in Computer Science and Engineering"), label="DEGREE", score=1.0, reasons=[]),
+            ClassifiedBlock(original=SimpleNamespace(text="VIT, Chennai"), label="UNKNOWN", score=0.0, reasons=[]),
+            ClassifiedBlock(original=SimpleNamespace(text="\x11 July 2018 – July 2022"), label="DATE", score=1.0, reasons=[]),
+            ClassifiedBlock(original=SimpleNamespace(text="CGPA:8.43"), label="UNKNOWN", score=0.0, reasons=[]),
+        ],
+        page_number=1,
+        column_id=0,
+        start_index=0,
+        end_index=3,
+        summary_text="",
+    )
+
+    extractor = EducationExtractor()
+    entries = extractor.extract(groups=[g1])
+    assert len(entries) == 1
+    assert entries[0]["startDate"] == "2018-07"
+    assert entries[0]["endDate"] == "2022-07"
+
+    # Also test line-oriented path
+    lines_entries = extractor.extract([
+        "Bachelor of Technology in Computer Science and Engineering",
+        "VIT, Chennai",
+        "\x11 July 2018 – July 2022",
+        "CGPA:8.43",
+    ])
+    assert len(lines_entries) == 1
+    assert lines_entries[0]["startDate"] == "2018-07"
+    assert lines_entries[0]["endDate"] == "2022-07"
+
+
+def test_education_date_ordinary_date_remains_correct():
+    extractor = EducationExtractor()
+    entries = extractor.extract([
+        "Bachelor of Science in Physics",
+        "State University",
+        "July 2018 – July 2022",
+    ])
+    assert len(entries) == 1
+    assert entries[0]["startDate"] == "2018-07"
+    assert entries[0]["endDate"] == "2022-07"
+
+
 def test_shubham_production_education_institution_extracted():
     import glob
     from app.pipeline.parser import ResumeParser
@@ -259,3 +310,5 @@ def test_shubham_production_education_institution_extracted():
     assert edu.fieldOfStudy == "Computer Science and Engineering"
     assert edu.institution == "VIT, Chennai"
     assert edu.grade == "CGPA:8.43"
+    assert edu.startDate == "2018-07"
+    assert edu.endDate == "2022-07"
