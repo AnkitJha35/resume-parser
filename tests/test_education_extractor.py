@@ -154,3 +154,108 @@ def test_extracts_from_candidate_groups():
     assert entries[0]["startDate"] == "2019-07"
     assert entries[1]["institution"] in ("B.SC-IT Magadh University", "Magadh University", None)
     assert entries[1]["startDate"] == "2015-07"
+
+
+def test_education_institution_fallback_for_acronym_and_location():
+    from types import SimpleNamespace
+    from app.pipeline.stages.block_classification import ClassifiedBlock
+    from app.pipeline.stages.candidate_grouping import CandidateGroup
+
+    # 1. VIT, Chennai inside candidate group
+    g1 = CandidateGroup(
+        section="EDUCATION",
+        blocks=[
+            ClassifiedBlock(original=SimpleNamespace(text="B.Tech in Computer Science and Engineering"), label="DEGREE", score=1.0, reasons=[]),
+            ClassifiedBlock(original=SimpleNamespace(text="VIT, Chennai"), label="UNKNOWN", score=0.0, reasons=[]),
+            ClassifiedBlock(original=SimpleNamespace(text="July 2018 – July 2022"), label="DATE", score=1.0, reasons=[]),
+            ClassifiedBlock(original=SimpleNamespace(text="CGPA:8.43"), label="UNKNOWN", score=0.0, reasons=[]),
+        ],
+        page_number=1,
+        column_id=0,
+        start_index=0,
+        end_index=3,
+        summary_text="",
+    )
+
+    extractor = EducationExtractor()
+    entries = extractor.extract(groups=[g1])
+    assert len(entries) == 1
+    assert entries[0]["degree"] == "Bachelor of Technology"
+    assert entries[0]["fieldOfStudy"] == "Computer Science and Engineering"
+    assert entries[0]["institution"] == "VIT, Chennai"
+    assert entries[0]["grade"] == "CGPA:8.43"
+
+
+def test_education_institution_fallback_for_generic_synthetic_case():
+    from types import SimpleNamespace
+    from app.pipeline.stages.block_classification import ClassifiedBlock
+    from app.pipeline.stages.candidate_grouping import CandidateGroup
+
+    # 2. BITS, Pilani inside candidate group
+    g2 = CandidateGroup(
+        section="EDUCATION",
+        blocks=[
+            ClassifiedBlock(original=SimpleNamespace(text="Master of Science in Mathematics"), label="DEGREE", score=1.0, reasons=[]),
+            ClassifiedBlock(original=SimpleNamespace(text="BITS, Pilani"), label="UNKNOWN", score=0.0, reasons=[]),
+            ClassifiedBlock(original=SimpleNamespace(text="2016 – 2020"), label="DATE", score=1.0, reasons=[]),
+            ClassifiedBlock(original=SimpleNamespace(text="GPA: 9.1/10"), label="UNKNOWN", score=0.0, reasons=[]),
+        ],
+        page_number=1,
+        column_id=0,
+        start_index=0,
+        end_index=3,
+        summary_text="",
+    )
+
+    extractor = EducationExtractor()
+    entries = extractor.extract(groups=[g2])
+    assert len(entries) == 1
+    assert entries[0]["degree"] == "Master of Science"
+    assert entries[0]["fieldOfStudy"] == "Mathematics"
+    assert entries[0]["institution"] == "BITS, Pilani"
+    assert entries[0]["grade"] == "GPA: 9.1/10"
+
+
+def test_education_institution_fallback_does_not_capture_date_or_grade_as_institution():
+    from types import SimpleNamespace
+    from app.pipeline.stages.block_classification import ClassifiedBlock
+    from app.pipeline.stages.candidate_grouping import CandidateGroup
+
+    # Group with only degree, date, grade — institution must remain None
+    g3 = CandidateGroup(
+        section="EDUCATION",
+        blocks=[
+            ClassifiedBlock(original=SimpleNamespace(text="Bachelor of Science in Physics"), label="DEGREE", score=1.0, reasons=[]),
+            ClassifiedBlock(original=SimpleNamespace(text="2015 – 2019"), label="DATE", score=1.0, reasons=[]),
+            ClassifiedBlock(original=SimpleNamespace(text="Graduated with First Class"), label="UNKNOWN", score=0.0, reasons=[]),
+        ],
+        page_number=1,
+        column_id=0,
+        start_index=0,
+        end_index=2,
+        summary_text="",
+    )
+
+    extractor = EducationExtractor()
+    entries = extractor.extract(groups=[g3])
+    assert len(entries) == 1
+    assert entries[0]["institution"] is None
+    assert entries[0]["grade"] == "Graduated with First Class"
+
+
+def test_shubham_production_education_institution_extracted():
+    import glob
+    from app.pipeline.parser import ResumeParser
+
+    matches = sorted(glob.glob("tests/fixtures/*Shubham*.pdf"))
+    if not matches:
+        return
+    raw = Path(matches[0]).read_bytes()
+    resume = ResumeParser().parse_with_layout_pipeline(raw)
+
+    assert len(resume.education) == 1
+    edu = resume.education[0]
+    assert edu.degree == "Bachelor of Technology"
+    assert edu.fieldOfStudy == "Computer Science and Engineering"
+    assert edu.institution == "VIT, Chennai"
+    assert edu.grade == "CGPA:8.43"

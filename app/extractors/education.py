@@ -87,6 +87,10 @@ class EducationExtractor:
                 current_entry["fieldOfStudy"] = normalized
                 continue
 
+            if current_entry["institution"] is None and self._is_fallback_institution_candidate(normalized, current_entry):
+                current_entry["institution"] = self._normalize_institution(normalized)
+                continue
+
         if current_entry:
             education_entries.append(self._build_entry(current_entry))
 
@@ -201,6 +205,15 @@ class EducationExtractor:
                     entry["degree"] = deg
                     entry["fieldOfStudy"] = field
 
+            # Fallback: if institution is still None in candidate group, check
+            # remaining unconsumed blocks for an institution/location line.
+            if entry["institution"] is None:
+                for cb in group.blocks:
+                    t = (cb.original.text or "").strip()
+                    if self._is_fallback_institution_candidate(t, entry):
+                        entry["institution"] = self._normalize_institution(t)
+                        break
+
             results.append(self._build_entry(entry))
 
         return results
@@ -313,6 +326,31 @@ class EducationExtractor:
 
     def _looks_like_field_of_study(self, text: str) -> bool:
         return bool(re.search(r"\b(computer science|information technology|electronics|mechanical|civil|business administration|commerce|finance|mathematics|physics|data science|machine learning)\b", text, re.I))
+
+    def _is_fallback_institution_candidate(self, text: str, entry: dict[str, Any]) -> bool:
+        value = text.strip()
+        if not value or len(value.split()) > 8 or len(value) > 60:
+            return False
+        if self._contains_date_range(value) or self._parse_parenthesized_date(value):
+            return False
+        if self._looks_like_grade(value) or self._is_degree_line(value):
+            return False
+        if self._looks_like_field_of_study(value):
+            return False
+        if value.startswith(("•", "-", "*", "\u2022", "\u25e6")):
+            return False
+        if "@" in value or "http://" in value or "https://" in value:
+            return False
+        raw_degree = entry.get("degree") or ""
+        if raw_degree and (value.lower() == raw_degree.lower() or value.lower() in raw_degree.lower()):
+            return False
+        if entry.get("grade") and value.lower() == entry["grade"].lower():
+            return False
+        if entry.get("fieldOfStudy") and value.lower() == entry["fieldOfStudy"].lower():
+            return False
+        has_location_sep = bool(re.search(r"[,–—-]", value))
+        has_alpha = bool(re.search(r"[A-Za-z]", value))
+        return has_alpha and (has_location_sep or self._looks_like_institution(value))
 
     def _build_entry(self, entry: dict[str, Any]) -> dict[str, object]:
         # Preserve compact/acroynmic degree tokens (e.g., 'M.C.A', 'B.SC-IT') when
