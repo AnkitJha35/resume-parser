@@ -88,12 +88,12 @@ def detect_region_aware_sections(
         current_page_paths = pages[page_number]
         page_sections: list[tuple[SemanticPath, str]] = []
         for path in current_page_paths:
-            heading = _path_heading(path, detector)
+            opening_heading = _path_opening_heading(path, detector)
             current_section = _continuation_section(path, previous_paths)
             related_heading = _related_heading(path, current_page_paths, detector)
             if related_heading is not None:
                 current_section = related_heading
-            if heading is not None and related_heading is None:
+            if opening_heading is not None and related_heading is None:
                 current_section = None
             section_lines: dict[str, list[Line]] = {}
             index = 0
@@ -165,7 +165,7 @@ def detect_region_aware_sections(
                         lines=lines,
                     )
                 )
-            if current_section is not None:
+            if current_section is not None and region_kind in _BODY_REGION_KINDS:
                 page_sections.append((path, current_section))
         previous_paths = page_sections
 
@@ -493,6 +493,12 @@ def _looks_like_org_or_location(text: str) -> bool:
     if "&" in value and 1 < len(value.split()) <= 8:
         return True
     return False
+
+
+def _path_opening_heading(path: SemanticPath, detector: SectionDetector) -> str | None:
+    if not path.lines:
+        return None
+    return detector._find_section_header(path.lines[0].text)
 
 
 def _path_heading(path: SemanticPath, detector: SectionDetector) -> str | None:
