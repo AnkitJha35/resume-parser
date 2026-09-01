@@ -6,6 +6,7 @@ from typing import Iterable, Optional, List
 from app.pipeline.stages.confidence import ConfidenceScorer
 from app.extractors.date_parser import DateRangeParser
 from app.extractors.skills import SkillsExtractor
+from app.pipeline.stages.normalization import TextNormalizer
 from app.pipeline.stages.text_extraction import TextBlock
 from app.pipeline.stages.candidate_grouping import CandidateGroup
 
@@ -46,7 +47,7 @@ class ProjectExtractor:
             if self._is_date_range(text):
                 if current_entry:
                     entries.append(current_entry)
-                date_range = self.date_parser.parse(text)
+                date_range = self.date_parser.parse(TextNormalizer.normalize_text(text))
                 current_entry = self._new_entry()
                 if date_range:
                     current_entry["startDate"] = date_range.startDate
@@ -138,9 +139,9 @@ class ProjectExtractor:
                 results.extend(self._extract_from_block_list(block_list))
                 continue
 
-            # find title: nearest meaningful non-date block before date_idx
-            title = None
-            for j in range(date_idx - 1, -1, -1):
+            # find title: select primary non-date/non-bullet candidate before date_idx
+            candidate_blocks: list[tuple[int, Any, str]] = []
+            for j in range(date_idx):
                 tb = blocks[j].original
                 ttext = (getattr(tb, "text", "") or "").strip()
                 if not ttext:
@@ -150,12 +151,25 @@ class ProjectExtractor:
                     continue
                 # prefer non-DATE labels
                 if getattr(blocks[j], "label", None) != "DATE":
-                    title = ttext
-                    break
+                    candidate_blocks.append((j, tb, ttext))
+
+            title = None
+            if candidate_blocks:
+                # Rank candidates by typographic prominence (font_size, bold)
+                # and prefer earlier/opening block in the group as tie-breaker
+                best_candidate = max(
+                    candidate_blocks,
+                    key=lambda item: (
+                        getattr(item[1], "font_size", 0.0) or 0.0,
+                        1 if getattr(item[1], "bold", False) else 0,
+                        -item[0],
+                    ),
+                )
+                title = best_candidate[2]
 
             # parse date
             date_text = (getattr(blocks[date_idx].original, "text", "") or "").strip()
-            date_range = self.date_parser.parse(date_text)
+            date_range = self.date_parser.parse(TextNormalizer.normalize_text(date_text))
 
             entry = self._new_entry()
             if title:
@@ -196,7 +210,7 @@ class ProjectExtractor:
         return results
 
     def _is_date_range(self, text: str) -> bool:
-        return self.date_parser.parse(text) is not None
+        return self.date_parser.parse(TextNormalizer.normalize_text(text)) is not None
 
     def _is_url(self, text: str) -> bool:
         return bool(URL_PATTERN.search(text))
