@@ -1,0 +1,1883 @@
+{
+  "total_resumes": 12,
+  "success_count": 12,
+  "error_count": 0,
+  "pass_count": 4,
+  "partial_count": 1,
+  "fail_count": 7,
+  "total_elapsed_seconds": 1.5552,
+  "archetype_breakdown": {
+    "maritime_tabular": {
+      "total": 1,
+      "PASS": 0,
+      "PARTIAL": 0,
+      "FAIL": 1
+    },
+    "structured_form": {
+      "total": 3,
+      "PASS": 0,
+      "PARTIAL": 0,
+      "FAIL": 3
+    },
+    "standard_cv": {
+      "total": 5,
+      "PASS": 4,
+      "PARTIAL": 1,
+      "FAIL": 0
+    },
+    "maritime_cv": {
+      "total": 3,
+      "PASS": 0,
+      "PARTIAL": 0,
+      "FAIL": 3
+    }
+  },
+  "results": [
+    {
+      "filename": "2nd Officer Mayur Agarwal_062029.pdf",
+      "archetype": "maritime_tabular",
+      "target_domain": "Maritime / Deck Officer",
+      "parser_success": true,
+      "status": "FAIL",
+      "elapsed_seconds": 0.1928,
+      "error_message": null,
+      "error_traceback": null,
+      "personal": {
+        "name": "MAYUR",
+        "email": "mayur.ag01@gmail.com",
+        "phone": "+91 9829519017",
+        "location": "AGARWAL",
+        "linkedin": null,
+        "github": null
+      },
+      "skills_count": 0,
+      "skills_sample": [],
+      "experience_count": 0,
+      "experience_items": [],
+      "education_count": 10,
+      "education_items": [
+        {
+          "institution": "MARITIME INSTITUTE, Maharashtra, India {2016-2019}",
+          "degree": "TOLANI",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": "Best All-Round Performance Award (Gold Medalist)",
+          "degree": "B.Sc. Nautical Science",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": "SERVICE",
+          "degree": "SEA",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": "03-Oct-2019",
+          "degree": "DOCUMENTS",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "ENDORSEMENTS",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "Endorsement",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "Certificate",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "Issued Date",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "Valid Date",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "N/A",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        }
+      ],
+      "projects_count": 0,
+      "projects_items": [],
+      "diagnostics": [
+        "NAME_SPLIT_INTO_LOCATION: 'AGARWAL'",
+        "TABLE_METADATA_IN_EDUCATION[3]: inst='03-Oct-2019', deg='DOCUMENTS'",
+        "TABLE_METADATA_IN_EDUCATION[4]: inst='', deg='ENDORSEMENTS'",
+        "TABLE_METADATA_IN_EDUCATION[5]: inst='', deg='Endorsement'",
+        "EXTREME_EDUCATION_COUNT_SKEW: 10 entries"
+      ],
+      "notes": "Maritime 2nd Officer CV with extensive sea-service, STCW, and certification tables."
+    },
+    {
+      "filename": "AASHISH DG.pdf",
+      "archetype": "structured_form",
+      "target_domain": "Maritime / Seafarer Registry",
+      "parser_success": true,
+      "status": "FAIL",
+      "elapsed_seconds": 0.2468,
+      "error_message": null,
+      "error_traceback": null,
+      "personal": {
+        "name": "Seafarer Profile",
+        "email": "aashishbol@gmail.com",
+        "phone": "8130834379",
+        "location": "Discipline",
+        "linkedin": null,
+        "github": null
+      },
+      "skills_count": 0,
+      "skills_sample": [],
+      "experience_count": 0,
+      "experience_items": [],
+      "education_count": 36,
+      "education_items": [
+        {
+          "institution": "ADVANCED TRAINING- OIL",
+          "degree": "TANKER",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "Sea Going Service",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": ": 29/12/2014 2.41 PM",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": "Name",
+          "degree": "2.Ship",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": "Name",
+          "degree": "3.Ship",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "Sea Going Service",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": ": ANNAPURNA",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "Certificate",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": ": 29/12/2014 2.41 PM",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "India",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "30/01/2014",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "India",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "09/08/2014",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "Total no of record",
+          "fieldOfStudy": "Sea Going Service : 3",
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "D/G/2/D/10/6858",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "Page 4 of 6",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "Certificate",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": "IFOO-8401",
+          "degree": "Certificate",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "Authorised Documents",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": ": 29/12/2014 2.41 PM",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "Certificate No.",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "Total no of record",
+          "fieldOfStudy": "Certificate of Endorsement :2",
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "Certificate",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "Total no of record",
+          "fieldOfStudy": "Certificate of Competency :1",
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "Issued Date",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "Issued Date",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "Issued Date",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "D/O/2/D/10/6861",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": ":",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "17/09/1998",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "29/01/2002",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "10/07/2008",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "Page 5 of 6",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "DECLARATION TO BE MADE BY CANDIDATE :",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "Signature of the candidate",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "Page 6 of 6",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        }
+      ],
+      "projects_count": 0,
+      "projects_items": [],
+      "diagnostics": [
+        "NAME_IS_FORM_OR_DOC_TITLE: 'Seafarer Profile'",
+        "SECTION_HEADER_IN_LOCATION: 'Discipline'",
+        "TABLE_METADATA_IN_EDUCATION[18]: inst='', deg='Authorised Documents'",
+        "TABLE_METADATA_IN_EDUCATION[33]: inst='', deg='DECLARATION TO BE MADE BY CANDIDATE :'",
+        "EXTREME_EDUCATION_COUNT_SKEW: 36 entries"
+      ],
+      "notes": "Official DG Shipping Seafarer Profile tabular verification report."
+    },
+    {
+      "filename": "AKIBUL ALAM CV(JO).pdf",
+      "archetype": "structured_form",
+      "target_domain": "Maritime / Deck Cadet",
+      "parser_success": true,
+      "status": "FAIL",
+      "elapsed_seconds": 0.1367,
+      "error_message": null,
+      "error_traceback": null,
+      "personal": {
+        "name": "Surname",
+        "email": "akibulalam3@gmail.com",
+        "phone": "01878143235",
+        "location": "Alam",
+        "linkedin": null,
+        "github": null
+      },
+      "skills_count": 0,
+      "skills_sample": [],
+      "experience_count": 0,
+      "experience_items": [],
+      "education_count": 25,
+      "education_items": [
+        {
+          "institution": null,
+          "degree": "13-08-2032",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "Dhaka",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "Relationship:  Father",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": "Phone- STD Code: +88",
+          "degree": "Address of Next of Kin: West Quaish, Hathazari, Chattogram",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "Height :        5’9”",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "Date of",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "27-04-2030",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "28-08-2027",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": "of shipping,",
+          "degree": "Issued by",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": "of shipping,",
+          "degree": "Department",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "SSO",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": "Name of Institute / College",
+          "degree": "Dangerous Cargo Endorsements",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "048.232824",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "C/O/11695",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "Wartsila",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "Grade/ Level Number",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": "Grade/ Level Number"
+        },
+        {
+          "institution": null,
+          "degree": "From",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": "of shipping,",
+          "degree": "22-02-2026",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "11-01-2023",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": "of shipping,",
+          "degree": "08-02-2026",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "Date of",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": "Pre-sea Nautical Science",
+          "degree": "To",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "Previous Sea Service",
+          "fieldOfStudy": "Date Commencing from Last Vessel",
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "Type",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": "7UEC-4 Deck",
+          "degree": "Rank",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        }
+      ],
+      "projects_count": 0,
+      "projects_items": [],
+      "diagnostics": [
+        "NAME_IS_FORM_OR_DOC_TITLE: 'Surname'",
+        "NAME_SPLIT_INTO_LOCATION: 'Alam'",
+        "TABLE_METADATA_IN_EDUCATION[11]: inst='Name of Institute / College', deg='Dangerous Cargo Endorsements'",
+        "TABLE_METADATA_IN_EDUCATION[22]: inst='', deg='Previous Sea Service'",
+        "EXTREME_EDUCATION_COUNT_SKEW: 25 entries"
+      ],
+      "notes": "Pre-sea Nautical Science application bio-data form with next-of-kin and sea-service grids."
+    },
+    {
+      "filename": "AditCV_SOL.pdf",
+      "archetype": "standard_cv",
+      "target_domain": "Human Resources",
+      "parser_success": true,
+      "status": "PASS",
+      "elapsed_seconds": 0.0481,
+      "error_message": null,
+      "error_traceback": null,
+      "personal": {
+        "name": "ADITI ANAND",
+        "email": "aditianand136@gmail.com",
+        "phone": "+91 9241242699",
+        "location": null,
+        "linkedin": "https://www.linkedin.com/in/aditianand99",
+        "github": null
+      },
+      "skills_count": 19,
+      "skills_sample": [
+        "Recruitment",
+        "Employee Engagement",
+        "Onboarding",
+        "HR Policy",
+        "Training",
+        "Labour Laws",
+        "Excel",
+        "Google Sheets",
+        "Google Docs",
+        "HRMS"
+      ],
+      "experience_count": 1,
+      "experience_items": [
+        {
+          "company": "ECE Industries Ltd.",
+          "designation": "HR Intern",
+          "startDate": "2025-10",
+          "endDate": "2025-12",
+          "current": false,
+          "location": "Sonipat, Haryana"
+        }
+      ],
+      "education_count": 1,
+      "education_items": [
+        {
+          "institution": "School of Open Learning, Delhi University",
+          "degree": "Master of Business Administration",
+          "fieldOfStudy": "Human Resource Management",
+          "startDate": "2024",
+          "endDate": "2026",
+          "grade": null
+        }
+      ],
+      "projects_count": 0,
+      "projects_items": [],
+      "diagnostics": [],
+      "notes": "Standard 1-page HR Intern CV (Golden Resume A)."
+    },
+    {
+      "filename": "CV Rishabh Dixit.pdf",
+      "archetype": "maritime_cv",
+      "target_domain": "Maritime / Third Officer",
+      "parser_success": true,
+      "status": "FAIL",
+      "elapsed_seconds": 0.0668,
+      "error_message": null,
+      "error_traceback": null,
+      "personal": {
+        "name": "Curriculum Vitae",
+        "email": "rishudixit007@gmail.com",
+        "phone": "+91 9005305900",
+        "location": null,
+        "linkedin": null,
+        "github": null
+      },
+      "skills_count": 0,
+      "skills_sample": [],
+      "experience_count": 6,
+      "experience_items": [
+        {
+          "company": "Ship Name",
+          "designation": "S. No.",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": null,
+          "designation": "Deck Cadet",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": null,
+          "designation": "Authorized Documents",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": "Documents",
+          "designation": "S. No.",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": null,
+          "designation": "Stcw Certifications/trainings",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": null,
+          "designation": null,
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        }
+      ],
+      "education_count": 2,
+      "education_items": [
+        {
+          "institution": "S.C.I. Maritime Training Institute Mumbai (Maharashtra)",
+          "degree": " Diploma",
+          "fieldOfStudy": "Nautical Science leading to BSC in Nautical Science",
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "Declaration",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        }
+      ],
+      "projects_count": 0,
+      "projects_items": [],
+      "diagnostics": [
+        "NAME_IS_FORM_OR_DOC_TITLE: 'Curriculum Vitae'",
+        "TABLE_HEADER_IN_EXPERIENCE[0]: comp='Ship Name', desig='S. No.'",
+        "TABLE_HEADER_IN_EXPERIENCE[3]: comp='Documents', desig='S. No.'",
+        "TABLE_METADATA_IN_EDUCATION[1]: inst='', deg='Declaration'"
+      ],
+      "notes": "Maritime CV with tabular sea-service records, STCW certifications, and declaration."
+    },
+    {
+      "filename": "JOSH PARASHAR MASTER CV2.pdf",
+      "archetype": "structured_form",
+      "target_domain": "Maritime / Master Mariner",
+      "parser_success": true,
+      "status": "FAIL",
+      "elapsed_seconds": 0.309,
+      "error_message": null,
+      "error_traceback": null,
+      "personal": {
+        "name": "APPLICATION FORM",
+        "email": "josh.parashar@gmail.com",
+        "phone": "+91-7042074691",
+        "location": "Position",
+        "linkedin": null,
+        "github": null
+      },
+      "skills_count": 0,
+      "skills_sample": [],
+      "experience_count": 4,
+      "experience_items": [
+        {
+          "company": "Period",
+          "designation": "Vessel Type",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": null,
+          "designation": "Declaration",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": null,
+          "designation": "Signature:",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": null,
+          "designation": "Master Parashar, Josh",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        }
+      ],
+      "education_count": 28,
+      "education_items": [
+        {
+          "institution": null,
+          "degree": "Readiness date 15/May/2026",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "Personal Details",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "Middle name",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "30/Sep/2015",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": "University",
+          "degree": "Type",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": "2020 POST GRADUATE DIPLOMA IN BUSINESS MANAGEMENT"
+        },
+        {
+          "institution": null,
+          "degree": "Category",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "Issuing",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "Visas",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "Number",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "Vaccinations",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "Type",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "Issuing",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "Placeof",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "Issued",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "Issued",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": "COVID 19 – 2nd Dose / Single-Dose Vaccine",
+          "degree": "14/Jun/2014",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "08/Jul/2025",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "Sea Services",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "Vessel",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "Engine",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "GRT",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "Owner /",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "MAST",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "0Y 1M ARCTICAURORA",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "100,236",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "DYNAGAS",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": "Pre-Employment Checks",
+          "degree": "28D",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "No record found",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        }
+      ],
+      "projects_count": 0,
+      "projects_items": [],
+      "diagnostics": [
+        "NAME_IS_FORM_OR_DOC_TITLE: 'APPLICATION FORM'",
+        "SECTION_HEADER_IN_LOCATION: 'Position'",
+        "TABLE_HEADER_IN_EXPERIENCE[0]: comp='Period', desig='Vessel Type'",
+        "TABLE_METADATA_IN_EDUCATION[0]: inst='', deg='Readiness date 15/May/2026'",
+        "TABLE_METADATA_IN_EDUCATION[9]: inst='', deg='Vaccinations'",
+        "TABLE_METADATA_IN_EDUCATION[15]: inst='COVID 19 – 2nd Dose / Single-Dose Vaccine', deg='14/Jun/2014'",
+        "EXTREME_EDUCATION_COUNT_SKEW: 28 entries"
+      ],
+      "notes": "Multi-page crew application form with vessel sea services, vaccinations, and passport grids."
+    },
+    {
+      "filename": "MUKUND 3RD OFF CV 2026.pdf",
+      "archetype": "maritime_cv",
+      "target_domain": "Maritime / Third Officer",
+      "parser_success": true,
+      "status": "FAIL",
+      "elapsed_seconds": 0.1941,
+      "error_message": null,
+      "error_traceback": null,
+      "personal": {
+        "name": "Mukund Kumar",
+        "email": "mukundkumar7250@gmail.com",
+        "phone": "+91 9875584311",
+        "location": "QUALIFICATION",
+        "linkedin": "www.linkedin.com/in/",
+        "github": null
+      },
+      "skills_count": 2,
+      "skills_sample": [
+        "Communication",
+        "Problem Solving"
+      ],
+      "experience_count": 9,
+      "experience_items": [
+        {
+          "company": "Columbia Ship Management , Darya Shipping & The Shipping Corporation of",
+          "designation": "Vessel",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": "Carrier Corporationof India Ltd",
+          "designation": null,
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": "THE SHIPPING CORPORATION OF INDIA LTD",
+          "designation": "Deck Cadet",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": "Assisted senior deck officers in safe navigation, bridge"
+        },
+        {
+          "company": null,
+          "designation": "SEA Service Experience",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": "Type",
+          "designation": "Vessel Name",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": "NAME",
+          "designation": "Documents Details",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": "P4176278",
+          "designation": "NO.",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": null,
+          "designation": "NO.",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": "POI",
+          "designation": "DOI",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        }
+      ],
+      "education_count": 4,
+      "education_items": [
+        {
+          "institution": "13794 3RD OFF 05-08-2025 11-03-2026",
+          "degree": "ITHACKI",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "Master of Business Administration",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "DOI",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "17/09/2028",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        }
+      ],
+      "projects_count": 0,
+      "projects_items": [],
+      "diagnostics": [
+        "SECTION_HEADER_IN_LOCATION: 'QUALIFICATION'",
+        "TABLE_HEADER_IN_EXPERIENCE[4]: comp='Type', desig='Vessel Name'",
+        "TABLE_HEADER_IN_EXPERIENCE[5]: comp='NAME', desig='Documents Details'",
+        "TABLE_HEADER_IN_EXPERIENCE[8]: comp='POI', desig='DOI'",
+        "TABLE_METADATA_IN_EDUCATION[0]: inst='13794 3RD OFF 05-08-2025 11-03-2026', deg='ITHACKI'"
+      ],
+      "notes": "3rd Officer maritime CV with structured sea-service experience table and STCW qualifications."
+    },
+    {
+      "filename": "Rajeev_Ranjan_Prajapati_FullStack_Engineer.pdf",
+      "archetype": "standard_cv",
+      "target_domain": "Software Engineering",
+      "parser_success": true,
+      "status": "PARTIAL",
+      "elapsed_seconds": 0.0523,
+      "error_message": null,
+      "error_traceback": null,
+      "personal": {
+        "name": "RAJEEV RANJAN PRAJAPATI",
+        "email": "prajapati7.ranjan@gmail.com",
+        "phone": "+91 7319932743",
+        "location": null,
+        "linkedin": "linkedin.com/in/rajeevranjan22011999",
+        "github": null
+      },
+      "skills_count": 12,
+      "skills_sample": [
+        "JavaScript",
+        "TypeScript",
+        "Python",
+        "Node.js",
+        "React",
+        "MongoDB",
+        "PostgreSQL",
+        "MySQL",
+        "SQL",
+        "AWS"
+      ],
+      "experience_count": 1,
+      "experience_items": [
+        {
+          "company": "SensorVision IoT Solutions Pvt. Ltd.",
+          "designation": "(formerly Software Associates Information Technologies Pvt. Ltd.) Web Developer",
+          "startDate": "2022-09",
+          "endDate": null,
+          "current": true,
+          "location": null
+        }
+      ],
+      "education_count": 4,
+      "education_items": [
+        {
+          "institution": null,
+          "degree": "Master of Computer Applications",
+          "fieldOfStudy": "MCA",
+          "startDate": "2019",
+          "endDate": "2022",
+          "grade": null
+        },
+        {
+          "institution": "National Institute of Technology Calicut",
+          "degree": "Bachelor of Computer Applications",
+          "fieldOfStudy": "BCA",
+          "startDate": "2015",
+          "endDate": "2018",
+          "grade": "CGPA: 7.02"
+        },
+        {
+          "institution": "Magadh University, Patna",
+          "degree": "Magadh University, Patna",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": "CGPA: 6.50"
+        },
+        {
+          "institution": null,
+          "degree": "2",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        }
+      ],
+      "projects_count": 6,
+      "projects_items": [
+        {
+          "name": "Client Management Tool",
+          "startDate": "2025-11",
+          "endDate": null,
+          "current": true,
+          "technologies": [
+            "Node.js",
+            "MongoDB",
+            "JWT"
+          ]
+        },
+        {
+          "name": "1",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "technologies": []
+        },
+        {
+          "name": "• Developed and maintained full-stack features using Angular, Node.js, Express.js, and MongoDB.",
+          "startDate": "2025-01",
+          "endDate": "2025-10",
+          "current": false,
+          "technologies": [
+            "Node.js",
+            "MySQL"
+          ]
+        },
+        {
+          "name": null,
+          "startDate": "2024-06",
+          "endDate": "2024-11",
+          "current": false,
+          "technologies": [
+            "AWS",
+            "Communication"
+          ]
+        },
+        {
+          "name": null,
+          "startDate": "2023-09",
+          "endDate": "2024-04",
+          "current": false,
+          "technologies": [
+            "Node.js",
+            "PostgreSQL"
+          ]
+        },
+        {
+          "name": null,
+          "startDate": "2022-10",
+          "endDate": "2023-09",
+          "current": false,
+          "technologies": [
+            "Node.js",
+            "AWS",
+            "SQL"
+          ]
+        }
+      ],
+      "diagnostics": [
+        "PROJECTS_WITHOUT_NAMES: 3 items at indices [3, 4, 5]"
+      ],
+      "notes": "Standard 2-page Full-Stack Engineer CV with multi-page projects continuation."
+    },
+    {
+      "filename": "Résume_Shubham.pdf",
+      "archetype": "standard_cv",
+      "target_domain": "Software Engineering",
+      "parser_success": true,
+      "status": "PASS",
+      "elapsed_seconds": 0.0861,
+      "error_message": null,
+      "error_traceback": null,
+      "personal": {
+        "name": "SHUBHAM BAJAJ",
+        "email": "shubhambajaj204@gmail.com",
+        "phone": "6354511915",
+        "location": null,
+        "linkedin": "https://www.linkedin.com/in/shubham-bajaj204/",
+        "github": "https://github.com/shubham-bajaj"
+      },
+      "skills_count": 13,
+      "skills_sample": [
+        "Python",
+        "Django",
+        "Java",
+        "Spring Boot",
+        "React",
+        "JavaScript",
+        "AWS",
+        "Problem Solving",
+        "MVC",
+        "SQL"
+      ],
+      "experience_count": 3,
+      "experience_items": [
+        {
+          "company": "Probus Smart Things",
+          "designation": "Software Engineer -II",
+          "startDate": "2024-09",
+          "endDate": null,
+          "current": true,
+          "location": "Noida"
+        },
+        {
+          "company": "Accenture",
+          "designation": "Software Engineer",
+          "startDate": "2022-07",
+          "endDate": "2024-09",
+          "current": false,
+          "location": "Gurgaon"
+        },
+        {
+          "company": "Beyond Byte Solution",
+          "designation": "Software Engineer Intern",
+          "startDate": "2022-02",
+          "endDate": "2022-06",
+          "current": false,
+          "location": "Surat"
+        }
+      ],
+      "education_count": 1,
+      "education_items": [
+        {
+          "institution": "VIT, Chennai",
+          "degree": "Bachelor of Technology",
+          "fieldOfStudy": "Computer Science and Engineering",
+          "startDate": "2018-07",
+          "endDate": "2022-07",
+          "grade": "CGPA:8.43"
+        }
+      ],
+      "projects_count": 2,
+      "projects_items": [
+        {
+          "name": "Wholesaler E-commerce Application",
+          "startDate": "2024-05",
+          "endDate": null,
+          "current": true,
+          "technologies": [
+            "React",
+            "Python",
+            "Django",
+            "PostgreSQL",
+            "AWS"
+          ]
+        },
+        {
+          "name": "Photo Factory Studio",
+          "startDate": "2023-04",
+          "endDate": null,
+          "current": true,
+          "technologies": [
+            "Django",
+            "Python",
+            "JavaScript",
+            "React",
+            "AWS"
+          ]
+        }
+      ],
+      "diagnostics": [],
+      "notes": "Standard 2-page Software Engineer CV with embedded skills columns (Phase 7B)."
+    },
+    {
+      "filename": "Sendrick Costa CV.pdf",
+      "archetype": "maritime_cv",
+      "target_domain": "Maritime / Marine Engineering",
+      "parser_success": true,
+      "status": "FAIL",
+      "elapsed_seconds": 0.1349,
+      "error_message": null,
+      "error_traceback": null,
+      "personal": {
+        "name": "SENDRICK VALENTINO COSTA",
+        "email": null,
+        "phone": null,
+        "location": "References",
+        "linkedin": null,
+        "github": null
+      },
+      "skills_count": 1,
+      "skills_sample": [
+        "Training"
+      ],
+      "experience_count": 14,
+      "experience_items": [
+        {
+          "company": null,
+          "designation": "Assistant Second Engineer",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": "Goa - India",
+          "designation": "Nuvem, Salcete",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": "Anglo Eastern Ship Management",
+          "designation": "Assistant Second Engineer",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": null,
+          "designation": "Sendrick Valentino Costa",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": "Goa - India",
+          "designation": "Nuvem, Salcete",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": null,
+          "designation": "Josley Jeffroy Rodrigues",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": null,
+          "designation": null,
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": null,
+          "designation": "Pedro D’silva",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": null,
+          "designation": null,
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": "Anglo Eastern Ship Management",
+          "designation": "Assistant Third Engineer",
+          "startDate": "2017",
+          "endDate": "2019",
+          "current": false,
+          "location": null
+        },
+        {
+          "company": null,
+          "designation": "Having Completed Marine Engineering, I Joined Anglo",
+          "startDate": "2015",
+          "endDate": "2017",
+          "current": false,
+          "location": null
+        },
+        {
+          "company": null,
+          "designation": "Sendrick Valentino Costa",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": "Goa - India",
+          "designation": "Nuvem, Salcete",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": null,
+          "designation": "Certificates/ Documents",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        }
+      ],
+      "education_count": 2,
+      "education_items": [
+        {
+          "institution": "Birla Institute of Technology and",
+          "degree": "Bachelor of Science",
+          "fieldOfStudy": "Marine",
+          "startDate": "2007",
+          "endDate": "2009",
+          "grade": null
+        },
+        {
+          "institution": "School,",
+          "degree": "School,",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        }
+      ],
+      "projects_count": 0,
+      "projects_items": [],
+      "diagnostics": [
+        "SECTION_HEADER_IN_LOCATION: 'References'",
+        "EXCESSIVE_EXPERIENCE_COUNT: 14 entries"
+      ],
+      "notes": "Multi-page Marine Engineer CV containing sea-service tables, referee contacts, and certificates."
+    },
+    {
+      "filename": "fresher_hr_resume.pdf",
+      "archetype": "standard_cv",
+      "target_domain": "Human Resources",
+      "parser_success": true,
+      "status": "PASS",
+      "elapsed_seconds": 0.0309,
+      "error_message": null,
+      "error_traceback": null,
+      "personal": {
+        "name": "Aditi Anand",
+        "email": "aditianand136@gmail.com",
+        "phone": "9241242699",
+        "location": null,
+        "linkedin": "https://www.linkedin.com/in/aditianand99/",
+        "github": null
+      },
+      "skills_count": 16,
+      "skills_sample": [
+        "Recruitment",
+        "Employee Engagement",
+        "Onboarding",
+        "HR Policy",
+        "Training",
+        "Labour Laws",
+        "Excel",
+        "Google Sheets",
+        "Google Docs",
+        "HRMS"
+      ],
+      "experience_count": 0,
+      "experience_items": [],
+      "education_count": 2,
+      "education_items": [
+        {
+          "institution": "School Of Open Learning, Delhi University (DU-SOL)",
+          "degree": "Master of Business Administration",
+          "fieldOfStudy": "Human Resource Management",
+          "startDate": "2024",
+          "endDate": "2026",
+          "grade": null
+        },
+        {
+          "institution": "BIR Tikendrajit University",
+          "degree": "Bachelor of Arts (General)",
+          "fieldOfStudy": null,
+          "startDate": "2020",
+          "endDate": "2023",
+          "grade": null
+        }
+      ],
+      "projects_count": 0,
+      "projects_items": [],
+      "diagnostics": [],
+      "notes": "Standard 1-page Fresher HR CV (Golden Resume B)."
+    },
+    {
+      "filename": "swe_experienced_resume.pdf",
+      "archetype": "standard_cv",
+      "target_domain": "Software Engineering",
+      "parser_success": true,
+      "status": "PASS",
+      "elapsed_seconds": 0.0557,
+      "error_message": null,
+      "error_traceback": null,
+      "personal": {
+        "name": "ANKIT JHA",
+        "email": "ankitjha6035@gmail.com",
+        "phone": "9570716035",
+        "location": "Noida, U.P, India",
+        "linkedin": "https://linkedin.com/in/ankitjhajavafullstackdeveloper",
+        "github": null
+      },
+      "skills_count": 39,
+      "skills_sample": [
+        "Java",
+        "SQL",
+        "MySQL",
+        "PostgreSQL",
+        "MongoDB",
+        "Spring Boot",
+        "Hibernate",
+        "JPA",
+        "Saga Pattern",
+        "API Composition"
+      ],
+      "experience_count": 2,
+      "experience_items": [
+        {
+          "company": "Probus Smart Things!",
+          "designation": "SDE 2",
+          "startDate": "2022-07",
+          "endDate": null,
+          "current": true,
+          "location": "Noida, UP, India"
+        },
+        {
+          "company": "Navyug Infosolutions Pvt. Ltd",
+          "designation": "SDE Intern",
+          "startDate": "2022-02",
+          "endDate": "2022-06",
+          "current": false,
+          "location": "Noida, UP, India"
+        }
+      ],
+      "education_count": 2,
+      "education_items": [
+        {
+          "institution": "NIT Calicut",
+          "degree": "M.C.A",
+          "fieldOfStudy": null,
+          "startDate": "2019-07",
+          "endDate": "2022-06",
+          "grade": null
+        },
+        {
+          "institution": "Magadh University",
+          "degree": "B.SC-IT",
+          "fieldOfStudy": null,
+          "startDate": "2015-07",
+          "endDate": "2018-08",
+          "grade": null
+        }
+      ],
+      "projects_count": 3,
+      "projects_items": [
+        {
+          "name": "Head End System (HES)",
+          "startDate": "2025-02",
+          "endDate": null,
+          "current": true,
+          "technologies": [
+            "REST",
+            "Apache Kafka",
+            "MQTT",
+            "Weblogic JMS",
+            "Docker",
+            "Kubernetes",
+            "Jenkins"
+          ]
+        },
+        {
+          "name": "Network Monitoring System",
+          "startDate": "2023-11",
+          "endDate": "2025-01",
+          "current": false,
+          "technologies": [
+            "Spring Boot",
+            "TCP/UDP",
+            "Apache Kafka",
+            "Saga Pattern",
+            "API Composition",
+            "Eureka",
+            "Spring Cloud",
+            "Config Server"
+          ]
+        },
+        {
+          "name": "Solar String Monitoring System",
+          "startDate": "2022-09",
+          "endDate": "2023-10",
+          "current": false,
+          "technologies": [
+            "MQTT",
+            "Apache Kafka",
+            "Thymeleaf",
+            "jQuery",
+            "Docker"
+          ]
+        }
+      ],
+      "diagnostics": [],
+      "notes": "Standard 2-page Senior Software Engineer CV (Golden Resume C)."
+    }
+  ]
+}
