@@ -1,0 +1,379 @@
+# Phase 8-2A: LLM-Assisted Semantic Extraction Contract
+
+This document defines the architecture, data contracts, validation invariants, and migration strategy for integrating an LLM-assisted semantic extraction layer into the resume parser.
+
+---
+
+## 1. Current-State Findings & Information Loss Points
+
+The parser currently uses a two-phase architecture:
+1. **Physical & Layout Document IR:** [`app/domain/document.py`](file:///home/ankit-jha/my-workspace/resume-parser/app/domain/document.py), [`app/pipeline/stages/reconstruction.py`](file:///home/ankit-jha/my-workspace/resume-parser/app/pipeline/stages/reconstruction.py), [`app/pipeline/stages/layout.py`](file:///home/ankit-jha/my-workspace/resume-parser/app/pipeline/stages/layout.py), [`app/pipeline/stages/structural_roles.py`](file:///home/ankit-jha/my-workspace/resume-parser/app/pipeline/stages/structural_roles.py).
+2. **Deterministic Semantic Pathing & Heuristic Extractors:** [`app/pipeline/stages/semantic_paths.py`](file:///home/ankit-jha/my-workspace/resume-parser/app/pipeline/stages/semantic_paths.py), [`app/pipeline/stages/semantic_compat.py`](file:///home/ankit-jha/my-workspace/resume-parser/app/pipeline/stages/semantic_compat.py), [`app/pipeline/stages/candidate_grouping.py`](file:///home/ankit-jha/my-workspace/resume-parser/app/pipeline/stages/candidate_grouping.py), [`app/extractors/`](file:///home/ankit-jha/my-workspace/resume-parser/app/extractors/).
+
+### Structured Information Available in Existing Document IR
+At the output of `interpret_layout()` and `build_structural_blocks()`:
+- **Line & Span Level:** Exact text, bounding boxes (`x0, y0, x1, y1`), page number, typography (`font_size`, `bold`, `italic`, `font_name`), line reading order, and source span IDs.
+- **Region Level:** Region ID, kind (`header`, `column`, `physical_region`), column ID, and spatial bounding box.
+- **Structural Role Level:** Synthesized structural roles (`SECTION_HEADING`, `ENTRY_TITLE`, `ORGANIZATION`, `LOCATION`, `DATE`, `BULLET`, `DESCRIPTION`, `TECHNOLOGY`, `CREDENTIAL`, `CONTACT`, `HEADER`, `FOOTER`, `SIDEBAR`, `TABLE_CELL`, `UNKNOWN`) in [`app/domain/structural.py`](file:///home/ankit-jha/my-workspace/resume-parser/app/domain/structural.py).
+
+### Where Layout & Region Information Is Currently Lost
+1. **Loss Point 1: Compatibility Flattening ([`app/pipeline/stages/semantic_compat.py`](file:///home/ankit-jha/my-workspace/resume-parser/app/pipeline/stages/semantic_compat.py#L21-L38))**
+   `semantic_sections_to_text_blocks()` flattens `SemanticDocument` into `dict[str, list[TextBlock]]`. This strips region boundaries, column identities, and horizontal geometry down to flat lists of text lines.
+2. **Loss Point 2: Global Unassigned Contact Pool ([`app/pipeline/stages/semantic_compat.py`](file:///home/ankit-jha/my-workspace/resume-parser/app/pipeline/stages/semantic_compat.py#L41-L45))**
+   `semantic_header_to_text_blocks()` treats all `unassigned_lines` across the entire document as candidates for `ContactExtractor`. When tables, footers, or referee lists are unassigned, they are scanned by contact heuristics, directly causing location leakage (e.g. `QUALIFICATION`, `References`, `Discipline`).
+3. **Loss Point 3: 1D Candidate Grouping ([`app/pipeline/stages/candidate_grouping.py`](file:///home/ankit-jha/my-workspace/resume-parser/app/pipeline/stages/candidate_grouping.py#L305-L415))**
+   `group_candidates()` clusters blocks in a section based on vertical gaps and lookahead. For tabular documents (e.g. maritime sea-service logs), horizontal column headers (`Ship Name`, `S. No.`, `Vessel Type`, `Period`) are read in 1D sequence, creating false experience/education entries.
+4. **Loss Point 4: Line-Level Fallback Misclassification ([`app/extractors/education.py`](file:///home/ankit-jha/my-workspace/resume-parser/app/extractors/education.py), [`app/extractors/experience.py`](file:///home/ankit-jha/my-workspace/resume-parser/app/extractors/experience.py))**
+   Heuristics lack multi-modal domain context: government registry forms (`AASHISH DG.pdf`) or crew bio-data (`AKIBUL ALAM CV(JO).pdf`) explode into 25–36 education items because any line with dates or alphanumeric codes in an unclosed section is captured as a credential.
+
+---
+
+## 2. Proposed SemanticInput Contract
+
+The `SemanticInput` model serializes the layout Document IR into a clean, compact, non-redundant JSON payload. It preserves spatial boxes, reading order, page boundaries, column identities, generic table structure, and suggested structural roles without duplicating block storage.
+
+### Key Architectural Decisions
+- **Non-Redundant Block Storage:** Canonical blocks reside only in the top-level `blocks` list. `pages` holds only page-level spatial dimensions (`page_number`, `width`, `height`), preventing divergent representations and minimizing payload size.
+- **Generic Table Representation:** Generic table properties (`table_id`, `row_index`, `column_index`, `cell_role`) are supported on any block without domain-specific schemas.
+- **Suggested Roles via Existing Structural Roles:** `suggested_role` is populated directly from existing [`build_structural_blocks()`](file:///home/ankit-jha/my-workspace/resume-parser/app/pipeline/stages/structural_roles.py#L101), avoiding redundant heuristic classifiers.
+
+### Python Definition ([`app/domain/semantic_contract.py`](file:///home/ankit-jha/my-workspace/resume-parser/app/domain/semantic_contract.py))
+```python
+class SemanticBlockInput(BaseModel):
+    block_id: str
+    text: str
+    page: int
+    bbox: list[float]  # [x0, y0, x1, y1]
+    region_id: str
+    region_kind: str   # "header", "column", "physical_region"
+    reading_order: int
+    column_id: int | None = None
+    is_bold: bool | None = None
+    font_size: float | None = None
+    suggested_role: str | None = None  # from existing StructuralRole
+
+    # Generic table representation (None when outside a table)
+    table_id: str | None = None
+    row_index: int | None = None
+    column_index: int | None = None
+    cell_role: str | None = None  # e.g. "HEADER", "DATA"
+
+class SemanticPageMeta(BaseModel):
+    page_number: int
+    width: float | None = None
+    height: float | None = None
+
+class SemanticInput(BaseModel):
+    document_id: str
+    page_count: int
+    pages: list[SemanticPageMeta] = Field(default_factory=list)
+    blocks: list[SemanticBlockInput] = Field(default_factory=list)
+```
+
+### Concrete SemanticInput JSON Example
+```json
+{
+  "document_id": "doc_mayur_01",
+  "page_count": 1,
+  "pages": [
+    {
+      "page_number": 1,
+      "width": 595.0,
+      "height": 842.0
+    }
+  ],
+  "blocks": [
+    {
+      "block_id": "b_p1_0",
+      "text": "MAYUR AGARWAL",
+      "page": 1,
+      "bbox": [50.4, 48.0, 280.5, 68.0],
+      "region_id": "p1-r0",
+      "region_kind": "header",
+      "reading_order": 0,
+      "is_bold": true,
+      "font_size": 16.0,
+      "suggested_role": "HEADER",
+      "table_id": null,
+      "row_index": null,
+      "column_index": null,
+      "cell_role": null
+    },
+    {
+      "block_id": "b_p1_1",
+      "text": "mayur.ag01@gmail.com | +91 98295 19017",
+      "page": 1,
+      "bbox": [50.4, 72.0, 310.0, 84.0],
+      "region_id": "p1-r0",
+      "region_kind": "header",
+      "reading_order": 1,
+      "is_bold": false,
+      "font_size": 10.0,
+      "suggested_role": "CONTACT",
+      "table_id": null,
+      "row_index": null,
+      "column_index": null,
+      "cell_role": null
+    },
+    {
+      "block_id": "b_p1_2",
+      "text": "Vessel Name",
+      "page": 1,
+      "bbox": [50.4, 140.0, 120.0, 152.0],
+      "region_id": "p1-r1",
+      "region_kind": "physical_region",
+      "reading_order": 2,
+      "is_bold": true,
+      "font_size": 10.0,
+      "suggested_role": "TABLE_CELL",
+      "table_id": "tbl_sea_service",
+      "row_index": 0,
+      "column_index": 0,
+      "cell_role": "HEADER"
+    },
+    {
+      "block_id": "b_p1_3",
+      "text": "Darya Shaan",
+      "page": 1,
+      "bbox": [50.4, 156.0, 130.0, 168.0],
+      "region_id": "p1-r1",
+      "region_kind": "physical_region",
+      "reading_order": 3,
+      "is_bold": false,
+      "font_size": 10.0,
+      "suggested_role": "TABLE_CELL",
+      "table_id": "tbl_sea_service",
+      "row_index": 1,
+      "column_index": 0,
+      "cell_role": "DATA"
+    },
+    {
+      "block_id": "b_p1_4",
+      "text": "Jan 2023 – May 2024",
+      "page": 1,
+      "bbox": [150.0, 156.0, 260.0, 168.0],
+      "region_id": "p1-r1",
+      "region_kind": "physical_region",
+      "reading_order": 4,
+      "is_bold": false,
+      "font_size": 10.0,
+      "suggested_role": "DATE",
+      "table_id": "tbl_sea_service",
+      "row_index": 1,
+      "column_index": 1,
+      "cell_role": "DATA"
+    }
+  ]
+}
+```
+
+---
+
+## 3. Proposed SemanticOutput Contract
+
+The `SemanticOutput` model is the constrained schema produced by the LLM. It guarantees:
+1. **Provenance Evidence vs Conservative Normalization:** Every entity field references the exact `source_block_ids` providing evidence. `raw_value` retains verbatim text, and `value` is restricted to safe, deterministic canonical normalizations.
+2. **Provenance on Boolean Derived Fields:** Derived booleans such as `current` use `GroundedBool` with mandatory `source_block_ids`.
+3. **Generic Semantic Classification & Exclusion:** An explicit `block_classifications` list where blocks are mapped to `SemanticBlockCategory` (`SECTION_HEADING`, `PERSONAL`, `EXPERIENCE`, `EDUCATION`, `PROJECT`, `SKILL`, `CERTIFICATION`, `REFERENCE`, `TABLE_HEADER`, `TABLE_DATA`, `BOILERPLATE`, `UNKNOWN`).
+4. **Constrained Document Archetype:** `document_archetype` uses a fixed `DocumentArchetype` enum (`STANDARD_CV`, `MARITIME_CV`, `MARITIME_TABULAR`, `STRUCTURED_FORM`, `ACADEMIC_CV`, `UNKNOWN`). Archetype routing remains deterministic outside the LLM; the LLM's reported archetype is observational.
+5. **Complete Provenance on All Entities:** Every entity—including individual skills, technologies, languages, achievements, and certifications—is provenance-grounded via `GroundedString`.
+
+### Python Definition ([`app/domain/semantic_contract.py`](file:///home/ankit-jha/my-workspace/resume-parser/app/domain/semantic_contract.py))
+```python
+class GroundedString(BaseModel):
+    value: str                     # Canonical/normalized representation
+    raw_value: str | None = None   # Verbatim raw text from source
+    source_block_ids: list[str] = Field(default_factory=list)
+
+class GroundedBool(BaseModel):
+    value: bool                    # e.g. current employment boolean
+    source_block_ids: list[str] = Field(default_factory=list)
+
+class BlockClassification(BaseModel):
+    block_id: str
+    category: SemanticBlockCategory
+    exclusion_reason: str | None = None
+
+class GroundedPersonal(BaseModel):
+    name: GroundedString | None = None
+    email: GroundedString | None = None
+    phone: GroundedString | None = None
+    location: GroundedString | None = None
+    linkedin: GroundedString | None = None
+    github: GroundedString | None = None
+    portfolio: GroundedString | None = None
+
+class GroundedExperienceItem(BaseModel):
+    company: GroundedString | None = None
+    designation: GroundedString | None = None
+    startDate: GroundedString | None = None
+    endDate: GroundedString | None = None
+    current: GroundedBool | None = None
+    location: GroundedString | None = None
+    description: GroundedString | None = None
+    technologies: list[GroundedString] = Field(default_factory=list)
+    source_block_ids: list[str] = Field(default_factory=list)
+
+class GroundedEducationItem(BaseModel):
+    institution: GroundedString | None = None
+    degree: GroundedString | None = None
+    fieldOfStudy: GroundedString | None = None
+    startDate: GroundedString | None = None
+    endDate: GroundedString | None = None
+    grade: GroundedString | None = None
+    source_block_ids: list[str] = Field(default_factory=list)
+
+class GroundedProjectItem(BaseModel):
+    name: GroundedString | None = None
+    description: GroundedString | None = None
+    technologies: list[GroundedString] = Field(default_factory=list)
+    startDate: GroundedString | None = None
+    endDate: GroundedString | None = None
+    current: GroundedBool | None = None
+    source_block_ids: list[str] = Field(default_factory=list)
+
+class SemanticOutput(BaseModel):
+    document_archetype: DocumentArchetype = DocumentArchetype.UNKNOWN
+    block_classifications: list[BlockClassification] = Field(default_factory=list)
+    personal: GroundedPersonal = Field(default_factory=GroundedPersonal)
+    summary: GroundedString | None = None
+    skills: list[GroundedString] = Field(default_factory=list)
+    experience: list[GroundedExperienceItem] = Field(default_factory=list)
+    education: list[GroundedEducationItem] = Field(default_factory=list)
+    projects: list[GroundedProjectItem] = Field(default_factory=list)
+    certifications: list[GroundedString] = Field(default_factory=list)
+    languages: list[GroundedString] = Field(default_factory=list)
+    achievements: list[GroundedString] = Field(default_factory=list)
+```
+
+### Concrete SemanticOutput JSON Example
+```json
+{
+  "document_archetype": "maritime_cv",
+  "block_classifications": [
+    { "block_id": "b_p1_0", "category": "PERSONAL" },
+    { "block_id": "b_p1_1", "category": "PERSONAL" },
+    { "block_id": "b_p1_2", "category": "TABLE_HEADER", "exclusion_reason": "table_column_header" },
+    { "block_id": "b_p1_3", "category": "EXPERIENCE" },
+    { "block_id": "b_p1_4", "category": "EXPERIENCE" }
+  ],
+  "personal": {
+    "name": {
+      "value": "MAYUR AGARWAL",
+      "raw_value": "MAYUR AGARWAL",
+      "source_block_ids": ["b_p1_0"]
+    },
+    "email": {
+      "value": "mayur.ag01@gmail.com",
+      "raw_value": "mayur.ag01@gmail.com",
+      "source_block_ids": ["b_p1_1"]
+    },
+    "phone": {
+      "value": "+919829519017",
+      "raw_value": "+91 98295 19017",
+      "source_block_ids": ["b_p1_1"]
+    },
+    "location": null
+  },
+  "summary": null,
+  "skills": [],
+  "experience": [
+    {
+      "company": {
+        "value": "Darya Shaan",
+        "raw_value": "Darya Shaan",
+        "source_block_ids": ["b_p1_3"]
+      },
+      "designation": {
+        "value": "Second Officer",
+        "raw_value": "Second Officer",
+        "source_block_ids": ["b_p1_0"]
+      },
+      "startDate": {
+        "value": "2023-01",
+        "raw_value": "Jan 2023",
+        "source_block_ids": ["b_p1_4"]
+      },
+      "endDate": {
+        "value": "2024-05",
+        "raw_value": "May 2024",
+        "source_block_ids": ["b_p1_4"]
+      },
+      "current": {
+        "value": false,
+        "source_block_ids": ["b_p1_4"]
+      },
+      "source_block_ids": ["b_p1_3", "b_p1_4"]
+    }
+  ],
+  "education": [],
+  "projects": [],
+  "certifications": [],
+  "languages": [],
+  "achievements": []
+}
+```
+
+---
+
+## 4. Deterministic Validation Invariants
+
+To eliminate systemic failure modes without fuzzy heuristics, [`validate_semantic_output()`](file:///home/ankit-jha/my-workspace/resume-parser/app/domain/semantic_contract.py#L292) enforces deterministic boundaries:
+
+1. **Strict Provenance Integrity:**
+   Every ID in `source_block_ids` must exist in `SemanticInput.blocks`. Empty `source_block_ids` on any grounded field triggers `MISSING_PROVENANCE`.
+2. **Safe Deterministic Canonical Normalization Classes:**
+   Canonical values must be supported by referenced source blocks under strictly defined normalization classes:
+   - *Whitespace / Case / Punctuation Normalization:* Exact alphanumeric substring match (`norm_val in norm_src`).
+   - *ISO Date Normalization:* If canonical value is in ISO format (`YYYY` or `YYYY-MM`), the year digits and month name/number must be explicitly present in source text (e.g. source `"July 2018"` supports canonical `"2018-07"`).
+   - *Phone Digit Normalization:* All digits of the canonical phone must appear in order in the source text (e.g. source `"+91 98295 19017"` supports canonical `"+919829519017"`).
+   - *Boolean Current Status Normalization:* `current=True` must reference source blocks containing accepted markers (`Present`, `current`, `currently employed`, `till date`, `now`, `ongoing`).
+   - **Strictly Forbidden:** Token subset combinations, synonym replacement, semantic enrichment, company renaming (e.g. `"Darya Shaan"` cannot support `"Darya Shipping"`), title expansion (e.g. `"Senior Software Engineer"` cannot support `"Principal Software Engineer"`), fuzzy matching, or probabilistic thresholds. Values failing deterministic boundaries trigger `UNSUPPORTED_CANONICAL_VALUE`.
+3. **Document Title & Label Rejection Guard:**
+   If `personal.name` matches generic document titles (`APPLICATION FORM`, `Curriculum Vitae`, `Seafarer Profile`, `Surname`, `Resume`, `Biodata`), validation rejects it.
+4. **Structural Header Region Location Scope:**
+   Blocks mapped to `personal.location` must belong to the structural header region (`page == 1` and `region_kind == "header"`). No arbitrary y-coordinate thresholds are used.
+5. **Table Column Header Exclusion:**
+   `company`, `designation`, `degree`, or `institution` cannot consist of table column header tokens (`Ship Name`, `S. No.`, `Vessel Name`, `Period`, `Type`, `Documents Details`, `DOI`, `POI`, `Sea Service`, `Endorsements`, `Vaccinations`).
+6. **Referee / Reference Separation:**
+   Any block explicitly categorized as `SemanticBlockCategory.REFERENCE` (or `BOILERPLATE` or `TABLE_HEADER`) cannot be mapped into `experience` items.
+
+---
+
+## 5. Pipeline Integration & Fallback Strategy
+
+### Integration Seam
+In [`app/pipeline/parser.py`](file:///home/ankit-jha/my-workspace/resume-parser/app/pipeline/parser.py):
+```
+PDFExtractor.extract(raw_bytes)
+  → reconstruct_document()
+  → interpret_layout()
+      │
+      ├── [Mode: Legacy / Deterministic Layout Pipeline]
+      │     → detect_region_aware_sections()
+      │     → candidate_grouping()
+      │     → Deterministic Extractors
+      │     → validate_resume()
+      │
+      └── [Mode: Semantic LLM with Deterministic Fallback]
+            → build_semantic_input(layout_document)
+            → LLM Semantic Extractor (JSON mode, constrained schema)
+            → validate_semantic_output(output, input)
+                  │
+                  ├── If Valid: semantic_output_to_resume(output)
+                  └── If Invalid / Timeout: Fall back to Deterministic Layout Pipeline
+```
+
+### Deterministic Routing vs Observational Archetype
+- **Deterministic Routing Outside the LLM:** The pipeline evaluates document features (`has_tables`, page count, multi-column presence) to decide whether to invoke the LLM layer or use the deterministic pipeline.
+- **LLM Archetype Observability:** The LLM reports `document_archetype` (`STANDARD_CV`, `MARITIME_CV`, etc.) inside `SemanticOutput` for logging, diagnostics, and benchmarking, but does not control routing decisions.
+- **Fail-Safe Fallback:** If the LLM call times out, encounters an API error, or produces invariant violations, the pipeline automatically falls back to `parse_with_layout_pipeline()`, ensuring zero production downtime.
+
+---
+
+## 6. Explicit Non-Goals for Phase 8-2A
+
+- **No LLM Provider Implementation:** Do not bind the parser to vendor SDKs (Gemini, OpenAI, Anthropic) in this contract design phase.
+- **No Public Schema Mutations:** The public `Resume` model ([`app/domain/resume.py`](file:///home/ankit-jha/my-workspace/resume-parser/app/domain/resume.py)) remains 100% unchanged.
+- **No Parser Behavior Modification:** The existing deterministic pipeline behavior and test suites remain untouched.
+- **No Fixture-Specific Logic:** All schemas, categories, and invariants are fully generic.
