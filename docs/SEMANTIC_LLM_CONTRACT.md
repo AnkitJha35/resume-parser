@@ -450,3 +450,74 @@ semantic_output_to_resume()      --> Only executes upon 100% valid invariant che
 4. **No Extractor Inference of Table Geometry:** The semantic extractor (mock or future LLM) must never attempt to infer or guess missing table coordinates.
 5. **No Fabricated Coordinates:** Missing table metadata must remain `None`; it must never be represented as fabricated or guessed coordinates.
 6. **Provenance Preservation:** The future upstream table detector must preserve original line and block provenance (`line_ids`, `source_span_ids`, `bbox`).
+
+---
+
+## 9. Phase 8-3: Real LLM Adapter, Serialization & Structured Output Parsing
+
+Phase 8-3 connects the provider-independent interface from Phase 8-2B to a production-ready LLM adapter using the Gemini REST API, backed by deterministic serialization, structured output parsing, and invariant validation.
+
+### Architecture Flow
+```text
+SemanticInput
+    ↓
+serialize_semantic_input()       --> Compact, deterministic JSON of canonical blocks
+    ↓
+build_extraction_prompt()        --> System rules + serialized document blocks
+    ↓
+Gemini REST API                  --> generateContent with responseMimeType="application/json"
+    ↓
+Envelope unwrapping              --> Candidate content parts extraction
+    ↓
+parse_semantic_output()          --> Strict Pydantic validation into SemanticOutput
+    ↓
+validate_semantic_output()       --> Deterministic trust boundary (provenance & rules)
+    ↓
+semantic_output_to_resume()      --> Resume domain model
+```
+
+### 1. SemanticInput Serialization (`app/extractors/semantic_prompt.py`)
+- `serialize_semantic_input()` formats blocks deterministically sorted by `(page, reading_order, block_id)`.
+- Preserves exact `block_id`, `text`, `page`, `bbox`, `region_id`, `region_kind`, `reading_order`, `column_id`, style hints (`is_bold`, `font_size`), `suggested_role`, and generic table metadata (`table_id`, `row_index`, `column_index`, `cell_role`).
+- Contains zero duplicate block copies; blocks are referenced strictly by their canonical ID.
+
+### 2. Provider-Neutral System Prompt (`SEMANTIC_EXTRACTION_SYSTEM_PROMPT`)
+- Requires that every non-null value reference one or more supplied `source_block_ids`.
+- Forbids semantic invention, company renaming, title expansion, date fabrication, and synonym replacement.
+- Forbids treating document titles/form labels as personal names.
+- Forbids treating table column headers as company/designation/degree values.
+- Forbids classifying referee contacts as employment experience.
+- Contains no fixture-specific rules or benchmark resume names.
+
+### 3. Structured Response Parsing (`parse_semantic_output()`)
+- Strips markdown code fences if present.
+- Deserializes JSON and validates strictly against `SemanticOutput`.
+- Rejects malformed JSON, array roots, or incompatible top-level structures with `SemanticExtractionError`.
+- Preserves `null` fields; never coerces ungrounded model text into valid entities.
+
+### 4. Provider Adapter Boundary (`app/extractors/providers/gemini.py`)
+- `GeminiSemanticExtractor` implements `SemanticExtractor.extract(SemanticInput) -> SemanticOutput`.
+- Makes HTTP POST requests to Google's Generative Language REST API (`models/{model}:generateContent`) with `temperature=0.0`.
+- Isolates `httpx` dependencies inside `app/extractors/providers/gemini.py`. Domain and pipeline modules remain completely provider-agnostic.
+- Maps HTTP status errors, timeouts, network failures, and empty candidates to `SemanticExtractionError`.
+
+### 5. Deterministic Validation as the Trust Boundary
+- The LLM is an interpreter, never the source of truth.
+- `parse_document_semantically()` always executes `validate_semantic_output()` on the parsed `SemanticOutput`.
+- If violations occur (e.g. hallucinated block IDs, document titles as names, ungrounded values), the pipeline halts with `SemanticValidationError`, preventing invalid output from reaching `Resume`.
+
+### 6. Configuration Requirements
+- Added to `Settings` (`app/core/config.py`):
+  - `gemini_api_key: str | None = None`
+  - `gemini_model: str = "gemini-2.5-flash"`
+  - `gemini_timeout: float = 30.0`
+- Resolves configuration hierarchically: explicit constructor arguments $\rightarrow$ environment variables (`GEMINI_API_KEY`, `GEMINI_MODEL`, `GEMINI_TIMEOUT`) $\rightarrow$ `Settings`.
+- Importing the application or running tests never fails if the API key is missing. The provider raises `SemanticExtractionError` only at invocation time if credentials are absent.
+
+### 7. Why the Normal Parser Does Not Automatically Call the LLM
+- Standard resumes (`standard_cv`) achieve an 80% pass rate on the deterministic layout pipeline with zero token cost and ~0.15s latency.
+- Automatically calling an LLM for all parses would introduce external network latency (1–3s), token costs, and rate limits into production message consumers.
+- The semantic pipeline is exposed as an opt-in/routing seam via `parse_document_semantically()`.
+
+### 8. Table Detection Deferred
+- As established in Phase 8-2B, upstream table detection remains intentionally deferred. `SemanticBlockInput` supports table coordinates, but un-enriched blocks retain `table_id=None`. The extractor does not invent missing table coordinates.

@@ -25,5 +25,10 @@ class Settings(BaseSettings):
     parser_version: str = "1.0.0"
     parser_mode: Literal["auto", "legacy", "layout"] = "auto"
 
+    # Semantic LLM configuration (optional)
+    gemini_api_key: str | None = None
+    gemini_model: str = "gemini-2.5-flash"
+    gemini_timeout: float = 30.0
+
     # pydantic-settings v2 configuration
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
