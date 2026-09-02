@@ -377,3 +377,76 @@ PDFExtractor.extract(raw_bytes)
 - **No Public Schema Mutations:** The public `Resume` model ([`app/domain/resume.py`](file:///home/ankit-jha/my-workspace/resume-parser/app/domain/resume.py)) remains 100% unchanged.
 - **No Parser Behavior Modification:** The existing deterministic pipeline behavior and test suites remain untouched.
 - **No Fixture-Specific Logic:** All schemas, categories, and invariants are fully generic.
+
+---
+
+## 7. Phase 8-2B: Provider-Independent Extraction Interface
+
+Phase 8-2B operationalizes the Phase 8-2A data contracts through a minimal, vendor-agnostic interface and service seam:
+
+- **Scope Boundary:**
+  - **Phase 8-2A** defined the data contract (`SemanticInput`, `SemanticOutput`, `validate_semantic_output()`).
+  - **Phase 8-2B** defines the provider-independent extraction interface and mock execution seam.
+  - **Real LLM Providers** (Gemini, Anthropic, OpenAI, Ollama) are **intentionally deferred**.
+  - The **deterministic validator remains the trust boundary** between proposed structures and public domain objects.
+  - The **existing parser remains 100% unchanged**.
+
+### Architecture Rule: The LLM as Interpreter, Not Source of Truth
+The LLM does not originate ground truth:
+```
+Document IR (Layout & Spatial Coordinates)
+      │
+      ▼
+build_semantic_input()           --> Ground truth layout & text evidence
+      │
+      ▼
+SemanticExtractor.extract()      --> Proposes semantic candidate structure
+      │
+      ▼
+validate_semantic_output()       --> Trust boundary: validates support & invariants
+      │
+      ▼
+semantic_output_to_resume()      --> Only executes upon 100% valid invariant check
+```
+
+### Interface & Service Definitions
+- **Interface Protocol ([`app/extractors/semantic_extractor.py`](file:///home/ankit-jha/my-workspace/resume-parser/app/extractors/semantic_extractor.py)):**
+  ```python
+  @runtime_checkable
+  class SemanticExtractor(Protocol):
+      def extract(self, input_data: SemanticInput) -> SemanticOutput:
+          ...
+  ```
+- **Pipeline Service Seam ([`app/pipeline/semantic_pipeline.py`](file:///home/ankit-jha/my-workspace/resume-parser/app/pipeline/semantic_pipeline.py)):**
+  ```python
+  def parse_document_semantically(
+      document: Document,
+      extractor: SemanticExtractor,
+      document_id: str = "doc-1",
+  ) -> Resume:
+      semantic_input = build_semantic_input(document, document_id=document_id)
+      output = extractor.extract(semantic_input)
+      violations = validate_semantic_output(output, semantic_input)
+      if violations:
+          raise SemanticValidationError(violations)
+      return semantic_output_to_resume(output)
+  ```
+- **Mock Implementation ([`MockSemanticExtractor`](file:///home/ankit-jha/my-workspace/resume-parser/app/extractors/semantic_extractor.py#L48)):**
+  A zero-network, zero-LLM, deterministic implementation that extracts grounded personal information, experience, and block classifications solely from evident source blocks for seam testing.
+
+---
+
+## 8. Table-Grid Findings & Contract Boundary
+
+### Current State
+- `app/domain/document.py` includes `Page.tables: list[object] = field(default_factory=list)`, but this list is currently unpopulated by default extractors.
+- `app/pipeline/stages/layout.py` (`interpret_layout`) splits pages into `header`, `column`, and `physical_region` kinds without detecting tabular cell grids or table boundaries.
+- As a result, `table_id`, `row_index`, `column_index`, and `cell_role` on `SemanticBlockInput` remain `None` during default layout extraction.
+
+### Precise Contract Boundary
+1. **Fields Already Exist on Input Contract:** `SemanticBlockInput` already includes `table_id: str | None`, `row_index: int | None`, `column_index: int | None`, and `cell_role: str | None`.
+2. **Optional Upstream Presence:** These fields are optional because upstream layout-aware table detection is not yet implemented.
+3. **Enrichment Precedes Semantic Input:** Any future table enrichment pass must populate these fields upstream before `build_semantic_input()` runs.
+4. **No Extractor Inference of Table Geometry:** The semantic extractor (mock or future LLM) must never attempt to infer or guess missing table coordinates.
+5. **No Fabricated Coordinates:** Missing table metadata must remain `None`; it must never be represented as fabricated or guessed coordinates.
+6. **Provenance Preservation:** The future upstream table detector must preserve original line and block provenance (`line_ids`, `source_span_ids`, `bbox`).
