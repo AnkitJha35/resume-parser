@@ -39,5 +39,8 @@ class Settings(BaseSettings):
     ollama_num_threads: int = 8
     ollama_think: bool = False
 
+    # Fallback configuration
+    semantic_fallback_enabled: bool = False
+
     # pydantic-settings v2 configuration
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")

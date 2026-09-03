@@ -9,6 +9,8 @@ from pydantic import ValidationError
 
 from app.core.config import Settings
 from app.core.exceptions import StorageClientError
+from app.extractors.factory import get_semantic_extractor
+from app.extractors.semantic_extractor import SemanticExtractor
 from app.infrastructure.kafka.producer import KafkaProducerClient
 from app.infrastructure.storage.minio_client import MinioClient
 from app.pipeline.parser import PipelineError, ResumeParser
@@ -23,11 +25,13 @@ class ResumeRequestService:
         storage_client_cls: type[MinioClient] = MinioClient,
         kafka_producer_cls: type[KafkaProducerClient] = KafkaProducerClient,
         parser_cls: type[ResumeParser] = ResumeParser,
+        semantic_extractor: SemanticExtractor | None = None,
     ) -> None:
         self._settings = settings
         self._storage = storage_client_cls(settings)
         self._producer = kafka_producer_cls(settings)
         self._parser = parser_cls()
+        self._semantic_extractor = semantic_extractor or get_semantic_extractor(settings)
 
     async def start(self) -> None:
         await self._producer.start()
