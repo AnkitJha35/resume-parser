@@ -386,6 +386,62 @@ def _is_value_semantically_supported(canonical_val: str, source_text: str) -> bo
     return False
 
 
+NAME_FORM_DESCRIPTOR_TOKENS: frozenset[str] = frozenset({
+    "first",
+    "firstname",
+    "last",
+    "lastname",
+    "surname",
+    "given",
+    "givenname",
+    "family",
+    "familyname",
+    "middle",
+    "middlename",
+    "full",
+    "fullname",
+    "name",
+    "names",
+})
+
+
+def _is_name_form_descriptor_supported(canonical_name: str, source_text: str) -> bool:
+    """Check if canonical human name tokens match source evidence tokens after filtering form descriptors.
+
+    Requires exact multiset equality:
+    - Token order may differ (e.g., 'Surname Alam First Name Akibul' -> 'Akibul Alam', 'Last name PARASHAR First name JOSH' -> 'JOSH PARASHAR')
+    - Standard name descriptor labels are filtered from source tokens
+    - Zero tokens may be added (no hallucinated middle names/words)
+    - Zero non-descriptor tokens may be omitted
+    - Strictly scoped to personal.name validation
+    """
+    val_tokens = [t.lower() for t in re.findall(r"[A-Za-z0-9]+", canonical_name)]
+    src_tokens = [t.lower() for t in re.findall(r"[A-Za-z0-9]+", source_text)]
+
+    if not val_tokens:
+        return False
+
+    # Filter recognized standard form descriptor tokens from source text
+    filtered_src_tokens = [t for t in src_tokens if t not in NAME_FORM_DESCRIPTOR_TOKENS]
+
+    # Must have at least 1 grounded token and exact multiset match
+    if not filtered_src_tokens:
+        return False
+
+    return sorted(val_tokens) == sorted(filtered_src_tokens)
+
+
+def _is_name_semantically_supported(canonical_name: str, source_text: str) -> bool:
+    """Deterministic validation boundary specifically for personal.name.
+
+    1. Checks generic deterministic support first (exact alphanumeric substring).
+    2. Falls back to form-descriptor token multiset matching specifically for human names.
+    """
+    if _is_value_semantically_supported(canonical_name, source_text):
+        return True
+    return _is_name_form_descriptor_supported(canonical_name, source_text)
+
+
 def validate_semantic_output(output: SemanticOutput, input_data: SemanticInput) -> list[str]:
     """Validate semantic invariants on LLM output to prevent systemic failure modes.
 
@@ -408,7 +464,7 @@ def validate_semantic_output(output: SemanticOutput, input_data: SemanticInput) 
             if bid not in known_blocks:
                 violations.append(f"UNKNOWN_BLOCK_ID in {context}: {bid!r}")
 
-    # Helper for deterministic support boundary validation
+    # Helper for generic deterministic support boundary validation
     def _verify_grounded_string(gs: GroundedString | None, context: str) -> None:
         if gs is None:
             return
@@ -416,6 +472,16 @@ def validate_semantic_output(output: SemanticOutput, input_data: SemanticInput) 
         if gs.source_block_ids:
             source_text = " ".join(known_blocks[bid].text for bid in gs.source_block_ids if bid in known_blocks)
             if not _is_value_semantically_supported(gs.value, source_text):
+                violations.append(f"UNSUPPORTED_CANONICAL_VALUE in {context}: {gs.value!r} not supported by {source_text!r}")
+
+    # Helper specifically for personal.name validation
+    def _verify_grounded_name(gs: GroundedString | None, context: str) -> None:
+        if gs is None:
+            return
+        _verify_block_ids(gs.source_block_ids, context)
+        if gs.source_block_ids:
+            source_text = " ".join(known_blocks[bid].text for bid in gs.source_block_ids if bid in known_blocks)
+            if not _is_name_semantically_supported(gs.value, source_text):
                 violations.append(f"UNSUPPORTED_CANONICAL_VALUE in {context}: {gs.value!r} not supported by {source_text!r}")
 
     # Helper for grounded boolean validation
@@ -433,7 +499,7 @@ def validate_semantic_output(output: SemanticOutput, input_data: SemanticInput) 
 
     # 1. Personal Name Invariant: Never allow document titles or form labels
     if output.personal.name and output.personal.name.value:
-        _verify_grounded_string(output.personal.name, "personal.name")
+        _verify_grounded_name(output.personal.name, "personal.name")
         val = output.personal.name.value.strip()
         for pat in INVALID_NAME_PATTERNS:
             if pat.search(val):
