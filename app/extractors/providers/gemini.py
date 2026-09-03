@@ -337,28 +337,105 @@ class GeminiSemanticExtractor:
                         f"Failed to decode Gemini API response envelope as JSON: {err}"
                     ) from err
 
+                if not isinstance(res_json, dict):
+                    raise SemanticResponseError(
+                        f"Gemini API response envelope must be a JSON object, got {type(res_json).__name__}"
+                    )
+
+                # Extract usage metadata immediately so it is preserved even if subsequent parsing fails
                 usage = res_json.get("usageMetadata")
                 if isinstance(usage, dict):
                     prompt_tokens = usage.get("promptTokenCount")
                     output_tokens = usage.get("candidatesTokenCount")
                     total_tokens = usage.get("totalTokenCount")
 
+                # Check promptFeedback for block reason
+                prompt_feedback = res_json.get("promptFeedback")
+                if isinstance(prompt_feedback, dict):
+                    block_reason = prompt_feedback.get("blockReason")
+                    if block_reason:
+                        raise SemanticResponseError(
+                            f"Gemini API prompt blocked with blockReason={block_reason}"
+                        )
+
+                # Validate candidates container
+                if "candidates" not in res_json:
+                    raise SemanticResponseError("Gemini API response missing 'candidates' field")
+
                 candidates = res_json.get("candidates")
-                if not candidates or not isinstance(candidates, list):
-                    prompt_feedback = res_json.get("promptFeedback")
+                if candidates is None or not isinstance(candidates, list):
+                    raise SemanticResponseError(
+                        f"Gemini API response 'candidates' must be a list, got {type(candidates).__name__}"
+                    )
+
+                if len(candidates) == 0:
                     raise SemanticResponseError(
                         f"Gemini API returned no candidates. Prompt feedback: {prompt_feedback}"
                     )
 
                 first_candidate = candidates[0]
-                content = first_candidate.get("content", {})
-                parts = content.get("parts", [])
-                if not parts or not isinstance(parts, list) or "text" not in parts[0]:
+                if not isinstance(first_candidate, dict):
                     raise SemanticResponseError(
-                        f"Gemini API candidate missing text part: {first_candidate}"
+                        f"Gemini API candidate must be an object, got {type(first_candidate).__name__}"
                     )
 
-                raw_text = parts[0]["text"]
+                # Inspect finishReason for blocked or abnormal termination
+                finish_reason = first_candidate.get("finishReason")
+                if finish_reason and str(finish_reason).upper() in {
+                    "SAFETY",
+                    "RECITATION",
+                    "BLOCKLIST",
+                    "PROHIBITED_CONTENT",
+                    "SPII",
+                    "MALFORMED_FUNCTION_CALL",
+                    "IMAGE_SAFETY",
+                    "IMAGE_PROHIBITED_CONTENT",
+                    "NO_IMAGE",
+                    "UNEXPECTED_TOOL_CALL",
+                    "TOO_MANY_TOOL_CALLS",
+                    "MAX_TOKENS",
+                    "OTHER",
+                }:
+                    raise SemanticResponseError(
+                        f"Gemini API response candidate blocked with finishReason={finish_reason}"
+                    )
+
+                # Validate content
+                if "content" not in first_candidate or first_candidate.get("content") is None:
+                    raise SemanticResponseError("Gemini API candidate is missing 'content'")
+
+                content = first_candidate.get("content")
+                if not isinstance(content, dict):
+                    raise SemanticResponseError(
+                        f"Gemini API candidate 'content' must be an object, got {type(content).__name__}"
+                    )
+
+                # Validate parts
+                if "parts" not in content or content.get("parts") is None:
+                    raise SemanticResponseError("Gemini API candidate content is missing 'parts'")
+
+                parts = content.get("parts")
+                if not isinstance(parts, list):
+                    raise SemanticResponseError(
+                        f"Gemini API candidate content 'parts' must be a list, got {type(parts).__name__}"
+                    )
+
+                if len(parts) == 0:
+                    raise SemanticResponseError("Gemini API candidate content contains no parts")
+
+                first_part = parts[0]
+                if not isinstance(first_part, dict):
+                    raise SemanticResponseError(
+                        f"Gemini API candidate content part must be an object, got {type(first_part).__name__}"
+                    )
+
+                if "text" not in first_part or first_part.get("text") is None:
+                    raise SemanticResponseError("Gemini API candidate content part is missing 'text'")
+
+                raw_text = first_part.get("text")
+                if not isinstance(raw_text, str) or not raw_text.strip():
+                    raise SemanticResponseError("Gemini API candidate content part contains empty text")
+
                 result = parse_semantic_output(raw_text)
 
                 total_latency_ms = max(0.0, (self._time_fn() - start_time) * 1000.0)

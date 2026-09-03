@@ -946,3 +946,242 @@ def test_gemini_observability_preserves_usage_metadata_on_empty_candidates():
     assert meta["total_tokens"] == 1500
     assert meta["status"] == "failure"
     assert meta["error_type"] == "SemanticResponseError"
+
+
+# =====================================================================
+# Checkpoint 3: Robust Response-Envelope Validation Tests
+# =====================================================================
+
+def test_gemini_envelope_missing_candidates():
+    from app.extractors.semantic_extractor import SemanticResponseError
+
+    call_count = 0
+
+    def mock_transport(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        return httpx.Response(200, json={}, request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(mock_transport))
+    extractor = GeminiSemanticExtractor(api_key="test-key", client=client, max_retries=3)
+    sem_input = _sample_semantic_input()
+
+    with pytest.raises(SemanticResponseError) as exc_info:
+        extractor.extract(sem_input)
+    assert "missing 'candidates' field" in str(exc_info.value)
+    assert call_count == 1  # Fails fast, zero retries
+
+
+def test_gemini_envelope_candidate_missing_content():
+    from app.extractors.semantic_extractor import SemanticResponseError
+
+    def mock_transport(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"candidates": [{}]}, request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(mock_transport))
+    extractor = GeminiSemanticExtractor(api_key="test-key", client=client)
+    sem_input = _sample_semantic_input()
+
+    with pytest.raises(SemanticResponseError) as exc_info:
+        extractor.extract(sem_input)
+    assert "missing 'content'" in str(exc_info.value)
+
+
+def test_gemini_envelope_content_missing_parts():
+    from app.extractors.semantic_extractor import SemanticResponseError
+
+    def mock_transport(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"candidates": [{"content": {}}]}, request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(mock_transport))
+    extractor = GeminiSemanticExtractor(api_key="test-key", client=client)
+    sem_input = _sample_semantic_input()
+
+    with pytest.raises(SemanticResponseError) as exc_info:
+        extractor.extract(sem_input)
+    assert "missing 'parts'" in str(exc_info.value)
+
+
+def test_gemini_envelope_empty_parts():
+    from app.extractors.semantic_extractor import SemanticResponseError
+
+    def mock_transport(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"candidates": [{"content": {"parts": []}}]}, request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(mock_transport))
+    extractor = GeminiSemanticExtractor(api_key="test-key", client=client)
+    sem_input = _sample_semantic_input()
+
+    with pytest.raises(SemanticResponseError) as exc_info:
+        extractor.extract(sem_input)
+    assert "contains no parts" in str(exc_info.value)
+
+
+def test_gemini_envelope_part_missing_text():
+    from app.extractors.semantic_extractor import SemanticResponseError
+
+    def mock_transport(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"candidates": [{"content": {"parts": [{}]}}]}, request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(mock_transport))
+    extractor = GeminiSemanticExtractor(api_key="test-key", client=client)
+    sem_input = _sample_semantic_input()
+
+    with pytest.raises(SemanticResponseError) as exc_info:
+        extractor.extract(sem_input)
+    assert "missing 'text'" in str(exc_info.value)
+
+
+@pytest.mark.parametrize("empty_text", ["", "   ", "\n\t  "])
+def test_gemini_envelope_empty_text(empty_text):
+    from app.extractors.semantic_extractor import SemanticResponseError
+
+    def mock_transport(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text": empty_text}]}}]}, request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(mock_transport))
+    extractor = GeminiSemanticExtractor(api_key="test-key", client=client)
+    sem_input = _sample_semantic_input()
+
+    with pytest.raises(SemanticResponseError) as exc_info:
+        extractor.extract(sem_input)
+    assert "empty text" in str(exc_info.value)
+
+
+def test_gemini_envelope_blocked_safety():
+    from app.extractors.semantic_extractor import SemanticResponseError
+
+    call_count = 0
+
+    def mock_transport(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        envelope = {
+            "candidates": [
+                {
+                    "finishReason": "SAFETY",
+                    "safetyRatings": [{"category": "HARM_CATEGORY_HATE_SPEECH", "probability": "HIGH"}],
+                }
+            ],
+            "usageMetadata": {"promptTokenCount": 200, "candidatesTokenCount": 0, "totalTokenCount": 200},
+        }
+        return httpx.Response(200, json=envelope, request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(mock_transport))
+    extractor = GeminiSemanticExtractor(api_key="test-key", client=client, max_retries=3)
+    sem_input = _sample_semantic_input()
+
+    with pytest.raises(SemanticResponseError) as exc_info:
+        extractor.extract(sem_input)
+    assert "finishReason=SAFETY" in str(exc_info.value)
+    assert call_count == 1  # Must not retry safety blocks
+    assert extractor.last_usage_metadata["prompt_tokens"] == 200
+    assert extractor.last_usage_metadata["status"] == "failure"
+
+
+@pytest.mark.parametrize(
+    "blocked_reason",
+    [
+        "RECITATION",
+        "BLOCKLIST",
+        "PROHIBITED_CONTENT",
+        "SPII",
+        "MALFORMED_FUNCTION_CALL",
+        "IMAGE_SAFETY",
+        "IMAGE_PROHIBITED_CONTENT",
+        "NO_IMAGE",
+        "UNEXPECTED_TOOL_CALL",
+        "TOO_MANY_TOOL_CALLS",
+        "MAX_TOKENS",
+        "OTHER",
+    ],
+)
+def test_gemini_envelope_blocked_other_finish_reasons(blocked_reason):
+    from app.extractors.semantic_extractor import SemanticResponseError
+
+    call_count = 0
+
+    def mock_transport(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        envelope = {
+            "candidates": [{"finishReason": blocked_reason}],
+            "usageMetadata": {"promptTokenCount": 150, "candidatesTokenCount": 0, "totalTokenCount": 150},
+        }
+        return httpx.Response(200, json=envelope, request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(mock_transport))
+    extractor = GeminiSemanticExtractor(api_key="test-key", client=client, max_retries=2)
+    sem_input = _sample_semantic_input()
+
+    with pytest.raises(SemanticResponseError) as exc_info:
+        extractor.extract(sem_input)
+    assert f"finishReason={blocked_reason}" in str(exc_info.value)
+    assert call_count == 1  # Fails fast, zero retries
+    assert extractor.last_usage_metadata["retry_count"] == 0
+    assert extractor.last_usage_metadata["status"] == "failure"
+    assert extractor.last_usage_metadata["error_type"] == "SemanticResponseError"
+    assert extractor.last_usage_metadata["prompt_tokens"] == 150
+
+
+def test_gemini_envelope_prompt_feedback_blocked():
+    from app.extractors.semantic_extractor import SemanticResponseError
+
+    def mock_transport(request: httpx.Request) -> httpx.Response:
+        envelope = {
+            "promptFeedback": {"blockReason": "SAFETY"},
+        }
+        return httpx.Response(200, json=envelope, request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(mock_transport))
+    extractor = GeminiSemanticExtractor(api_key="test-key", client=client)
+    sem_input = _sample_semantic_input()
+
+    with pytest.raises(SemanticResponseError) as exc_info:
+        extractor.extract(sem_input)
+    assert "blockReason=SAFETY" in str(exc_info.value)
+
+
+@pytest.mark.parametrize("bad_candidates", [None, "invalid_string", 123, {}])
+def test_gemini_envelope_malformed_candidates_type(bad_candidates):
+    from app.extractors.semantic_extractor import SemanticResponseError
+
+    def mock_transport(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"candidates": bad_candidates}, request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(mock_transport))
+    extractor = GeminiSemanticExtractor(api_key="test-key", client=client)
+    sem_input = _sample_semantic_input()
+
+    with pytest.raises(SemanticResponseError):
+        extractor.extract(sem_input)
+
+
+@pytest.mark.parametrize("bad_content", [None, "invalid", 123, []])
+def test_gemini_envelope_malformed_content_type(bad_content):
+    from app.extractors.semantic_extractor import SemanticResponseError
+
+    def mock_transport(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"candidates": [{"content": bad_content}]}, request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(mock_transport))
+    extractor = GeminiSemanticExtractor(api_key="test-key", client=client)
+    sem_input = _sample_semantic_input()
+
+    with pytest.raises(SemanticResponseError):
+        extractor.extract(sem_input)
+
+
+@pytest.mark.parametrize("bad_parts", [None, "invalid", 123, {}])
+def test_gemini_envelope_malformed_parts_type(bad_parts):
+    from app.extractors.semantic_extractor import SemanticResponseError
+
+    def mock_transport(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"candidates": [{"content": {"parts": bad_parts}}]}, request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(mock_transport))
+    extractor = GeminiSemanticExtractor(api_key="test-key", client=client)
+    sem_input = _sample_semantic_input()
+
+    with pytest.raises(SemanticResponseError):
+        extractor.extract(sem_input)
