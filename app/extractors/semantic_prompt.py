@@ -6,7 +6,7 @@ import json
 import re
 from typing import Any
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from app.domain.semantic_contract import SemanticBlockInput, SemanticInput, SemanticOutput
 from app.extractors.semantic_extractor import SemanticExtractionError
@@ -125,3 +125,105 @@ def parse_semantic_output(raw_json_or_text: str | dict[str, Any]) -> SemanticOut
         return SemanticOutput.model_validate(parsed)
     except ValidationError as err:
         raise SemanticExtractionError(f"Invalid SemanticOutput structure from LLM: {err}") from err
+
+
+def resolve_schema_defs(pydantic_model: type[BaseModel]) -> dict[str, Any]:
+    """Convert a Pydantic model's JSON schema to a self-contained schema with all $defs inlined.
+
+    Useful for providers (Ollama, Gemini) that support structured JSON output with an inlined schema.
+    """
+    raw_schema = pydantic_model.model_json_schema()
+    defs = raw_schema.pop("$defs", {})
+
+    def _resolve(node: Any) -> Any:
+        if isinstance(node, dict):
+            if "$ref" in node:
+                ref_key = node["$ref"].split("/")[-1]
+                if ref_key in defs:
+                    resolved = _resolve(defs[ref_key])
+                    merged = dict(resolved)
+                    for k, v in node.items():
+                        if k != "$ref":
+                            merged[k] = _resolve(v)
+                    return merged
+            res = {}
+            for k, v in node.items():
+                if k in ("title", "$defs"):
+                    continue
+                res[k] = _resolve(v)
+            return res
+        elif isinstance(node, list):
+            return [_resolve(item) for item in node]
+        return node
+
+    return _resolve(raw_schema)
+
+
+def serialize_compact_semantic_input(semantic_input: SemanticInput) -> str:
+    """Serialize SemanticInput into Candidate B compact JSON representation.
+
+    Preserves deterministic block IDs, verbatim text, structural roles, multi-page indicators,
+    and tabular grid coordinates without redundant bounding boxes, style metadata, or explicit nulls.
+    """
+    sorted_blocks = sorted(
+        semantic_input.blocks,
+        key=lambda b: (b.page, b.reading_order, b.block_id),
+    )
+
+    compact_blocks: list[dict[str, Any]] = []
+    for b in sorted_blocks:
+        block_dict: dict[str, Any] = {
+            "id": b.block_id,
+            "text": b.text,
+        }
+        if b.suggested_role and b.suggested_role != "UNKNOWN":
+            block_dict["role"] = b.suggested_role
+        if b.page > 1:
+            block_dict["page"] = b.page
+        if b.is_bold is True:
+            block_dict["bold"] = True
+        if b.table_id is not None:
+            block_dict["table"] = b.table_id
+            if b.row_index is not None:
+                block_dict["row"] = b.row_index
+            if b.column_index is not None:
+                block_dict["col"] = b.column_index
+            if b.cell_role and b.cell_role != "DATA":
+                block_dict["cell_role"] = b.cell_role
+        compact_blocks.append(block_dict)
+
+    payload: dict[str, Any] = {
+        "doc_id": semantic_input.document_id,
+        "blocks": compact_blocks,
+    }
+    return json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+
+
+def get_compact_schema(pydantic_model: type[BaseModel] = SemanticOutput) -> dict[str, Any]:
+    """Generate a compact JSON schema with descriptions and non-structural metadata stripped."""
+    raw_schema = resolve_schema_defs(pydantic_model)
+
+    def _strip_metadata(node: Any) -> Any:
+        if isinstance(node, dict):
+            res: dict[str, Any] = {}
+            for k, v in node.items():
+                if k in ("title", "description", "default", "examples", "format"):
+                    continue
+                res[k] = _strip_metadata(v)
+            return res
+        elif isinstance(node, list):
+            return [_strip_metadata(item) for item in node]
+        return node
+
+    return _strip_metadata(raw_schema)
+
+
+def build_compact_extraction_prompt(semantic_input: SemanticInput) -> str:
+    """Construct extraction prompt using Candidate B compact input representation."""
+    serialized_input = serialize_compact_semantic_input(semantic_input)
+    return (
+        f"{SEMANTIC_EXTRACTION_SYSTEM_PROMPT}\n\n"
+        f"DOCUMENT BLOCKS (JSON):\n"
+        f"```json\n{serialized_input}\n```\n\n"
+        f"Extract the resume data as a JSON object adhering strictly to the SemanticOutput schema."
+    )

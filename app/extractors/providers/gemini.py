@@ -11,39 +11,16 @@ from pydantic import BaseModel, ValidationError
 from app.core.config import Settings
 from app.domain.semantic_contract import SemanticInput, SemanticOutput
 from app.extractors.semantic_extractor import SemanticExtractionError
-from app.extractors.semantic_prompt import build_extraction_prompt, parse_semantic_output
+from app.extractors.semantic_prompt import (
+    build_compact_extraction_prompt,
+    build_extraction_prompt,
+    get_compact_schema,
+    parse_semantic_output,
+    resolve_schema_defs,
+)
 
-
-def pydantic_to_gemini_schema(pydantic_model: type[BaseModel]) -> dict[str, Any]:
-    """Convert a Pydantic model's JSON schema to a self-contained schema for Gemini REST responseSchema.
-
-    Inlines all $defs references recursively so the schema is completely self-contained.
-    """
-    raw_schema = pydantic_model.model_json_schema()
-    defs = raw_schema.pop("$defs", {})
-
-    def _resolve(node: Any) -> Any:
-        if isinstance(node, dict):
-            if "$ref" in node:
-                ref_key = node["$ref"].split("/")[-1]
-                if ref_key in defs:
-                    resolved = _resolve(defs[ref_key])
-                    merged = dict(resolved)
-                    for k, v in node.items():
-                        if k != "$ref":
-                            merged[k] = _resolve(v)
-                    return merged
-            res = {}
-            for k, v in node.items():
-                if k in ("title", "$defs"):
-                    continue
-                res[k] = _resolve(v)
-            return res
-        elif isinstance(node, list):
-            return [_resolve(item) for item in node]
-        return node
-
-    return _resolve(raw_schema)
+# Backwards-compatible alias for existing tests
+pydantic_to_gemini_schema = resolve_schema_defs
 
 
 class GeminiSemanticExtractor:
@@ -58,11 +35,14 @@ class GeminiSemanticExtractor:
         model: str | None = None,
         timeout: float | None = None,
         client: httpx.Client | None = None,
+        compact: bool = True,
     ) -> None:
         self._explicit_api_key = api_key
         self._explicit_model = model
         self._explicit_timeout = timeout
         self._client = client
+        self._compact = compact
+        self.last_usage_metadata: dict[str, int | None] | None = None
 
     def _resolve_config(self) -> tuple[str, str, float]:
         """Resolve API key, model, and timeout from arguments, environment, or settings."""
@@ -87,7 +67,7 @@ class GeminiSemanticExtractor:
             try:
                 settings = Settings()
                 api_key = getattr(settings, "gemini_api_key", None) or api_key
-                model = model or getattr(settings, "gemini_model", "gemini-2.5-flash")
+                model = model or getattr(settings, "gemini_model", "gemini-3.5-flash-lite")
                 if timeout == 30.0:
                     timeout = getattr(settings, "gemini_timeout", 30.0)
             except (ValidationError, OSError):
@@ -96,7 +76,7 @@ class GeminiSemanticExtractor:
                 pass
 
         if not model:
-            model = "gemini-2.5-flash"
+            model = "gemini-3.5-flash-lite"
 
         if not api_key:
             raise SemanticExtractionError(
@@ -114,8 +94,12 @@ class GeminiSemanticExtractor:
     def extract(self, input_data: SemanticInput) -> SemanticOutput:
         """Extract structured SemanticOutput from SemanticInput using Gemini REST API."""
         api_key, model, timeout = self._resolve_config()
-        prompt = build_extraction_prompt(input_data)
-        response_schema = pydantic_to_gemini_schema(SemanticOutput)
+        if self._compact:
+            prompt = build_compact_extraction_prompt(input_data)
+            response_schema = get_compact_schema(SemanticOutput)
+        else:
+            prompt = build_extraction_prompt(input_data)
+            response_schema = pydantic_to_gemini_schema(SemanticOutput)
 
         endpoint_url = self.get_endpoint_url(model)
         headers = {
@@ -164,6 +148,16 @@ class GeminiSemanticExtractor:
             raise SemanticExtractionError(
                 f"Failed to decode Gemini API response envelope: {err}"
             ) from err
+
+        usage = res_json.get("usageMetadata")
+        if isinstance(usage, dict):
+            self.last_usage_metadata = {
+                "prompt_tokens": usage.get("promptTokenCount"),
+                "output_tokens": usage.get("candidatesTokenCount"),
+                "total_tokens": usage.get("totalTokenCount"),
+            }
+        else:
+            self.last_usage_metadata = None
 
         candidates = res_json.get("candidates")
         if not candidates or not isinstance(candidates, list):
