@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
@@ -47,6 +48,101 @@ def _sanitize_error_message(msg: str, api_key: str | None = None) -> str:
     if api_key and api_key in msg:
         msg = msg.replace(api_key, "[REDACTED]")
     return msg
+
+
+def _extract_api_error_message(text: str, api_key: str | None = None) -> str:
+    """Extract diagnostic message from Gemini error response and sanitize secrets."""
+    clean_text = _sanitize_error_message(text, api_key)
+    if not clean_text or not clean_text.strip():
+        return "Empty response body"
+    try:
+        data = json.loads(clean_text)
+        if isinstance(data, dict) and "error" in data:
+            err = data["error"]
+            if isinstance(err, dict):
+                msg = err.get("message")
+                status = err.get("status")
+                code = err.get("code")
+                parts = []
+                if msg:
+                    parts.append(str(msg))
+                if status:
+                    parts.append(f"status={status}")
+                if code:
+                    parts.append(f"code={code}")
+                if parts:
+                    return " - ".join(parts)
+    except Exception:
+        pass
+    # For plain text or unparseable JSON, return sanitized excerpt
+    excerpt = clean_text[:300].strip()
+    return excerpt
+
+
+def _parse_retry_after(header_value: str | None, max_backoff: float = 30.0) -> float | None:
+    """Parse HTTP Retry-After header.
+
+    Returns float delay (capped at max_backoff), 0.0 for zero,
+    or None if missing, negative, decimal, non-numeric, or invalid.
+    """
+    if not header_value:
+        return None
+    header_str = header_value.strip()
+    if not header_str.lstrip("-").isdigit():
+        return None
+    try:
+        val = int(header_str)
+        if val < 0:
+            return None
+        if val == 0:
+            return 0.0
+        return min(float(val), max_backoff)
+    except (ValueError, OverflowError):
+        return None
+
+
+def _classify_http_error(err: httpx.HTTPStatusError, api_key: str | None = None) -> SemanticExtractionError:
+    """Classify an HTTPStatusError into an appropriate typed Semantic error.
+
+    Classification rules:
+    - 400: SemanticResponseError (deterministic invalid request)
+    - 401, 403: SemanticConfigurationError (authentication / authorization failure)
+    - 404: SemanticConfigurationError (model or endpoint not found)
+    - 429: SemanticRateLimitError (rate limit / quota exceeded)
+    - 5xx: SemanticServerError (transient server error)
+    - Other 4xx: SemanticExtractionError (deterministic client error)
+    """
+    status_code = err.response.status_code
+    error_msg = _extract_api_error_message(err.response.text, api_key)
+
+    if status_code == 400:
+        return SemanticResponseError(
+            f"Gemini API request invalid (HTTP 400): {error_msg}"
+        )
+    if status_code in (401, 403):
+        return SemanticConfigurationError(
+            f"Gemini API authentication failed (HTTP {status_code}): {error_msg}"
+        )
+    if status_code == 404:
+        return SemanticConfigurationError(
+            f"Gemini API model or endpoint not found (HTTP 404): {error_msg}"
+        )
+    if status_code == 429:
+        retry_header = err.response.headers.get("retry-after")
+        retry_after = _parse_retry_after(retry_header)
+        return SemanticRateLimitError(
+            f"Gemini API rate limit exceeded (HTTP 429): {error_msg}",
+            status_code=429,
+            retry_after=retry_after,
+        )
+    if 500 <= status_code < 600:
+        return SemanticServerError(
+            f"Gemini API server error (HTTP {status_code}): {error_msg}",
+            status_code=status_code,
+        )
+    return SemanticExtractionError(
+        f"Gemini API client HTTP error {status_code}: {error_msg}"
+    )
 
 
 class GeminiSemanticExtractor:
@@ -95,16 +191,28 @@ class GeminiSemanticExtractor:
         """
         # Tier 1 & 2: Explicit constructor arguments and Environment variables
         api_key = self._explicit_api_key
+        if api_key is not None and not api_key.strip():
+            api_key = None
         if api_key is None and "GEMINI_API_KEY" in os.environ:
-            api_key = os.environ["GEMINI_API_KEY"]
+            env_key = os.environ["GEMINI_API_KEY"].strip()
+            if env_key:
+                api_key = env_key
 
         model = self._explicit_model
+        if model is not None and not model.strip():
+            model = None
         if model is None and "GEMINI_MODEL" in os.environ:
-            model = os.environ["GEMINI_MODEL"]
+            env_model = os.environ["GEMINI_MODEL"].strip()
+            if env_model:
+                model = env_model
 
         base_url = self._explicit_base_url
+        if base_url is not None and not base_url.strip():
+            base_url = None
         if base_url is None and "GEMINI_BASE_URL" in os.environ:
-            base_url = os.environ["GEMINI_BASE_URL"]
+            env_url = os.environ["GEMINI_BASE_URL"].strip()
+            if env_url:
+                base_url = env_url
 
         timeout = self._explicit_timeout
         if timeout is not None and timeout <= 0:
@@ -133,11 +241,17 @@ class GeminiSemanticExtractor:
             try:
                 settings = Settings()
                 if api_key is None:
-                    api_key = getattr(settings, "gemini_api_key", None)
+                    st_key = getattr(settings, "gemini_api_key", None)
+                    if st_key and st_key.strip():
+                        api_key = st_key.strip()
                 if model is None:
-                    model = getattr(settings, "gemini_model", None)
+                    st_model = getattr(settings, "gemini_model", None)
+                    if st_model and st_model.strip():
+                        model = st_model.strip()
                 if base_url is None:
-                    base_url = getattr(settings, "gemini_base_url", None)
+                    st_url = getattr(settings, "gemini_base_url", None)
+                    if st_url and st_url.strip():
+                        base_url = st_url.strip()
                 if timeout is None:
                     st_timeout = getattr(settings, "gemini_timeout", None)
                     if isinstance(st_timeout, (int, float)) and st_timeout > 0:
@@ -155,7 +269,7 @@ class GeminiSemanticExtractor:
         timeout = timeout if timeout is not None else 30.0
         max_retries = max_retries if max_retries is not None else 2
 
-        if not api_key:
+        if not api_key or not api_key.strip():
             raise SemanticConfigurationError(
                 "Gemini API key is required but not configured. "
                 "Provide api_key to GeminiSemanticExtractor or set GEMINI_API_KEY environment variable."
@@ -246,34 +360,13 @@ class GeminiSemanticExtractor:
                     response.raise_for_status()
 
                 except httpx.HTTPStatusError as err:
+                    exc = _classify_http_error(err, api_key)
                     status_code = err.response.status_code
-                    clean_body = _sanitize_error_message(err.response.text, api_key)
 
-                    # Rate limit / Quota (429) -> SemanticRateLimitError
-                    if status_code == 429:
-                        retry_header = err.response.headers.get("retry-after")
-                        retry_after = float(retry_header) if retry_header and retry_header.isdigit() else None
-                        exc = SemanticRateLimitError(
-                            f"Gemini API rate limit exceeded (HTTP 429): {clean_body}",
-                            status_code=429,
-                            retry_after=retry_after,
-                        )
-                    # 5xx Server Errors -> SemanticServerError
-                    elif 500 <= status_code < 600:
-                        exc = SemanticServerError(
-                            f"Gemini API server error (HTTP {status_code}): {clean_body}",
-                            status_code=status_code,
-                        )
-                    # Other 4xx Client Errors -> SemanticExtractionError (Non-transient, never retried)
-                    else:
-                        raise SemanticExtractionError(
-                            f"Gemini API client HTTP error {status_code}: {clean_body}"
-                        ) from err
-
-                    # Retry transient errors if attempts remain with bounded exponential backoff
-                    if attempt < max_retries:
-                        if isinstance(exc, SemanticRateLimitError) and exc.retry_after is not None and exc.retry_after > 0:
-                            delay = min(exc.retry_after, self._max_backoff)
+                    # Only retry transient errors (429 and 5xx)
+                    if isinstance(exc, (SemanticRateLimitError, SemanticServerError)) and attempt < max_retries:
+                        if isinstance(exc, SemanticRateLimitError) and exc.retry_after is not None:
+                            delay = exc.retry_after
                         else:
                             delay = min(self._initial_backoff * (self._backoff_multiplier ** attempt), self._max_backoff)
                         logger.warning(
@@ -284,7 +377,8 @@ class GeminiSemanticExtractor:
                             max_retries + 1,
                             delay,
                         )
-                        self._sleep_fn(delay)
+                        if delay > 0.0:
+                            self._sleep_fn(delay)
                         attempt += 1
                         retry_count += 1
                         continue

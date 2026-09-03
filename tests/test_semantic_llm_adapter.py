@@ -21,7 +21,16 @@ from app.domain.semantic_contract import (
     validate_semantic_output,
 )
 from app.extractors.providers.gemini import GeminiSemanticExtractor, pydantic_to_gemini_schema
-from app.extractors.semantic_extractor import SemanticExtractionError
+from app.extractors.semantic_extractor import (
+    SemanticConfigurationError,
+    SemanticExtractionError,
+    SemanticRateLimitError,
+    SemanticResponseError,
+    SemanticServerError,
+    SemanticTimeoutError,
+    SemanticTransportError,
+    SemanticValidationError,
+)
 from app.extractors.semantic_prompt import (
     SEMANTIC_EXTRACTION_SYSTEM_PROMPT,
     build_extraction_prompt,
@@ -563,12 +572,12 @@ def test_non_transient_client_error_not_retried_no_sleep():
     )
     sem_input = _sample_semantic_input()
 
-    with pytest.raises(SemanticExtractionError) as exc_info:
+    with pytest.raises(SemanticResponseError) as exc_info:
         extractor.extract(sem_input)
     # Must fail on attempt 1 without retry or sleep
     assert call_count == 1
     assert sleep_calls == []
-    assert "client HTTP error 400" in str(exc_info.value)
+    assert "HTTP 400" in str(exc_info.value)
 
 
 def test_deterministic_malformed_json_not_retried_no_sleep():
@@ -1185,3 +1194,195 @@ def test_gemini_envelope_malformed_parts_type(bad_parts):
 
     with pytest.raises(SemanticResponseError):
         extractor.extract(sem_input)
+
+
+# =====================================================================
+# Checkpoint 4: HTTP Status Classification, Retry Correctness, and Config Safety
+# =====================================================================
+
+@pytest.mark.parametrize(
+    ("status_code", "expected_exception"),
+    [
+        (400, SemanticResponseError),
+        (401, SemanticConfigurationError),
+        (403, SemanticConfigurationError),
+        (404, SemanticConfigurationError),
+        (405, SemanticExtractionError),
+        (422, SemanticExtractionError),
+    ],
+)
+def test_gemini_http_status_classification_deterministic(status_code, expected_exception):
+    call_count = 0
+    sleep_calls = []
+
+    def mock_transport(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        return httpx.Response(status_code, text=f"HTTP {status_code} Error", request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(mock_transport))
+    extractor = GeminiSemanticExtractor(
+        api_key="test-key",
+        client=client,
+        max_retries=3,
+        sleep_fn=sleep_calls.append,
+    )
+    sem_input = _sample_semantic_input()
+
+    with pytest.raises(expected_exception):
+        extractor.extract(sem_input)
+
+    assert call_count == 1  # Deterministic failure, zero retries
+    assert sleep_calls == []
+    meta = extractor.last_usage_metadata
+    assert meta is not None
+    assert meta["status"] == "failure"
+    assert meta["error_type"] == expected_exception.__name__
+    assert meta["retry_count"] == 0
+    assert meta["prompt_tokens"] is None
+
+
+@pytest.mark.parametrize(
+    ("status_code", "expected_exception"),
+    [
+        (429, SemanticRateLimitError),
+        (500, SemanticServerError),
+        (502, SemanticServerError),
+        (503, SemanticServerError),
+    ],
+)
+def test_gemini_http_status_classification_transient_retries(status_code, expected_exception):
+    call_count = 0
+    sleep_calls = []
+
+    def mock_transport(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        return httpx.Response(status_code, text=f"Transient {status_code}", request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(mock_transport))
+    extractor = GeminiSemanticExtractor(
+        api_key="test-key",
+        client=client,
+        max_retries=2,
+        initial_backoff=1.0,
+        backoff_multiplier=2.0,
+        sleep_fn=sleep_calls.append,
+    )
+    sem_input = _sample_semantic_input()
+
+    with pytest.raises(expected_exception):
+        extractor.extract(sem_input)
+
+    assert call_count == 3  # Initial attempt + 2 retries
+    assert sleep_calls == [1.0, 2.0]  # No sleep after final attempt
+    meta = extractor.last_usage_metadata
+    assert meta is not None
+    assert meta["status"] == "failure"
+    assert meta["error_type"] == expected_exception.__name__
+    assert meta["retry_count"] == 2
+
+
+@pytest.mark.parametrize(
+    ("retry_header", "expected_sleep"),
+    [
+        ("10", [10.0]),         # Positive integer honored
+        ("0", []),              # Zero -> no sleep performed
+        ("-5", [1.0]),          # Negative -> ignored, fallback to initial backoff
+        ("5.5", [1.0]),         # Decimal -> ignored, fallback to initial backoff
+        ("invalid", [1.0]),     # Non-numeric -> ignored, fallback to initial backoff
+        ("120", [30.0]),        # Excessive value -> capped at max_backoff (30.0s)
+    ],
+)
+def test_gemini_retry_after_parsing_matrix(retry_header, expected_sleep):
+    call_count = 0
+    sleep_calls = []
+
+    def mock_transport(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        headers = {"retry-after": retry_header}
+        return httpx.Response(429, headers=headers, text="Rate limit hit", request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(mock_transport))
+    extractor = GeminiSemanticExtractor(
+        api_key="test-key",
+        client=client,
+        max_retries=1,
+        initial_backoff=1.0,
+        max_backoff=30.0,
+        sleep_fn=sleep_calls.append,
+    )
+    sem_input = _sample_semantic_input()
+
+    with pytest.raises(SemanticRateLimitError):
+        extractor.extract(sem_input)
+
+    assert call_count == 2
+    assert sleep_calls == expected_sleep
+
+
+def test_gemini_api_error_body_structured_json():
+    def mock_transport(request: httpx.Request) -> httpx.Response:
+        error_body = {
+            "error": {
+                "code": 400,
+                "message": "Invalid argument provided in generationConfig",
+                "status": "INVALID_ARGUMENT",
+            }
+        }
+        return httpx.Response(400, json=error_body, request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(mock_transport))
+    extractor = GeminiSemanticExtractor(api_key="test-key", client=client)
+    sem_input = _sample_semantic_input()
+
+    with pytest.raises(SemanticResponseError) as exc_info:
+        extractor.extract(sem_input)
+    assert "Invalid argument provided in generationConfig" in str(exc_info.value)
+    assert "status=INVALID_ARGUMENT" in str(exc_info.value)
+
+
+def test_gemini_api_error_body_redaction_and_malformed():
+    secret_key = "AIzaSySuperSecretApiKey12345"
+
+    def mock_transport(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, text=f"Forbidden request with key {secret_key}", request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(mock_transport))
+    extractor = GeminiSemanticExtractor(api_key=secret_key, client=client)
+    sem_input = _sample_semantic_input()
+
+    with pytest.raises(SemanticConfigurationError) as exc_info:
+        extractor.extract(sem_input)
+
+    err_str = str(exc_info.value)
+    assert secret_key not in err_str
+    assert "[REDACTED]" in err_str
+
+
+@pytest.mark.parametrize("empty_key", ["", "   ", "\t\n  "])
+def test_gemini_configuration_rejects_empty_api_key(empty_key, monkeypatch):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    extractor = GeminiSemanticExtractor(api_key=empty_key)
+    sem_input = _sample_semantic_input()
+
+    with pytest.raises(SemanticConfigurationError) as exc_info:
+        extractor.extract(sem_input)
+    assert "Gemini API key is required" in str(exc_info.value)
+
+
+def test_gemini_configuration_safely_defaults_invalid_numeric_settings(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "valid-key")
+    monkeypatch.setenv("GEMINI_TIMEOUT", "-10.0")
+    monkeypatch.setenv("GEMINI_MAX_RETRIES", "-5")
+    monkeypatch.setenv("GEMINI_BASE_URL", "   ")
+
+    extractor = GeminiSemanticExtractor()
+    api_key, model, base_url, timeout, max_retries = extractor._resolve_config()
+
+    assert api_key == "valid-key"
+    assert model == "gemini-2.5-flash"
+    assert base_url == "https://generativelanguage.googleapis.com"
+    assert timeout == 30.0
+    assert max_retries == 2
