@@ -10,7 +10,11 @@ from pydantic import ValidationError
 from app.core.config import Settings
 from app.core.exceptions import StorageClientError
 from app.extractors.factory import get_semantic_extractor
-from app.extractors.semantic_extractor import SemanticExtractor
+from app.extractors.semantic_extractor import (
+    SemanticExtractionError,
+    SemanticExtractor,
+    SemanticValidationError,
+)
 from app.infrastructure.kafka.producer import KafkaProducerClient
 from app.infrastructure.storage.minio_client import MinioClient
 from app.pipeline.parser import PipelineError, ResumeParser
@@ -73,6 +77,22 @@ class ResumeRequestService:
         except ValidationError as exc:
             logger.exception("Validation error while processing resume request")
             await self._publish_failed_event(job_id, resume_id, "VALIDATION_ERROR", str(exc))
+        except SemanticValidationError:
+            logger.exception("Semantic validation error while processing resume request")
+            await self._publish_failed_event(
+                job_id,
+                resume_id,
+                "SEMANTIC_VALIDATION_FAILED",
+                "Semantic output failed provenance validation.",
+            )
+        except SemanticExtractionError:
+            logger.exception("Semantic extraction error while processing resume request")
+            await self._publish_failed_event(
+                job_id,
+                resume_id,
+                "SEMANTIC_EXTRACTION_FAILED",
+                "Semantic extraction failed.",
+            )
         except Exception as exc:
             logger.exception("Unexpected error while processing resume request")
             await self._publish_failed_event(job_id, resume_id, "RESUME_PARSE_FAILED", "An unexpected error occurred.")

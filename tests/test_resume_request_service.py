@@ -3,6 +3,11 @@ from pydantic import ValidationError
 
 from app.core.config import Settings
 from app.core.exceptions import StorageClientError
+from app.extractors.semantic_extractor import (
+    SemanticExtractionError,
+    SemanticServerError,
+    SemanticValidationError,
+)
 from app.services.resume_request_service import ResumeRequestService
 
 
@@ -175,3 +180,185 @@ def test_invalid_parser_mode_is_rejected(monkeypatch):
 
     with pytest.raises(ValidationError):
         Settings()
+
+
+def test_resume_request_service_handles_semantic_validation_error(monkeypatch):
+    """Test A: SemanticValidationError publishes SEMANTIC_VALIDATION_FAILED with sanitized message."""
+    monkeypatch.setenv("KAFKA_BROKERS", "localhost:9092")
+    monkeypatch.setenv("MINIO_ENDPOINT", "play.min.io")
+    monkeypatch.setenv("MINIO_ACCESS_KEY", "test-access-key")
+    monkeypatch.setenv("MINIO_SECRET_KEY", "test-secret-key")
+    monkeypatch.setenv("MINIO_BUCKET_NAME", "resumes")
+
+    class SemanticFailingParser:
+        def parse_with_layout_pipeline(self, raw_pdf_bytes: bytes):
+            # Simulate semantic validation rejection with potential PII
+            raise SemanticValidationError([
+                "UNKNOWN_BLOCK_ID in personal.name: 'secret_candidate_name_john_doe'",
+                "UNSUPPORTED_CANONICAL_VALUE in personal.phone: '+1 555 123 4567'",
+            ])
+
+    settings = Settings()
+    producer = DummyKafkaProducer(settings)
+    service = ResumeRequestService(
+        settings,
+        storage_client_cls=DummyStorageClient,
+        kafka_producer_cls=lambda s: producer,
+        parser_cls=SemanticFailingParser,
+    )
+
+    import asyncio
+
+    async def run_test():
+        await service.start()
+        try:
+            await service.process({
+                "jobId": "job-sem-val",
+                "resumeId": "resume-sem-val",
+                "storageKey": "resumes/user/resume.pdf",
+            })
+        finally:
+            await service.shutdown()
+
+    asyncio.run(run_test())
+
+    assert len(producer.sent) == 1
+    topic, event = producer.sent[0]
+    assert topic == settings.kafka_topic_failed
+    assert event["jobId"] == "job-sem-val"
+    assert event["resumeId"] == "resume-sem-val"
+    assert event["status"] == "FAILED"
+    assert event["error"]["code"] == "SEMANTIC_VALIDATION_FAILED"
+    assert event["error"]["message"] == "Semantic output failed provenance validation."
+    # Verify no candidate PII or raw violation details in event
+    event_str = str(event)
+    assert "secret_candidate_name" not in event_str
+    assert "+1 555 123 4567" not in event_str
+
+
+def test_resume_request_service_handles_semantic_extraction_error(monkeypatch):
+    """Test B: SemanticExtractionError publishes SEMANTIC_EXTRACTION_FAILED with sanitized message."""
+    monkeypatch.setenv("KAFKA_BROKERS", "localhost:9092")
+    monkeypatch.setenv("MINIO_ENDPOINT", "play.min.io")
+    monkeypatch.setenv("MINIO_ACCESS_KEY", "test-access-key")
+    monkeypatch.setenv("MINIO_SECRET_KEY", "test-secret-key")
+    monkeypatch.setenv("MINIO_BUCKET_NAME", "resumes")
+
+    class SemanticExtractionFailingParser:
+        def parse_with_layout_pipeline(self, raw_pdf_bytes: bytes):
+            raise SemanticServerError("Gemini upstream 503 service unavailable", status_code=503)
+
+    settings = Settings()
+    producer = DummyKafkaProducer(settings)
+    service = ResumeRequestService(
+        settings,
+        storage_client_cls=DummyStorageClient,
+        kafka_producer_cls=lambda s: producer,
+        parser_cls=SemanticExtractionFailingParser,
+    )
+
+    import asyncio
+
+    async def run_test():
+        await service.start()
+        try:
+            await service.process({
+                "jobId": "job-sem-ext",
+                "resumeId": "resume-sem-ext",
+                "storageKey": "resumes/user/resume.pdf",
+            })
+        finally:
+            await service.shutdown()
+
+    asyncio.run(run_test())
+
+    assert len(producer.sent) == 1
+    topic, event = producer.sent[0]
+    assert topic == settings.kafka_topic_failed
+    assert event["jobId"] == "job-sem-ext"
+    assert event["resumeId"] == "resume-sem-ext"
+    assert event["status"] == "FAILED"
+    assert event["error"]["code"] == "SEMANTIC_EXTRACTION_FAILED"
+    assert event["error"]["message"] == "Semantic extraction failed."
+
+
+def test_resume_request_service_handles_unrelated_generic_exception(monkeypatch):
+    """Test C: Unrelated generic exceptions continue to publish RESUME_PARSE_FAILED."""
+    monkeypatch.setenv("KAFKA_BROKERS", "localhost:9092")
+    monkeypatch.setenv("MINIO_ENDPOINT", "play.min.io")
+    monkeypatch.setenv("MINIO_ACCESS_KEY", "test-access-key")
+    monkeypatch.setenv("MINIO_SECRET_KEY", "test-secret-key")
+    monkeypatch.setenv("MINIO_BUCKET_NAME", "resumes")
+
+    class GenericFailingParser:
+        def parse_with_layout_pipeline(self, raw_pdf_bytes: bytes):
+            raise RuntimeError("Unexpected memory allocation failure")
+
+    settings = Settings()
+    producer = DummyKafkaProducer(settings)
+    service = ResumeRequestService(
+        settings,
+        storage_client_cls=DummyStorageClient,
+        kafka_producer_cls=lambda s: producer,
+        parser_cls=GenericFailingParser,
+    )
+
+    import asyncio
+
+    async def run_test():
+        await service.start()
+        try:
+            await service.process({
+                "jobId": "job-generic-fail",
+                "resumeId": "resume-generic-fail",
+                "storageKey": "resumes/user/resume.pdf",
+            })
+        finally:
+            await service.shutdown()
+
+    asyncio.run(run_test())
+
+    assert len(producer.sent) == 1
+    topic, event = producer.sent[0]
+    assert topic == settings.kafka_topic_failed
+    assert event["error"]["code"] == "RESUME_PARSE_FAILED"
+    assert event["error"]["message"] == "An unexpected error occurred."
+
+
+def test_resume_request_service_no_duplicate_publication_on_failure(monkeypatch):
+    """Test E: Failed requests emit exactly one failure event."""
+    monkeypatch.setenv("KAFKA_BROKERS", "localhost:9092")
+    monkeypatch.setenv("MINIO_ENDPOINT", "play.min.io")
+    monkeypatch.setenv("MINIO_ACCESS_KEY", "test-access-key")
+    monkeypatch.setenv("MINIO_SECRET_KEY", "test-secret-key")
+    monkeypatch.setenv("MINIO_BUCKET_NAME", "resumes")
+
+    class SemanticFailingParser:
+        def parse_with_layout_pipeline(self, raw_pdf_bytes: bytes):
+            raise SemanticExtractionError("Extraction failed")
+
+    settings = Settings()
+    producer = DummyKafkaProducer(settings)
+    service = ResumeRequestService(
+        settings,
+        storage_client_cls=DummyStorageClient,
+        kafka_producer_cls=lambda s: producer,
+        parser_cls=SemanticFailingParser,
+    )
+
+    import asyncio
+
+    async def run_test():
+        await service.start()
+        try:
+            await service.process({
+                "jobId": "job-single-pub",
+                "resumeId": "resume-single-pub",
+                "storageKey": "resumes/user/resume.pdf",
+            })
+        finally:
+            await service.shutdown()
+
+    asyncio.run(run_test())
+
+    assert len(producer.sent) == 1
