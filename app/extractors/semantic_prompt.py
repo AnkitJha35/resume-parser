@@ -27,8 +27,8 @@ CRITICAL GROUNDING AND PROVENANCE RULES:
 10. Return a single valid JSON object adhering strictly to the SemanticOutput schema."""
 
 
-def serialize_semantic_input(semantic_input: SemanticInput) -> str:
-    """Deterministically serialize SemanticInput into a compact JSON string.
+def serialize_semantic_input_full(semantic_input: SemanticInput) -> str:
+    """Reference / debug serialization preserving all layout, coordinates, and full metadata.
 
     Preserves exact block IDs, coordinates, style hints, reading order, suggested
     roles, and table metadata without redundant block copies.
@@ -74,9 +74,13 @@ def serialize_semantic_input(semantic_input: SemanticInput) -> str:
     return json.dumps(payload, indent=2, ensure_ascii=False)
 
 
-def build_extraction_prompt(semantic_input: SemanticInput) -> str:
-    """Construct the complete extraction prompt combining instructions and serialized input."""
-    serialized_input = serialize_semantic_input(semantic_input)
+# Backward-compatible alias for existing tests and debug inspection
+serialize_semantic_input = serialize_semantic_input_full
+
+
+def build_full_extraction_prompt(semantic_input: SemanticInput) -> str:
+    """Construct reference extraction prompt combining instructions and full serialized input."""
+    serialized_input = serialize_semantic_input_full(semantic_input)
     return (
         f"{SEMANTIC_EXTRACTION_SYSTEM_PROMPT}\n\n"
         f"DOCUMENT BLOCKS (JSON):\n"
@@ -227,3 +231,7 @@ def build_compact_extraction_prompt(semantic_input: SemanticInput) -> str:
         f"```json\n{serialized_input}\n```\n\n"
         f"Extract the resume data as a JSON object adhering strictly to the SemanticOutput schema."
     )
+
+
+# Production default prompt builder (Candidate B compact representation)
+build_extraction_prompt = build_compact_extraction_prompt

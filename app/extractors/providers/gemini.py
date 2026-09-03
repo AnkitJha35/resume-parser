@@ -26,6 +26,7 @@ from app.extractors.semantic_extractor import (
 from app.extractors.semantic_prompt import (
     build_compact_extraction_prompt,
     build_extraction_prompt,
+    build_full_extraction_prompt,
     get_compact_schema,
     parse_semantic_output,
     resolve_schema_defs,
@@ -317,9 +318,9 @@ class GeminiSemanticExtractor:
 
         if self._compact:
             prompt = build_compact_extraction_prompt(input_data)
-            response_schema = get_compact_schema(SemanticOutput)
+            response_schema = pydantic_to_gemini_schema(SemanticOutput)
         else:
-            prompt = build_extraction_prompt(input_data)
+            prompt = build_full_extraction_prompt(input_data)
             response_schema = pydantic_to_gemini_schema(SemanticOutput)
 
         endpoint_url = self.get_endpoint_url(model, base_url=base_url)

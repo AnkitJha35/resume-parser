@@ -69,6 +69,7 @@ class SemanticBenchmarkSummary:
     timestamp: str
     provider: str = "gemini"
     model: str = "gemini-2.5-flash"
+    representation: str = "candidate_b_compact"
     total_cases: int = 0
     successful_cases: int = 0
     extraction_failures: int = 0
@@ -358,10 +359,15 @@ class SemanticBenchmarkRunner:
             else:
                 breakdown[arch]["EXCEPTION"] += 1
 
+        representation_name = "candidate_b_compact"
+        if getattr(self.extractor, "_compact", None) is False:
+            representation_name = "full_reference"
+
         return SemanticBenchmarkSummary(
             timestamp=time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()),
             provider=self.provider_name,
             model=self.model_name,
+            representation=representation_name,
             total_cases=len(results),
             successful_cases=successful,
             extraction_failures=ext_fails,
