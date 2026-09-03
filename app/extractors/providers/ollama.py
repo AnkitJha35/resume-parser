@@ -39,17 +39,19 @@ class OllamaSemanticExtractor:
         model: str | None = None,
         timeout: float | None = None,
         num_threads: int | None = None,
+        think: bool | None = None,
         client: httpx.Client | None = None,
     ) -> None:
         self._explicit_base_url = base_url
         self._explicit_model = model
         self._explicit_timeout = timeout
         self._explicit_num_threads = num_threads
+        self._explicit_think = think
         self._client = client
         self.last_usage_metadata: dict[str, Any] | None = None
 
-    def _resolve_config(self) -> tuple[str, str, float, int]:
-        """Resolve base_url, model, timeout, and num_threads from arguments, environment, or settings."""
+    def _resolve_config(self) -> tuple[str, str, float, int, bool]:
+        """Resolve base_url, model, timeout, num_threads, and think from arguments, environment, or settings."""
         # 1. Base URL (defaults to http://localhost:11434)
         base_url = self._explicit_base_url or os.environ.get("OLLAMA_BASE_URL")
         # 2. Model (defaults to qwen2.5-coder:7b)
@@ -81,7 +83,22 @@ class OllamaSemanticExtractor:
             else:
                 num_threads = 8
 
-        if not base_url or not model or num_threads == 8:
+        # 5. Thinking / Reasoning control (defaults to False)
+        think = self._explicit_think
+        if think is None:
+            env_think = os.environ.get("OLLAMA_THINK")
+            if env_think is not None:
+                cleaned = env_think.strip().lower()
+                if cleaned in ("1", "true", "yes", "on"):
+                    think = True
+                elif cleaned in ("0", "false", "no", "off"):
+                    think = False
+                else:
+                    think = False
+            else:
+                think = None
+
+        if not base_url or not model or num_threads == 8 or think is None:
             try:
                 settings = Settings()
                 base_url = base_url or getattr(settings, "ollama_base_url", "http://localhost:11434")
@@ -92,14 +109,17 @@ class OllamaSemanticExtractor:
                     st_threads = getattr(settings, "ollama_num_threads", 8)
                     if isinstance(st_threads, int) and st_threads > 0:
                         num_threads = st_threads
+                if think is None:
+                    think = getattr(settings, "ollama_think", False)
             except (ValidationError, OSError):
                 pass
 
         base_url = (base_url or "http://localhost:11434").rstrip("/")
         model = model or "qwen2.5-coder:7b"
         num_threads = num_threads if (num_threads and num_threads > 0) else 8
+        think = bool(think) if think is not None else False
 
-        return base_url, model, timeout, num_threads
+        return base_url, model, timeout, num_threads, think
 
     @staticmethod
     def get_chat_endpoint_url(base_url: str) -> str:
@@ -159,7 +179,7 @@ class OllamaSemanticExtractor:
 
     def extract(self, input_data: SemanticInput) -> SemanticOutput:
         """Extract structured SemanticOutput from SemanticInput using Ollama API."""
-        base_url, model, timeout, num_threads = self._resolve_config()
+        base_url, model, timeout, num_threads, think = self._resolve_config()
         prompt = build_ollama_extraction_prompt(input_data)
         schema = get_ollama_compact_schema(SemanticOutput)
 
@@ -173,6 +193,7 @@ class OllamaSemanticExtractor:
                 }
             ],
             "stream": False,
+            "think": think,
             "format": schema,
             "options": {
                 "temperature": 0.0,
@@ -213,7 +234,7 @@ class OllamaSemanticExtractor:
                 f"Failed to decode Ollama API response envelope: {err}"
             ) from err
 
-        # Capture token metrics and thread count if reported
+        # Capture token metrics and metadata if reported
         p_tokens = res_json.get("prompt_eval_count")
         o_tokens = res_json.get("eval_count")
         if p_tokens is not None or o_tokens is not None:
@@ -223,10 +244,12 @@ class OllamaSemanticExtractor:
                 "output_tokens": o_tokens,
                 "total_tokens": tot,
                 "num_threads": num_threads,
+                "think": think,
             }
         else:
             self.last_usage_metadata = {
                 "num_threads": num_threads,
+                "think": think,
             }
 
         message = res_json.get("message", {})

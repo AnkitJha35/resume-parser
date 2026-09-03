@@ -22,11 +22,12 @@ from tests.test_semantic_llm_contract import _make_test_document
 def test_ollama_config_defaults_and_override():
     # Test default configuration
     extractor = OllamaSemanticExtractor()
-    base_url, model, timeout, num_threads = extractor._resolve_config()
+    base_url, model, timeout, num_threads, think = extractor._resolve_config()
     assert base_url == "http://localhost:11434"
     assert model == "qwen2.5-coder:7b"
     assert timeout == 120.0
     assert num_threads == 8
+    assert think is False
 
     # Test explicit override
     extractor2 = OllamaSemanticExtractor(
@@ -34,12 +35,14 @@ def test_ollama_config_defaults_and_override():
         model="custom-model:latest",
         timeout=45.0,
         num_threads=12,
+        think=True,
     )
-    b2, m2, t2, th2 = extractor2._resolve_config()
+    b2, m2, t2, th2, thk2 = extractor2._resolve_config()
     assert b2 == "http://custom-host:8000"
     assert m2 == "custom-model:latest"
     assert t2 == 45.0
     assert th2 == 12
+    assert thk2 is True
 
 
 def test_ollama_endpoint_url():
@@ -146,6 +149,7 @@ def test_ollama_request_construction_and_structured_response():
     req_body = json.loads(req.content.decode("utf-8"))
     assert req_body["model"] == "qwen2.5-coder:7b"
     assert req_body["stream"] is False
+    assert req_body["think"] is False
     assert "format" in req_body
     assert req_body["format"]["type"] == "object"
     assert "personal" in req_body["format"]["properties"]
@@ -161,6 +165,7 @@ def test_ollama_request_construction_and_structured_response():
         "output_tokens": 85,
         "total_tokens": 295,
         "num_threads": 8,
+        "think": False,
     }
 
     # 3. Assert resulting Resume
@@ -169,6 +174,71 @@ def test_ollama_request_construction_and_structured_response():
     assert resume.personal.email == "john.doe@example.com"
     assert len(resume.experience) == 1
     assert resume.experience[0].company == "Acme Corporation"
+
+
+def test_ollama_think_resolution(monkeypatch):
+    # 1. Default think is False
+    monkeypatch.delenv("OLLAMA_THINK", raising=False)
+    extractor = OllamaSemanticExtractor()
+    assert extractor._resolve_config()[4] is False
+
+    # 2. Explicit constructor argument overrides everything
+    extractor_explicit_true = OllamaSemanticExtractor(think=True)
+    assert extractor_explicit_true._resolve_config()[4] is True
+
+    extractor_explicit_false = OllamaSemanticExtractor(think=False)
+    assert extractor_explicit_false._resolve_config()[4] is False
+
+    # 3. Environment variable OLLAMA_THINK="true" / "1" / "yes"
+    monkeypatch.setenv("OLLAMA_THINK", "true")
+    extractor_env_true = OllamaSemanticExtractor()
+    assert extractor_env_true._resolve_config()[4] is True
+
+    monkeypatch.setenv("OLLAMA_THINK", "1")
+    assert OllamaSemanticExtractor()._resolve_config()[4] is True
+
+    monkeypatch.setenv("OLLAMA_THINK", "yes")
+    assert OllamaSemanticExtractor()._resolve_config()[4] is True
+
+    # 4. Environment variable OLLAMA_THINK="false" / "0" / "no"
+    monkeypatch.setenv("OLLAMA_THINK", "false")
+    assert OllamaSemanticExtractor()._resolve_config()[4] is False
+
+    monkeypatch.setenv("OLLAMA_THINK", "0")
+    assert OllamaSemanticExtractor()._resolve_config()[4] is False
+
+    # 5. Invalid env var falls back safely to False
+    monkeypatch.setenv("OLLAMA_THINK", "invalid_value")
+    assert OllamaSemanticExtractor()._resolve_config()[4] is False
+
+
+def test_ollama_custom_think_in_request():
+    captured_requests: list[httpx.Request] = []
+
+    def mock_handler(request: httpx.Request) -> httpx.Response:
+        captured_requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "message": {"role": "assistant", "content": json.dumps({"personal": {"name": {"value": "Jane", "source_block_ids": ["b1"]}}})},
+                "prompt_eval_count": 100,
+                "eval_count": 50,
+            },
+            request=request,
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(mock_handler))
+    extractor = OllamaSemanticExtractor(think=True, client=client)
+    sem_input = SemanticInput(document_id="d1", page_count=1, pages=[], blocks=[])
+
+    extractor.extract(sem_input)
+
+    assert len(captured_requests) == 1
+    req_body = json.loads(captured_requests[0].content.decode("utf-8"))
+    # think must be top-level, NOT inside options
+    assert req_body["think"] is True
+    assert "think" not in req_body["options"]
+    assert extractor.last_usage_metadata["think"] is True
 
 
 def test_ollama_num_threads_resolution(monkeypatch):

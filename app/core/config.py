@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     ollama_model: str = "qwen2.5-coder:7b"
     ollama_timeout: float = 120.0
     ollama_num_threads: int = 8
+    ollama_think: bool = False
 
     # pydantic-settings v2 configuration
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")

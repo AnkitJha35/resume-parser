@@ -71,6 +71,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--timeout", type=float, default=None, help="Request timeout in seconds")
     parser.add_argument("--threads", type=int, default=None, help="CPU threads for Ollama (default: 8)")
     parser.add_argument(
+        "--think",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable/disable thinking reasoning mode for Ollama models (default: --no-think)",
+    )
+    parser.add_argument(
         "--fixture",
         type=str,
         default=None,
@@ -97,13 +103,14 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
         print(f"[LIVE BENCHMARK] Executing semantic benchmark via Ollama at '{base_url}' using model '{model}'...")
-        print(f"[LIVE BENCHMARK] Request timeout: {timeout}s. CPU threads: {num_threads or 8}.")
+        print(f"[LIVE BENCHMARK] Request timeout: {timeout}s. CPU threads: {num_threads or 8}. Thinking: {args.think}.")
 
         extractor = OllamaSemanticExtractor(
             base_url=base_url,
             model=model,
             timeout=timeout,
             num_threads=num_threads,
+            think=args.think,
         )
 
     elif provider == "gemini":
