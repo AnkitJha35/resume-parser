@@ -282,27 +282,319 @@ def test_gemini_endpoint_url():
     assert "[" not in url and "]" not in url and "(" not in url and ")" not in url
 
 
-def test_missing_api_key_raises_clear_error(monkeypatch):
+def test_gemini_config_defaults_and_override():
+    # Test default configuration with explicit API key
+    extractor = GeminiSemanticExtractor(api_key="my-test-key")
+    k, m, b, t, r = extractor._resolve_config()
+    assert k == "my-test-key"
+    assert m == "gemini-2.5-flash"
+    assert b == "https://generativelanguage.googleapis.com"
+    assert t == 30.0
+    assert r == 2
+
+    # Test explicit override of all settings
+    extractor2 = GeminiSemanticExtractor(
+        api_key="custom-key",
+        model="gemini-custom",
+        base_url="https://custom.endpoint.internal/",
+        timeout=15.0,
+        max_retries=4,
+    )
+    k2, m2, b2, t2, r2 = extractor2._resolve_config()
+    assert k2 == "custom-key"
+    assert m2 == "gemini-custom"
+    assert b2 == "https://custom.endpoint.internal"
+    assert t2 == 15.0
+    assert r2 == 4
+
+
+def test_gemini_config_precedence(monkeypatch):
+    # 1. Environment variables override defaults
+    monkeypatch.setenv("GEMINI_API_KEY", "env-api-key")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-env-model")
+    monkeypatch.setenv("GEMINI_BASE_URL", "https://env.endpoint.com")
+    monkeypatch.setenv("GEMINI_TIMEOUT", "45.0")
+    monkeypatch.setenv("GEMINI_MAX_RETRIES", "3")
+
+    extractor = GeminiSemanticExtractor()
+    k, m, b, t, r = extractor._resolve_config()
+    assert k == "env-api-key"
+    assert m == "gemini-env-model"
+    assert b == "https://env.endpoint.com"
+    assert t == 45.0
+    assert r == 3
+
+    # 2. Explicit constructor overrides environment variables
+    extractor_explicit = GeminiSemanticExtractor(
+        api_key="explicit-key",
+        model="explicit-model",
+        timeout=10.0,
+        max_retries=1,
+    )
+    ke, me, be, te, re = extractor_explicit._resolve_config()
+    assert ke == "explicit-key"
+    assert me == "explicit-model"
+    assert be == "https://env.endpoint.com"
+    assert te == 10.0
+    assert re == 1
+
+    # 3. Invalid environment variables fall back safely
+    monkeypatch.setenv("GEMINI_TIMEOUT", "invalid_timeout")
+    monkeypatch.setenv("GEMINI_MAX_RETRIES", "-5")
+    extractor_invalid = GeminiSemanticExtractor(api_key="valid-key")
+    _, _, _, ti, ri = extractor_invalid._resolve_config()
+    assert ti == 30.0
+    assert ri == 2
+
+
+def test_gemini_config_precedence_env_over_settings_regression(monkeypatch):
+    # Mock Settings to return different values from env
+    class MockSettings:
+        gemini_api_key = "settings-key"
+        gemini_model = "settings-model"
+        gemini_base_url = "https://settings.endpoint.com"
+        gemini_timeout = 60.0
+        gemini_max_retries = 5
+
+    monkeypatch.setattr("app.extractors.providers.gemini.Settings", MockSettings)
+
+    # Regression Case 1: GEMINI_TIMEOUT=30 vs Settings timeout=60 -> result must be 30.0
+    monkeypatch.setenv("GEMINI_TIMEOUT", "30")
+    # Regression Case 2: GEMINI_MAX_RETRIES=2 vs Settings max_retries=5 -> result must be 2
+    monkeypatch.setenv("GEMINI_MAX_RETRIES", "2")
+    monkeypatch.setenv("GEMINI_API_KEY", "env-key")
+
+    extractor = GeminiSemanticExtractor()
+    k, m, b, t, r = extractor._resolve_config()
+    assert k == "env-key"
+    assert t == 30.0
+    assert r == 2
+
+
+def test_missing_api_key_raises_configuration_error(monkeypatch):
+    from app.extractors.semantic_extractor import SemanticConfigurationError
+
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    # Ensure Settings does not supply a key
+    monkeypatch.setattr("app.extractors.providers.gemini.Settings", lambda: type("S", (), {"gemini_api_key": None})())
+
     extractor = GeminiSemanticExtractor(api_key=None)
     sem_input = _sample_semantic_input()
 
-    with pytest.raises(SemanticExtractionError) as exc_info:
+    with pytest.raises(SemanticConfigurationError) as exc_info:
         extractor.extract(sem_input)
     assert "Gemini API key is required but not configured" in str(exc_info.value)
 
 
-def test_provider_http_error_handling():
+def test_api_key_never_leaks_in_error_message():
+    secret_key = "AIzaSySecretApiKey12345"
+
     def mock_transport_handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(500, text="Internal Server Error", request=request)
+        # Simulate server error returning request details including the secret key
+        return httpx.Response(500, text=f"Error processing request with key {secret_key}", request=request)
 
     client = httpx.Client(transport=httpx.MockTransport(mock_transport_handler))
-    extractor = GeminiSemanticExtractor(api_key="test-key", client=client)
+    extractor = GeminiSemanticExtractor(api_key=secret_key, client=client, max_retries=0)
     sem_input = _sample_semantic_input()
 
     with pytest.raises(SemanticExtractionError) as exc_info:
         extractor.extract(sem_input)
-    assert "Gemini API HTTP error 500" in str(exc_info.value)
+
+    err_str = str(exc_info.value)
+    assert secret_key not in err_str
+    assert "[REDACTED]" in err_str
+
+
+def test_provider_http_rate_limit_error_classification():
+    from app.extractors.semantic_extractor import SemanticRateLimitError
+
+    def mock_transport_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, headers={"retry-after": "5"}, text="Quota exceeded", request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(mock_transport_handler))
+    extractor = GeminiSemanticExtractor(api_key="test-key", client=client, max_retries=0)
+    sem_input = _sample_semantic_input()
+
+    with pytest.raises(SemanticRateLimitError) as exc_info:
+        extractor.extract(sem_input)
+    assert exc_info.value.status_code == 429
+    assert exc_info.value.retry_after == 5.0
+    assert "rate limit exceeded" in str(exc_info.value)
+
+
+def test_provider_http_server_error_classification():
+    from app.extractors.semantic_extractor import SemanticServerError
+
+    def mock_transport_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, text="Service Unavailable", request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(mock_transport_handler))
+    extractor = GeminiSemanticExtractor(api_key="test-key", client=client, max_retries=0)
+    sem_input = _sample_semantic_input()
+
+    with pytest.raises(SemanticServerError) as exc_info:
+        extractor.extract(sem_input)
+    assert exc_info.value.status_code == 503
+    assert "server error" in str(exc_info.value)
+
+
+def test_provider_timeout_error_classification():
+    from app.extractors.semantic_extractor import SemanticTimeoutError
+
+    def mock_transport_handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("Request timed out", request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(mock_transport_handler))
+    extractor = GeminiSemanticExtractor(api_key="test-key", client=client, timeout=10.0, max_retries=0)
+    sem_input = _sample_semantic_input()
+
+    with pytest.raises(SemanticTimeoutError) as exc_info:
+        extractor.extract(sem_input)
+    assert "timed out after 10.0s" in str(exc_info.value)
+
+
+def test_transient_retry_success_with_exponential_backoff():
+    call_count = 0
+    sleep_calls: list[float] = []
+
+    def mock_transport_handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        if call_count <= 2:
+            return httpx.Response(503, text="Temporary server error", request=request)
+        # Attempt 3 succeeds
+        payload = {
+            "personal": {"name": {"value": "Jane Doe", "source_block_ids": ["b_1"]}},
+        }
+        envelope = {"candidates": [{"content": {"parts": [{"text": json.dumps(payload)}]}}]}
+        return httpx.Response(200, json=envelope, request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(mock_transport_handler))
+    extractor = GeminiSemanticExtractor(
+        api_key="test-key",
+        client=client,
+        max_retries=3,
+        initial_backoff=1.0,
+        backoff_multiplier=2.0,
+        sleep_fn=sleep_calls.append,
+    )
+    sem_input = _sample_semantic_input()
+
+    output = extractor.extract(sem_input)
+    assert call_count == 3
+    assert output.personal.name.value == "Jane Doe"
+    # Attempt 1 failed -> slept 1.0s; Attempt 2 failed -> slept 2.0s
+    assert sleep_calls == [1.0, 2.0]
+
+
+def test_transient_retry_rate_limit_uses_retry_after():
+    call_count = 0
+    sleep_calls: list[float] = []
+
+    def mock_transport_handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return httpx.Response(429, headers={"retry-after": "7"}, text="Too Many Requests", request=request)
+        payload = {"personal": {"name": {"value": "Jane", "source_block_ids": ["b1"]}}}
+        return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text": json.dumps(payload)}]}}]}, request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(mock_transport_handler))
+    extractor = GeminiSemanticExtractor(
+        api_key="test-key",
+        client=client,
+        max_retries=2,
+        sleep_fn=sleep_calls.append,
+    )
+    sem_input = _sample_semantic_input()
+
+    output = extractor.extract(sem_input)
+    assert call_count == 2
+    assert output.personal.name.value == "Jane"
+    # Should use Retry-After header (7.0s) instead of default backoff (1.0s)
+    assert sleep_calls == [7.0]
+
+
+def test_transient_retry_exhaustion_no_sleep_after_final():
+    from app.extractors.semantic_extractor import SemanticServerError
+
+    call_count = 0
+    sleep_calls: list[float] = []
+
+    def mock_transport_handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        return httpx.Response(500, text="Persistent glitch", request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(mock_transport_handler))
+    extractor = GeminiSemanticExtractor(
+        api_key="test-key",
+        client=client,
+        max_retries=2,
+        initial_backoff=1.0,
+        backoff_multiplier=2.0,
+        sleep_fn=sleep_calls.append,
+    )
+    sem_input = _sample_semantic_input()
+
+    with pytest.raises(SemanticServerError):
+        extractor.extract(sem_input)
+    # Initial attempt + 2 retries = 3 calls
+    assert call_count == 3
+    # Slept after attempt 0 (1.0s) and attempt 1 (2.0s); NO sleep after attempt 2
+    assert sleep_calls == [1.0, 2.0]
+
+
+def test_non_transient_client_error_not_retried_no_sleep():
+    call_count = 0
+    sleep_calls: list[float] = []
+
+    def mock_transport_handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        return httpx.Response(400, text="Bad Request", request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(mock_transport_handler))
+    extractor = GeminiSemanticExtractor(
+        api_key="test-key",
+        client=client,
+        max_retries=3,
+        sleep_fn=sleep_calls.append,
+    )
+    sem_input = _sample_semantic_input()
+
+    with pytest.raises(SemanticExtractionError) as exc_info:
+        extractor.extract(sem_input)
+    # Must fail on attempt 1 without retry or sleep
+    assert call_count == 1
+    assert sleep_calls == []
+    assert "client HTTP error 400" in str(exc_info.value)
+
+
+def test_deterministic_malformed_json_not_retried_no_sleep():
+    call_count = 0
+    sleep_calls: list[float] = []
+
+    def mock_transport_handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        envelope = {"candidates": [{"content": {"parts": [{"text": "Not valid JSON output"}]}}]}
+        return httpx.Response(200, json=envelope, request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(mock_transport_handler))
+    extractor = GeminiSemanticExtractor(
+        api_key="test-key",
+        client=client,
+        max_retries=3,
+        sleep_fn=sleep_calls.append,
+    )
+    sem_input = _sample_semantic_input()
+
+    with pytest.raises(SemanticExtractionError) as exc_info:
+        extractor.extract(sem_input)
+    assert call_count == 1
+    assert sleep_calls == []
+    assert "Malformed JSON response" in str(exc_info.value)
 
 
 def test_provider_malformed_envelope_handling():
@@ -310,7 +602,7 @@ def test_provider_malformed_envelope_handling():
         return httpx.Response(200, json={"candidates": []}, request=request)
 
     client = httpx.Client(transport=httpx.MockTransport(mock_transport_handler))
-    extractor = GeminiSemanticExtractor(api_key="test-key", client=client)
+    extractor = GeminiSemanticExtractor(api_key="test-key", client=client, max_retries=0)
     sem_input = _sample_semantic_input()
 
     with pytest.raises(SemanticExtractionError) as exc_info:
@@ -350,7 +642,7 @@ def test_provider_request_and_end_to_end_pipeline_seam():
         return httpx.Response(200, json=gemini_envelope, request=request)
 
     client = httpx.Client(transport=httpx.MockTransport(mock_transport_grounded))
-    extractor = GeminiSemanticExtractor(api_key="fake-gemini-key", model="gemini-2.5-flash", client=client)
+    extractor = GeminiSemanticExtractor(api_key="fake-gemini-key", model="gemini-3.5-flash-lite", client=client)
 
     doc = _make_test_document()
     resume = parse_document_semantically(doc, extractor, document_id="gemini-e2e-1")
@@ -359,7 +651,7 @@ def test_provider_request_and_end_to_end_pipeline_seam():
     assert len(captured_requests) > 0
     req = captured_requests[-1]
     # Exact URL assertion: normal URL string without Markdown links
-    expected_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+    expected_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent"
     assert str(req.url) == expected_url
     assert req.headers["x-goog-api-key"] == "fake-gemini-key"
 

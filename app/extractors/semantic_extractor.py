@@ -20,6 +20,39 @@ class SemanticExtractionError(Exception):
     """Base exception for semantic extraction errors."""
 
 
+class SemanticConfigurationError(SemanticExtractionError):
+    """Raised when required LLM provider credentials or configuration are missing or invalid."""
+
+
+class SemanticTransportError(SemanticExtractionError):
+    """Raised on network, connection, DNS, or transport-level communication failures."""
+
+
+class SemanticTimeoutError(SemanticExtractionError):
+    """Raised when an LLM provider request times out."""
+
+
+class SemanticRateLimitError(SemanticExtractionError):
+    """Raised when provider rate limits / quotas are exceeded (e.g. HTTP 429)."""
+
+    def __init__(self, message: str, status_code: int = 429, retry_after: float | None = None) -> None:
+        self.status_code = status_code
+        self.retry_after = retry_after
+        super().__init__(message)
+
+
+class SemanticServerError(SemanticExtractionError):
+    """Raised when the LLM provider returns a 5xx server-side error."""
+
+    def __init__(self, message: str, status_code: int = 500) -> None:
+        self.status_code = status_code
+        super().__init__(message)
+
+
+class SemanticResponseError(SemanticExtractionError):
+    """Raised when the provider returns an unexpected envelope, blocked candidate, or missing content."""
+
+
 class SemanticValidationError(SemanticExtractionError):
     """Raised when semantic output fails deterministic validation invariants."""
 

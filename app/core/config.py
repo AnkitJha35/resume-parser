@@ -27,8 +27,10 @@ class Settings(BaseSettings):
 
     # Semantic LLM configuration (optional)
     gemini_api_key: str | None = None
-    gemini_model: str = "gemini-3.5-flash-lite"
+    gemini_model: str = "gemini-2.5-flash"
+    gemini_base_url: str = "https://generativelanguage.googleapis.com"
     gemini_timeout: float = 30.0
+    gemini_max_retries: int = 2
 
     # Ollama LLM configuration
     ollama_base_url: str = "http://localhost:11434"
