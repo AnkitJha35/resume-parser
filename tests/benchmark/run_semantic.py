@@ -70,6 +70,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--base-url", type=str, default=None, help="Base URL for Ollama (default: http://localhost:11434)")
     parser.add_argument("--timeout", type=float, default=None, help="Request timeout in seconds")
     parser.add_argument("--threads", type=int, default=None, help="CPU threads for Ollama (default: 8)")
+    parser.add_argument(
+        "--fixture",
+        type=str,
+        default=None,
+        help="Run only a specific registered fixture PDF (e.g. 'AditCV_SOL.pdf')",
+    )
     parser.add_argument("--output-dir", type=str, default="benchmark_results", help="Directory to save JSON results")
     parser.add_argument("--compare", action="store_true", help="Also run deterministic baseline and print comparison")
     args = parser.parse_args(argv)
@@ -141,7 +147,12 @@ def main(argv: list[str] | None = None) -> int:
         model_name=model,
     )
 
-    fixtures = runner.discover_fixtures()
+    try:
+        fixtures = runner.discover_fixtures(fixture_name=args.fixture)
+    except ValueError as err:
+        print(f"ERROR: {err}", file=sys.stderr)
+        return 1
+
     print(f"[LIVE BENCHMARK] Discovered {len(fixtures)} benchmark PDF fixtures.")
 
     summary = runner.run_all(fixtures)
