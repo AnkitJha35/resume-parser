@@ -300,6 +300,7 @@ class GeminiSemanticExtractor:
             self.last_usage_metadata = {
                 "provider": "gemini",
                 "model": model_for_metadata,
+                "representation": "candidate_b_compact" if self._compact else "full",
                 "prompt_tokens": None,
                 "output_tokens": None,
                 "total_tokens": None,
@@ -537,6 +538,7 @@ class GeminiSemanticExtractor:
                 self.last_usage_metadata = {
                     "provider": "gemini",
                     "model": model,
+                    "representation": "candidate_b_compact" if self._compact else "full",
                     "prompt_tokens": prompt_tokens,
                     "output_tokens": output_tokens,
                     "total_tokens": total_tokens,
@@ -560,6 +562,7 @@ class GeminiSemanticExtractor:
                 self.last_usage_metadata = {
                     "provider": "gemini",
                     "model": model,
+                    "representation": "candidate_b_compact" if self._compact else "full",
                     "prompt_tokens": prompt_tokens,
                     "output_tokens": output_tokens,
                     "total_tokens": total_tokens,

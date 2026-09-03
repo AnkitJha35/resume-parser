@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
+import time
 from typing import Any
 
 import httpx
@@ -20,6 +22,8 @@ from app.extractors.semantic_prompt import (
     resolve_schema_defs,
     serialize_compact_semantic_input,
 )
+
+logger = logging.getLogger(__name__)
 
 # Provider-local aliases for backwards compatibility
 serialize_ollama_compact_input = serialize_compact_semantic_input
@@ -179,6 +183,7 @@ class OllamaSemanticExtractor:
 
     def extract(self, input_data: SemanticInput) -> SemanticOutput:
         """Extract structured SemanticOutput from SemanticInput using Ollama API."""
+        start_time = time.monotonic()
         base_url, model, timeout, num_threads, think = self._resolve_config()
         prompt = build_ollama_extraction_prompt(input_data)
         schema = get_ollama_compact_schema(SemanticOutput)
@@ -201,6 +206,8 @@ class OllamaSemanticExtractor:
             },
         }
 
+        logger.debug("Ollama request started model=%s base_url=%s", model, base_url)
+
         # Send request
         try:
             if self._client is not None:
@@ -210,18 +217,26 @@ class OllamaSemanticExtractor:
                     response = client.post(endpoint_url, json=payload)
             response.raise_for_status()
         except httpx.ConnectError as err:
+            elapsed_ms = (time.monotonic() - start_time) * 1000.0
+            self._record_failure(model, "httpx.ConnectError", elapsed_ms)
             raise SemanticExtractionError(
                 f"Ollama connection failed at '{base_url}'. Is Ollama running? Error: {err}"
             ) from err
         except httpx.HTTPStatusError as err:
+            elapsed_ms = (time.monotonic() - start_time) * 1000.0
+            self._record_failure(model, "httpx.HTTPStatusError", elapsed_ms)
             raise SemanticExtractionError(
                 f"Ollama API HTTP error {err.response.status_code}: {err.response.text}"
             ) from err
         except httpx.TimeoutException as err:
+            elapsed_ms = (time.monotonic() - start_time) * 1000.0
+            self._record_failure(model, "httpx.TimeoutException", elapsed_ms)
             raise SemanticExtractionError(
                 f"Ollama API request timed out after {timeout}s"
             ) from err
         except httpx.RequestError as err:
+            elapsed_ms = (time.monotonic() - start_time) * 1000.0
+            self._record_failure(model, "httpx.RequestError", elapsed_ms)
             raise SemanticExtractionError(
                 f"Ollama API request failed: {err}"
             ) from err
@@ -230,6 +245,8 @@ class OllamaSemanticExtractor:
         try:
             res_json = response.json()
         except Exception as err:
+            elapsed_ms = (time.monotonic() - start_time) * 1000.0
+            self._record_failure(model, type(err).__name__, elapsed_ms)
             raise SemanticExtractionError(
                 f"Failed to decode Ollama API response envelope: {err}"
             ) from err
@@ -252,6 +269,15 @@ class OllamaSemanticExtractor:
                 "think": think,
             }
 
+        elapsed_ms = (time.monotonic() - start_time) * 1000.0
+        logger.info(
+            "Ollama request completed model=%s latency_ms=%.2f prompt_tokens=%s output_tokens=%s",
+            model,
+            elapsed_ms,
+            p_tokens,
+            o_tokens,
+        )
+
         message = res_json.get("message", {})
         content = message.get("content")
         if content is None:
@@ -260,3 +286,22 @@ class OllamaSemanticExtractor:
             )
 
         return parse_semantic_output(content)
+
+    def _record_failure(self, model: str, error_type: str, latency_ms: float) -> None:
+        self.last_usage_metadata = {
+            "provider": "ollama",
+            "model": model,
+            "representation": "candidate_b_compact",
+            "prompt_tokens": None,
+            "output_tokens": None,
+            "total_tokens": None,
+            "latency_ms": round(latency_ms, 2),
+            "status": "failure",
+            "error_type": error_type,
+        }
+        logger.error(
+            "Ollama request failed model=%s error_type=%s latency_ms=%.2f",
+            model,
+            error_type,
+            latency_ms,
+        )
