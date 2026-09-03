@@ -27,8 +27,14 @@ class Settings(BaseSettings):
 
     # Semantic LLM configuration (optional)
     gemini_api_key: str | None = None
-    gemini_model: str = "gemini-2.5-flash"
+    gemini_model: str = "gemini-3.5-flash-lite"
     gemini_timeout: float = 30.0
+
+    # Ollama LLM configuration
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_model: str = "qwen2.5-coder:7b"
+    ollama_timeout: float = 120.0
+    ollama_num_threads: int = 8
 
     # pydantic-settings v2 configuration
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")

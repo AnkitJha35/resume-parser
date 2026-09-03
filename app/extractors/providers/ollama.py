@@ -38,16 +38,18 @@ class OllamaSemanticExtractor:
         base_url: str | None = None,
         model: str | None = None,
         timeout: float | None = None,
+        num_threads: int | None = None,
         client: httpx.Client | None = None,
     ) -> None:
         self._explicit_base_url = base_url
         self._explicit_model = model
         self._explicit_timeout = timeout
+        self._explicit_num_threads = num_threads
         self._client = client
-        self.last_usage_metadata: dict[str, int | None] | None = None
+        self.last_usage_metadata: dict[str, Any] | None = None
 
-    def _resolve_config(self) -> tuple[str, str, float]:
-        """Resolve base_url, model, and timeout from arguments, environment, or settings."""
+    def _resolve_config(self) -> tuple[str, str, float, int]:
+        """Resolve base_url, model, timeout, and num_threads from arguments, environment, or settings."""
         # 1. Base URL (defaults to http://localhost:11434)
         base_url = self._explicit_base_url or os.environ.get("OLLAMA_BASE_URL")
         # 2. Model (defaults to qwen2.5-coder:7b)
@@ -63,21 +65,41 @@ class OllamaSemanticExtractor:
                     timeout = 120.0
             else:
                 timeout = 120.0
+        # 4. CPU Threads (defaults to 8)
+        num_threads = self._explicit_num_threads
+        if num_threads is not None and num_threads <= 0:
+            num_threads = 8
 
-        if not base_url or not model:
+        if num_threads is None:
+            env_threads = os.environ.get("OLLAMA_NUM_THREADS")
+            if env_threads:
+                try:
+                    parsed_threads = int(env_threads)
+                    num_threads = parsed_threads if parsed_threads > 0 else 8
+                except ValueError:
+                    num_threads = 8
+            else:
+                num_threads = 8
+
+        if not base_url or not model or num_threads == 8:
             try:
                 settings = Settings()
                 base_url = base_url or getattr(settings, "ollama_base_url", "http://localhost:11434")
                 model = model or getattr(settings, "ollama_model", "qwen2.5-coder:7b")
                 if timeout == 120.0:
                     timeout = getattr(settings, "ollama_timeout", 120.0)
+                if num_threads == 8:
+                    st_threads = getattr(settings, "ollama_num_threads", 8)
+                    if isinstance(st_threads, int) and st_threads > 0:
+                        num_threads = st_threads
             except (ValidationError, OSError):
                 pass
 
         base_url = (base_url or "http://localhost:11434").rstrip("/")
         model = model or "qwen2.5-coder:7b"
+        num_threads = num_threads if (num_threads and num_threads > 0) else 8
 
-        return base_url, model, timeout
+        return base_url, model, timeout, num_threads
 
     @staticmethod
     def get_chat_endpoint_url(base_url: str) -> str:
@@ -137,7 +159,7 @@ class OllamaSemanticExtractor:
 
     def extract(self, input_data: SemanticInput) -> SemanticOutput:
         """Extract structured SemanticOutput from SemanticInput using Ollama API."""
-        base_url, model, timeout = self._resolve_config()
+        base_url, model, timeout, num_threads = self._resolve_config()
         prompt = build_ollama_extraction_prompt(input_data)
         schema = get_ollama_compact_schema(SemanticOutput)
 
@@ -154,6 +176,7 @@ class OllamaSemanticExtractor:
             "format": schema,
             "options": {
                 "temperature": 0.0,
+                "num_thread": num_threads,
             },
         }
 
@@ -190,7 +213,7 @@ class OllamaSemanticExtractor:
                 f"Failed to decode Ollama API response envelope: {err}"
             ) from err
 
-        # Capture token metrics if reported
+        # Capture token metrics and thread count if reported
         p_tokens = res_json.get("prompt_eval_count")
         o_tokens = res_json.get("eval_count")
         if p_tokens is not None or o_tokens is not None:
@@ -199,9 +222,12 @@ class OllamaSemanticExtractor:
                 "prompt_tokens": p_tokens,
                 "output_tokens": o_tokens,
                 "total_tokens": tot,
+                "num_threads": num_threads,
             }
         else:
-            self.last_usage_metadata = None
+            self.last_usage_metadata = {
+                "num_threads": num_threads,
+            }
 
         message = res_json.get("message", {})
         content = message.get("content")
