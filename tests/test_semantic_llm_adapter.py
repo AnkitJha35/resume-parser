@@ -672,3 +672,205 @@ def test_provider_request_and_end_to_end_pipeline_seam():
     assert resume.personal.email == "john.doe@example.com"
     assert len(resume.experience) == 1
     assert resume.experience[0].company == "Acme Corporation"
+
+
+def test_gemini_observability_success_metadata():
+    def mock_transport(request: httpx.Request) -> httpx.Response:
+        payload = {"personal": {"name": {"value": "Alice", "source_block_ids": ["b1"]}}}
+        envelope = {
+            "candidates": [{"content": {"parts": [{"text": json.dumps(payload)}]}}],
+            "usageMetadata": {
+                "promptTokenCount": 2219,
+                "candidatesTokenCount": 404,
+                "totalTokenCount": 2623,
+            },
+        }
+        return httpx.Response(200, json=envelope, request=request)
+
+    clock_values = [10.0, 12.6155]  # 2615.5 ms
+    clock_idx = 0
+
+    def mock_clock() -> float:
+        nonlocal clock_idx
+        val = clock_values[min(clock_idx, len(clock_values) - 1)]
+        clock_idx += 1
+        return val
+
+    client = httpx.Client(transport=httpx.MockTransport(mock_transport))
+    extractor = GeminiSemanticExtractor(
+        api_key="test-key",
+        model="gemini-2.5-flash",
+        client=client,
+        time_fn=mock_clock,
+    )
+    sem_input = _sample_semantic_input()
+    output = extractor.extract(sem_input)
+
+    assert output.personal.name.value == "Alice"
+    meta = extractor.last_usage_metadata
+    assert meta is not None
+    assert meta["provider"] == "gemini"
+    assert meta["model"] == "gemini-2.5-flash"
+    assert meta["prompt_tokens"] == 2219
+    assert meta["output_tokens"] == 404
+    assert meta["total_tokens"] == 2623
+    assert meta["latency_ms"] == 2615.5
+    assert meta["retry_count"] == 0
+    assert meta["status"] == "success"
+
+
+def test_gemini_observability_missing_usage_metadata():
+    def mock_transport(request: httpx.Request) -> httpx.Response:
+        payload = {"personal": {"name": {"value": "Alice", "source_block_ids": ["b1"]}}}
+        envelope = {
+            "candidates": [{"content": {"parts": [{"text": json.dumps(payload)}]}}],
+            # No usageMetadata provided
+        }
+        return httpx.Response(200, json=envelope, request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(mock_transport))
+    extractor = GeminiSemanticExtractor(
+        api_key="test-key",
+        client=client,
+    )
+    sem_input = _sample_semantic_input()
+    extractor.extract(sem_input)
+
+    meta = extractor.last_usage_metadata
+    assert meta is not None
+    assert meta["prompt_tokens"] is None
+    assert meta["output_tokens"] is None
+    assert meta["total_tokens"] is None
+    assert meta["latency_ms"] >= 0.0
+    assert meta["status"] == "success"
+    assert meta["retry_count"] == 0
+
+
+def test_gemini_observability_retry_metadata_on_recovery():
+    call_count = 0
+
+    def mock_transport(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return httpx.Response(503, text="Temporary error", request=request)
+        payload = {"personal": {"name": {"value": "Bob", "source_block_ids": ["b1"]}}}
+        envelope = {
+            "candidates": [{"content": {"parts": [{"text": json.dumps(payload)}]}}],
+            "usageMetadata": {"promptTokenCount": 100, "candidatesTokenCount": 50, "totalTokenCount": 150},
+        }
+        return httpx.Response(200, json=envelope, request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(mock_transport))
+    extractor = GeminiSemanticExtractor(
+        api_key="test-key",
+        client=client,
+        max_retries=2,
+        sleep_fn=lambda _: None,
+    )
+    sem_input = _sample_semantic_input()
+    extractor.extract(sem_input)
+
+    meta = extractor.last_usage_metadata
+    assert meta is not None
+    assert meta["retry_count"] == 1
+    assert meta["status"] == "success"
+    assert meta["prompt_tokens"] == 100
+
+
+def test_gemini_observability_retry_exhaustion_failure_metadata():
+    from app.extractors.semantic_extractor import SemanticServerError
+
+    def mock_transport(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="Server Error", request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(mock_transport))
+    extractor = GeminiSemanticExtractor(
+        api_key="test-key",
+        model="gemini-2.5-flash",
+        client=client,
+        max_retries=2,
+        sleep_fn=lambda _: None,
+    )
+    sem_input = _sample_semantic_input()
+
+    with pytest.raises(SemanticServerError):
+        extractor.extract(sem_input)
+
+    meta = extractor.last_usage_metadata
+    assert meta is not None
+    assert meta["provider"] == "gemini"
+    assert meta["model"] == "gemini-2.5-flash"
+    assert meta["retry_count"] == 2
+    assert meta["status"] == "failure"
+    assert meta["error_type"] == "SemanticServerError"
+    assert meta["latency_ms"] >= 0.0
+
+
+def test_gemini_observability_deterministic_malformed_json_failure_metadata():
+    def mock_transport(request: httpx.Request) -> httpx.Response:
+        envelope = {"candidates": [{"content": {"parts": [{"text": "INVALID_JSON_HERE"}]}}]}
+        return httpx.Response(200, json=envelope, request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(mock_transport))
+    extractor = GeminiSemanticExtractor(
+        api_key="test-key",
+        client=client,
+    )
+    sem_input = _sample_semantic_input()
+
+    with pytest.raises(SemanticExtractionError):
+        extractor.extract(sem_input)
+
+    meta = extractor.last_usage_metadata
+    assert meta is not None
+    assert meta["retry_count"] == 0
+    assert meta["status"] == "failure"
+    assert meta["error_type"] == "SemanticExtractionError"
+
+
+def test_gemini_observability_configuration_failure_metadata(monkeypatch):
+    from app.extractors.semantic_extractor import SemanticConfigurationError
+
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setattr("app.extractors.providers.gemini.Settings", lambda: type("S", (), {"gemini_api_key": None})())
+
+    extractor = GeminiSemanticExtractor(api_key=None, model="gemini-custom")
+    sem_input = _sample_semantic_input()
+
+    with pytest.raises(SemanticConfigurationError):
+        extractor.extract(sem_input)
+
+    meta = extractor.last_usage_metadata
+    assert meta is not None
+    assert meta["status"] == "failure"
+    assert meta["error_type"] == "SemanticConfigurationError"
+    assert meta["retry_count"] == 0
+
+
+def test_gemini_observability_no_credentials_or_content_stored():
+    secret_key = "AIzaSySuperSecretKey999"
+
+    def mock_transport(request: httpx.Request) -> httpx.Response:
+        payload = {"personal": {"name": {"value": "SecretName", "source_block_ids": ["b1"]}}}
+        envelope = {
+            "candidates": [{"content": {"parts": [{"text": json.dumps(payload)}]}}],
+            "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 10, "totalTokenCount": 20},
+        }
+        return httpx.Response(200, json=envelope, request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(mock_transport))
+    extractor = GeminiSemanticExtractor(
+        api_key=secret_key,
+        client=client,
+    )
+    sem_input = _sample_semantic_input()
+    extractor.extract(sem_input)
+
+    meta = extractor.last_usage_metadata
+    meta_str = json.dumps(meta)
+
+    # Assert API key, prompt text, and resume content are completely absent
+    assert secret_key not in meta_str
+    assert "SecretName" not in meta_str
+    assert "DOCUMENT BLOCKS" not in meta_str

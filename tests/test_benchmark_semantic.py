@@ -108,11 +108,10 @@ def test_mocked_gemini_extraction_through_benchmark_runner(tmp_path):
     resume = parse_document_semantically(doc, extractor, document_id="doc_mock")
     assert isinstance(resume, Resume)
     assert resume.personal.name == "John Doe"
-    assert extractor.last_usage_metadata == {
-        "prompt_tokens": 150,
-        "output_tokens": 35,
-        "total_tokens": 185,
-    }
+    assert extractor.last_usage_metadata["prompt_tokens"] == 150
+    assert extractor.last_usage_metadata["output_tokens"] == 35
+    assert extractor.last_usage_metadata["total_tokens"] == 185
+    assert extractor.last_usage_metadata["status"] == "success"
 
 
 def test_extraction_and_validation_failures_isolated_per_resume():
@@ -246,7 +245,11 @@ def test_usage_metadata_remains_none_when_unreported():
 
     output = extractor.extract(sem_input)
     assert isinstance(output, SemanticOutput)
-    assert extractor.last_usage_metadata is None
+    assert extractor.last_usage_metadata is not None
+    assert extractor.last_usage_metadata["prompt_tokens"] is None
+    assert extractor.last_usage_metadata["output_tokens"] is None
+    assert extractor.last_usage_metadata["total_tokens"] is None
+    assert extractor.last_usage_metadata["status"] == "success"
 
 
 # =====================================================================
