@@ -866,7 +866,6 @@ def test_gemini_observability_no_credentials_or_content_stored():
     )
     sem_input = _sample_semantic_input()
     extractor.extract(sem_input)
-
     meta = extractor.last_usage_metadata
     meta_str = json.dumps(meta)
 
@@ -874,3 +873,76 @@ def test_gemini_observability_no_credentials_or_content_stored():
     assert secret_key not in meta_str
     assert "SecretName" not in meta_str
     assert "DOCUMENT BLOCKS" not in meta_str
+
+
+def test_gemini_observability_preserves_usage_metadata_on_post_response_failure():
+    # 1. HTTP 200 with valid usageMetadata
+    # 2. Malformed semantic JSON in content parts
+    def mock_transport(request: httpx.Request) -> httpx.Response:
+        envelope = {
+            "candidates": [{"content": {"parts": [{"text": "THIS_IS_MALFORMED_JSON"}]}}],
+            "usageMetadata": {
+                "promptTokenCount": 2219,
+                "candidatesTokenCount": 404,
+                "totalTokenCount": 2623,
+            },
+        }
+        return httpx.Response(200, json=envelope, request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(mock_transport))
+    extractor = GeminiSemanticExtractor(
+        api_key="test-key",
+        model="gemini-2.5-flash",
+        client=client,
+    )
+    sem_input = _sample_semantic_input()
+
+    with pytest.raises(SemanticExtractionError):
+        extractor.extract(sem_input)
+
+    meta = extractor.last_usage_metadata
+    assert meta is not None
+    assert meta["provider"] == "gemini"
+    assert meta["model"] == "gemini-2.5-flash"
+    assert meta["prompt_tokens"] == 2219
+    assert meta["output_tokens"] == 404
+    assert meta["total_tokens"] == 2623
+    assert meta["status"] == "failure"
+    assert meta["error_type"] == "SemanticExtractionError"
+    assert meta["retry_count"] == 0
+    assert meta["latency_ms"] >= 0.0
+
+
+def test_gemini_observability_preserves_usage_metadata_on_empty_candidates():
+    from app.extractors.semantic_extractor import SemanticResponseError
+
+    # HTTP 200 with valid usageMetadata but empty candidates list
+    def mock_transport(request: httpx.Request) -> httpx.Response:
+        envelope = {
+            "candidates": [],
+            "usageMetadata": {
+                "promptTokenCount": 1500,
+                "candidatesTokenCount": 0,
+                "totalTokenCount": 1500,
+            },
+        }
+        return httpx.Response(200, json=envelope, request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(mock_transport))
+    extractor = GeminiSemanticExtractor(
+        api_key="test-key",
+        model="gemini-2.5-flash",
+        client=client,
+    )
+    sem_input = _sample_semantic_input()
+
+    with pytest.raises(SemanticResponseError):
+        extractor.extract(sem_input)
+
+    meta = extractor.last_usage_metadata
+    assert meta is not None
+    assert meta["prompt_tokens"] == 1500
+    assert meta["output_tokens"] == 0
+    assert meta["total_tokens"] == 1500
+    assert meta["status"] == "failure"
+    assert meta["error_type"] == "SemanticResponseError"

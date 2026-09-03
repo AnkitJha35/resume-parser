@@ -172,6 +172,9 @@ class GeminiSemanticExtractor:
         """Extract structured SemanticOutput from SemanticInput using Gemini REST API."""
         start_time = self._time_fn()
         retry_count = 0
+        prompt_tokens: int | None = None
+        output_tokens: int | None = None
+        total_tokens: int | None = None
         model_for_metadata = self._explicit_model or os.environ.get("GEMINI_MODEL") or "gemini-2.5-flash"
 
         try:
@@ -335,9 +338,6 @@ class GeminiSemanticExtractor:
                     ) from err
 
                 usage = res_json.get("usageMetadata")
-                prompt_tokens: int | None = None
-                output_tokens: int | None = None
-                total_tokens: int | None = None
                 if isinstance(usage, dict):
                     prompt_tokens = usage.get("promptTokenCount")
                     output_tokens = usage.get("candidatesTokenCount")
@@ -388,9 +388,9 @@ class GeminiSemanticExtractor:
                 self.last_usage_metadata = {
                     "provider": "gemini",
                     "model": model,
-                    "prompt_tokens": None,
-                    "output_tokens": None,
-                    "total_tokens": None,
+                    "prompt_tokens": prompt_tokens,
+                    "output_tokens": output_tokens,
+                    "total_tokens": total_tokens,
                     "latency_ms": round(total_latency_ms, 2),
                     "retry_count": retry_count,
                     "status": "failure",
