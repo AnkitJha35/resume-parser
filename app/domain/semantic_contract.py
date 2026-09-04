@@ -124,6 +124,26 @@ class SemanticBlockCategory(str, Enum):
     UNKNOWN = "UNKNOWN"
 
 
+EXCLUDED_LOCATION_ROLES: frozenset[str] = frozenset({
+    "ORGANIZATION",
+    "ENTRY_TITLE",
+    "BULLET",
+    "TECHNOLOGY",
+    "CREDENTIAL",
+    "FOOTER",
+    "SECTION_HEADING",
+})
+
+EXCLUDED_LOCATION_CATEGORIES: frozenset[SemanticBlockCategory] = frozenset({
+    SemanticBlockCategory.EXPERIENCE,
+    SemanticBlockCategory.EDUCATION,
+    SemanticBlockCategory.PROJECT,
+    SemanticBlockCategory.REFERENCE,
+    SemanticBlockCategory.BOILERPLATE,
+    SemanticBlockCategory.TABLE_HEADER,
+})
+
+
 # =====================================================================
 # 2. SemanticInput Contract (Document IR -> LLM Prompt Payload)
 # =====================================================================
@@ -667,7 +687,7 @@ def validate_semantic_output(output: SemanticOutput, input_data: SemanticInput) 
                 violations.append(f"DOCUMENT_TITLE_AS_NAME: {val!r}")
                 break
 
-    # 2. Location Scope Invariant: Must originate from structural header region
+    # 2. Location Scope Invariant: Must originate from page 1 personal/contact/header context
     if output.personal.location and output.personal.location.value:
         _verify_grounded_string(output.personal.location, "personal.location")
         val = output.personal.location.value.strip()
@@ -675,14 +695,69 @@ def validate_semantic_output(output: SemanticOutput, input_data: SemanticInput) 
             if pat.search(val):
                 violations.append(f"SECTION_HEADER_AS_LOCATION: {val!r}")
                 break
+
+        # Collect source block IDs mapped to body collections to prevent cross-collection leakage
+        body_mapped_block_ids: set[str] = set()
+        for exp in output.experience:
+            body_mapped_block_ids.update(exp.source_block_ids)
+            if exp.company:
+                body_mapped_block_ids.update(exp.company.source_block_ids)
+            if exp.designation:
+                body_mapped_block_ids.update(exp.designation.source_block_ids)
+            if exp.startDate:
+                body_mapped_block_ids.update(exp.startDate.source_block_ids)
+            if exp.endDate:
+                body_mapped_block_ids.update(exp.endDate.source_block_ids)
+            if exp.location:
+                body_mapped_block_ids.update(exp.location.source_block_ids)
+            if exp.description:
+                body_mapped_block_ids.update(exp.description.source_block_ids)
+            for tech in exp.technologies:
+                body_mapped_block_ids.update(tech.source_block_ids)
+        for edu in output.education:
+            body_mapped_block_ids.update(edu.source_block_ids)
+            if edu.institution:
+                body_mapped_block_ids.update(edu.institution.source_block_ids)
+            if edu.degree:
+                body_mapped_block_ids.update(edu.degree.source_block_ids)
+            if edu.fieldOfStudy:
+                body_mapped_block_ids.update(edu.fieldOfStudy.source_block_ids)
+            if edu.startDate:
+                body_mapped_block_ids.update(edu.startDate.source_block_ids)
+            if edu.endDate:
+                body_mapped_block_ids.update(edu.endDate.source_block_ids)
+            if edu.grade:
+                body_mapped_block_ids.update(edu.grade.source_block_ids)
+        for prj in output.projects:
+            body_mapped_block_ids.update(prj.source_block_ids)
+            if prj.name:
+                body_mapped_block_ids.update(prj.name.source_block_ids)
+            if prj.description:
+                body_mapped_block_ids.update(prj.description.source_block_ids)
+            if prj.startDate:
+                body_mapped_block_ids.update(prj.startDate.source_block_ids)
+            if prj.endDate:
+                body_mapped_block_ids.update(prj.endDate.source_block_ids)
+            for tech in prj.technologies:
+                body_mapped_block_ids.update(tech.source_block_ids)
+
         for bid in output.personal.location.source_block_ids:
             b = known_blocks.get(bid)
             if b:
                 if b.page != 1:
                     violations.append(f"LOCATION_OUTSIDE_HEADER_REGION: block {bid} is on page {b.page}")
-                elif b.region_kind != "header":
+                elif b.region_kind == "footer":
+                    violations.append(f"LOCATION_OUTSIDE_HEADER_REGION: block {bid} belongs to footer region")
+                elif bid in body_mapped_block_ids:
+                    violations.append(f"LOCATION_OUTSIDE_HEADER_REGION: block {bid} is also mapped to body collections")
+                elif category_by_block_id.get(bid) in EXCLUDED_LOCATION_CATEGORIES:
+                    cat = category_by_block_id[bid]
                     violations.append(
-                        f"LOCATION_OUTSIDE_HEADER_REGION: block {bid} belongs to region kind {b.region_kind!r}, expected 'header'"
+                        f"LOCATION_OUTSIDE_HEADER_REGION: block {bid} belongs to excluded category {cat.value}"
+                    )
+                elif b.suggested_role in EXCLUDED_LOCATION_ROLES:
+                    violations.append(
+                        f"LOCATION_OUTSIDE_HEADER_REGION: block {bid} has non-personal structural role {b.suggested_role}"
                     )
 
     # 3. Personal Contact Provenance

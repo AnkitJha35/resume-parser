@@ -19,6 +19,7 @@ from app.domain.semantic_contract import (
     SemanticBlockInput,
     SemanticInput,
     SemanticOutput,
+    SemanticPageMeta,
     build_semantic_input,
     semantic_output_to_resume,
     validate_semantic_output,
@@ -250,7 +251,7 @@ def test_structural_header_based_location_validation():
     doc = _make_test_document()
     sem_input = build_semantic_input(doc, document_id="test-doc-1")
 
-    # b_p1_4 is in region_kind="physical_region" (body), NOT "header"
+    # b_p1_4 is in region_kind="physical_region" (body), suggested_role="ORGANIZATION", NOT a personal header/contact block
     output = SemanticOutput(
         personal=GroundedPersonal(
             location=GroundedString(value="Acme Corporation", source_block_ids=["b_p1_4"]),
@@ -259,6 +260,174 @@ def test_structural_header_based_location_validation():
 
     violations = validate_semantic_output(output, sem_input)
     assert any("LOCATION_OUTSIDE_HEADER_REGION" in v for v in violations)
+
+
+def test_personal_location_in_physical_region_valid():
+    sem_input = SemanticInput(
+        document_id="test-doc-physical-region",
+        page_count=1,
+        archetype=DocumentArchetype.STANDARD_CV,
+        pages=[SemanticPageMeta(page_number=1, width=612.0, height=792.0)],
+        blocks=[
+            SemanticBlockInput(
+                block_id="b_p1_0",
+                text="Devon Vance",
+                page=1,
+                bbox=[50.0, 50.0, 200.0, 70.0],
+                region_id="r1",
+                region_kind="physical_region",
+                reading_order=1,
+                suggested_role="HEADER",
+            ),
+            SemanticBlockInput(
+                block_id="b_p1_1",
+                text="Seattle, WA | devon.vance@email.com | github.com/devon-vance",
+                page=1,
+                bbox=[50.0, 75.0, 450.0, 90.0],
+                region_id="r1",
+                region_kind="physical_region",
+                reading_order=2,
+                suggested_role="CONTACT",
+            ),
+        ],
+    )
+    output = SemanticOutput(
+        document_archetype=DocumentArchetype.STANDARD_CV,
+        block_classifications=[
+            BlockClassification(block_id="b_p1_0", category=SemanticBlockCategory.PERSONAL),
+            BlockClassification(block_id="b_p1_1", category=SemanticBlockCategory.PERSONAL),
+        ],
+        personal=GroundedPersonal(
+            name=GroundedString(value="Devon Vance", source_block_ids=["b_p1_0"]),
+            location=GroundedString(value="Seattle, WA", source_block_ids=["b_p1_1"]),
+            email=GroundedString(value="devon.vance@email.com", source_block_ids=["b_p1_1"]),
+        ),
+    )
+    violations = validate_semantic_output(output, sem_input)
+    assert not any("LOCATION_OUTSIDE_HEADER_REGION" in v for v in violations)
+    assert not violations
+
+
+def test_personal_location_in_column_form_context_valid():
+    sem_input = SemanticInput(
+        document_id="test-doc-form-column",
+        page_count=1,
+        archetype=DocumentArchetype.STRUCTURED_FORM,
+        pages=[SemanticPageMeta(page_number=1, width=612.0, height=792.0)],
+        blocks=[
+            SemanticBlockInput(
+                block_id="b_p1_0",
+                text="AKIBUL ALAM",
+                page=1,
+                bbox=[50.0, 50.0, 200.0, 70.0],
+                region_id="r1",
+                region_kind="column",
+                reading_order=1,
+                table_id="table_p1_0",
+                row_index=0,
+                column_index=0,
+                suggested_role="UNKNOWN",
+            ),
+            SemanticBlockInput(
+                block_id="b_p1_1",
+                text="PERMANENT ADDRESS : VILL: PASHCHIM KATHALIA, PO: KATHALIA, DIST: JHALAKATHI",
+                page=1,
+                bbox=[50.0, 75.0, 450.0, 90.0],
+                region_id="r1",
+                region_kind="column",
+                reading_order=2,
+                table_id="table_p1_0",
+                row_index=1,
+                column_index=0,
+                suggested_role="UNKNOWN",
+            ),
+        ],
+    )
+    output = SemanticOutput(
+        document_archetype=DocumentArchetype.STRUCTURED_FORM,
+        block_classifications=[
+            BlockClassification(block_id="b_p1_0", category=SemanticBlockCategory.PERSONAL),
+            BlockClassification(block_id="b_p1_1", category=SemanticBlockCategory.PERSONAL),
+        ],
+        personal=GroundedPersonal(
+            name=GroundedString(value="AKIBUL ALAM", source_block_ids=["b_p1_0"]),
+            location=GroundedString(
+                value="VILL: PASHCHIM KATHALIA, PO: KATHALIA, DIST: JHALAKATHI",
+                source_block_ids=["b_p1_1"],
+            ),
+        ),
+    )
+    violations = validate_semantic_output(output, sem_input)
+    assert not any("LOCATION_OUTSIDE_HEADER_REGION" in v for v in violations)
+    assert not violations
+
+
+def test_personal_location_in_experience_section_rejected():
+    sem_input = SemanticInput(
+        document_id="test-doc-exp-location",
+        page_count=1,
+        archetype=DocumentArchetype.STANDARD_CV,
+        pages=[SemanticPageMeta(page_number=1, width=612.0, height=792.0)],
+        blocks=[
+            SemanticBlockInput(
+                block_id="b_p1_0",
+                text="John Doe",
+                page=1,
+                bbox=[50.0, 50.0, 200.0, 70.0],
+                region_id="r0",
+                region_kind="header",
+                reading_order=1,
+                suggested_role="HEADER",
+            ),
+            SemanticBlockInput(
+                block_id="b_p1_1",
+                text="Senior Software Engineer - New York, NY",
+                page=1,
+                bbox=[50.0, 200.0, 300.0, 220.0],
+                region_id="r1",
+                region_kind="physical_region",
+                reading_order=2,
+                suggested_role="ENTRY_TITLE",
+            ),
+        ],
+    )
+    # Case 1: Rejected because suggested_role is ENTRY_TITLE
+    output1 = SemanticOutput(
+        personal=GroundedPersonal(
+            name=GroundedString(value="John Doe", source_block_ids=["b_p1_0"]),
+            location=GroundedString(value="New York, NY", source_block_ids=["b_p1_1"]),
+        ),
+    )
+    violations1 = validate_semantic_output(output1, sem_input)
+    assert any("LOCATION_OUTSIDE_HEADER_REGION" in v for v in violations1)
+
+    # Case 2: Rejected because block is classified as EXPERIENCE
+    output2 = SemanticOutput(
+        block_classifications=[
+            BlockClassification(block_id="b_p1_1", category=SemanticBlockCategory.EXPERIENCE),
+        ],
+        personal=GroundedPersonal(
+            name=GroundedString(value="John Doe", source_block_ids=["b_p1_0"]),
+            location=GroundedString(value="New York, NY", source_block_ids=["b_p1_1"]),
+        ),
+    )
+    violations2 = validate_semantic_output(output2, sem_input)
+    assert any("LOCATION_OUTSIDE_HEADER_REGION" in v for v in violations2)
+
+    # Case 3: Rejected because block is mapped to experience body collection
+    output3 = SemanticOutput(
+        personal=GroundedPersonal(
+            name=GroundedString(value="John Doe", source_block_ids=["b_p1_0"]),
+            location=GroundedString(value="New York, NY", source_block_ids=["b_p1_1"]),
+        ),
+        experience=[
+            GroundedExperienceItem(
+                designation=GroundedString(value="Senior Software Engineer", source_block_ids=["b_p1_1"]),
+            )
+        ],
+    )
+    violations3 = validate_semantic_output(output3, sem_input)
+    assert any("LOCATION_OUTSIDE_HEADER_REGION" in v for v in violations3)
 
 
 def test_reference_classification_exclusion():
