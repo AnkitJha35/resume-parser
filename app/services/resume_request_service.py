@@ -60,12 +60,17 @@ class ResumeRequestService:
         try:
             pdf_bytes = await self._download_pdf(storage_key)
             start_time = time.monotonic()
-            parser_method = (
-                self._parser.parse
-                if self._settings.parser_mode == "legacy"
-                else self._parser.parse_with_layout_pipeline
-            )
-            resume = await asyncio.to_thread(parser_method, pdf_bytes)
+            if self._settings.parser_mode == "legacy":
+                resume = await asyncio.to_thread(self._parser.parse, pdf_bytes)
+            elif self._settings.parser_mode == "layout":
+                resume = await asyncio.to_thread(self._parser.parse_with_layout_pipeline, pdf_bytes)
+            else:  # "auto"
+                resume = await asyncio.to_thread(
+                    self._parser.parse_with_semantic_pipeline,
+                    pdf_bytes,
+                    self._semantic_extractor,
+                    document_id=storage_key,
+                )
             processing_time_ms = int((time.monotonic() - start_time) * 1000)
             await self._publish_completed_event(job_id, resume_id, resume, processing_time_ms)
         except StorageClientError as exc:

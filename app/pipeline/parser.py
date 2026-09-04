@@ -21,6 +21,8 @@ from app.pipeline.stages.block_classification import classify_block
 from app.pipeline.stages.candidate_grouping import group_candidates
 from app.pipeline.stages.sections import SECTION_NAMES
 from app.domain.document import document_from_text_blocks
+from app.extractors.semantic_extractor import SemanticExtractor
+from app.pipeline.semantic_pipeline import parse_document_semantically
 from app.pipeline.stages.layout import interpret_layout
 from app.pipeline.stages.reconstruction import reconstruct_document
 from app.pipeline.stages.semantic_compat import (
@@ -51,6 +53,29 @@ class ResumeParser:
         self.education_extractor = EducationExtractor()
         self.project_extractor = ProjectExtractor()
         self.certification_extractor = CertificationExtractor()
+
+    def parse_with_semantic_pipeline(
+        self,
+        raw_pdf_bytes: bytes,
+        semantic_extractor: SemanticExtractor,
+        document_id: str = "doc-1",
+    ) -> Resume:
+        """Run semantic extraction with injected semantic extractor on layout Document IR."""
+        detection = self.pdf_detector.detect(raw_pdf_bytes)
+        if not detection.is_pdf:
+            raise PipelineError("INVALID_PDF", "The file is not a valid PDF.")
+        if not detection.has_text:
+            raise PipelineError("PDF_EXTRACTION_FAILED", "Unable to extract meaningful text.")
+
+        physical_document = document_from_text_blocks(PDFExtractor.extract(raw_pdf_bytes))
+        reconstructed_document = reconstruct_document(physical_document)
+        layout_document = interpret_layout(reconstructed_document)
+
+        return parse_document_semantically(
+            layout_document,
+            semantic_extractor,
+            document_id=document_id,
+        )
 
     def parse(self, raw_pdf_bytes: bytes) -> Resume:
         context = PipelineContext(raw_pdf_bytes)

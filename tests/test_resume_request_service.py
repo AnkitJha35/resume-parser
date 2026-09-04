@@ -40,6 +40,9 @@ class DummyResumeParser:
     def __init__(self) -> None:
         self.parsed = False
         self.layout_parsed = False
+        self.semantic_parsed = False
+        self.last_semantic_extractor = None
+        self.last_document_id = None
 
     def parse(self, raw_pdf_bytes: bytes):
         self.parsed = True
@@ -49,10 +52,16 @@ class DummyResumeParser:
         self.layout_parsed = True
         return self._resume()
 
+    def parse_with_semantic_pipeline(self, raw_pdf_bytes: bytes, semantic_extractor, document_id="doc-1"):
+        self.semantic_parsed = True
+        self.last_semantic_extractor = semantic_extractor
+        self.last_document_id = document_id
+        return self._resume()
+
     def _resume(self):
         class DummyResume:
             def __init__(self):
-                self.metadata = {"pageCount": 1, "ocrUsed": False}
+                self.metadata = {"pageCount": 1, "ocrUsed": False, "extractor": "semantic_llm"}
 
             def model_dump(self):
                 return {"dummy": True}
@@ -94,6 +103,7 @@ def test_resume_request_service_retries_storage_and_publishes_completed(monkeypa
             assert message["result"] == {"dummy": True}
             assert service._parser.parsed is True
             assert service._parser.layout_parsed is False
+            assert service._parser.semantic_parsed is False
         finally:
             await service.shutdown()
 
@@ -128,6 +138,7 @@ def test_resume_request_service_uses_layout_parser_when_enabled(monkeypatch):
             })
             assert service._parser.parsed is False
             assert service._parser.layout_parsed is True
+            assert service._parser.semantic_parsed is False
         finally:
             await service.shutdown()
 
@@ -136,7 +147,7 @@ def test_resume_request_service_uses_layout_parser_when_enabled(monkeypatch):
     asyncio.run(run_test())
 
 
-def test_resume_request_service_uses_layout_parser_in_auto_mode(monkeypatch):
+def test_resume_request_service_uses_semantic_parser_in_auto_mode(monkeypatch):
     monkeypatch.setenv("KAFKA_BROKERS", "localhost:9092")
     monkeypatch.setenv("MINIO_ENDPOINT", "play.min.io")
     monkeypatch.setenv("MINIO_ACCESS_KEY", "test-access-key")
@@ -161,7 +172,10 @@ def test_resume_request_service_uses_layout_parser_in_auto_mode(monkeypatch):
                 "storageKey": "resumes/user/resume.pdf",
             })
             assert service._parser.parsed is False
-            assert service._parser.layout_parsed is True
+            assert service._parser.layout_parsed is False
+            assert service._parser.semantic_parsed is True
+            assert service._parser.last_semantic_extractor is service._semantic_extractor
+            assert service._parser.last_document_id == "resumes/user/resume.pdf"
         finally:
             await service.shutdown()
 
@@ -191,12 +205,15 @@ def test_resume_request_service_handles_semantic_validation_error(monkeypatch):
     monkeypatch.setenv("MINIO_BUCKET_NAME", "resumes")
 
     class SemanticFailingParser:
-        def parse_with_layout_pipeline(self, raw_pdf_bytes: bytes):
+        def parse_with_semantic_pipeline(self, raw_pdf_bytes: bytes, semantic_extractor, document_id="doc-1"):
             # Simulate semantic validation rejection with potential PII
             raise SemanticValidationError([
                 "UNKNOWN_BLOCK_ID in personal.name: 'secret_candidate_name_john_doe'",
                 "UNSUPPORTED_CANONICAL_VALUE in personal.phone: '+1 555 123 4567'",
             ])
+
+        def parse_with_layout_pipeline(self, raw_pdf_bytes: bytes):
+            raise SemanticValidationError(["UNKNOWN_BLOCK_ID in personal.name: 'secret_candidate_name_john_doe'"])
 
     settings = Settings()
     producer = DummyKafkaProducer(settings)
@@ -245,6 +262,9 @@ def test_resume_request_service_handles_semantic_extraction_error(monkeypatch):
     monkeypatch.setenv("MINIO_BUCKET_NAME", "resumes")
 
     class SemanticExtractionFailingParser:
+        def parse_with_semantic_pipeline(self, raw_pdf_bytes: bytes, semantic_extractor, document_id="doc-1"):
+            raise SemanticServerError("Gemini upstream 503 service unavailable", status_code=503)
+
         def parse_with_layout_pipeline(self, raw_pdf_bytes: bytes):
             raise SemanticServerError("Gemini upstream 503 service unavailable", status_code=503)
 
@@ -291,6 +311,9 @@ def test_resume_request_service_handles_unrelated_generic_exception(monkeypatch)
     monkeypatch.setenv("MINIO_BUCKET_NAME", "resumes")
 
     class GenericFailingParser:
+        def parse_with_semantic_pipeline(self, raw_pdf_bytes: bytes, semantic_extractor, document_id="doc-1"):
+            raise RuntimeError("Unexpected memory allocation failure")
+
         def parse_with_layout_pipeline(self, raw_pdf_bytes: bytes):
             raise RuntimeError("Unexpected memory allocation failure")
 
@@ -334,6 +357,9 @@ def test_resume_request_service_no_duplicate_publication_on_failure(monkeypatch)
     monkeypatch.setenv("MINIO_BUCKET_NAME", "resumes")
 
     class SemanticFailingParser:
+        def parse_with_semantic_pipeline(self, raw_pdf_bytes: bytes, semantic_extractor, document_id="doc-1"):
+            raise SemanticExtractionError("Extraction failed")
+
         def parse_with_layout_pipeline(self, raw_pdf_bytes: bytes):
             raise SemanticExtractionError("Extraction failed")
 
@@ -362,3 +388,94 @@ def test_resume_request_service_no_duplicate_publication_on_failure(monkeypatch)
     asyncio.run(run_test())
 
     assert len(producer.sent) == 1
+
+
+def test_production_semantic_pipeline_integration_with_real_resume_parser(monkeypatch):
+    """Verify production ResumeRequestService + ResumeParser in auto mode uses semantic pipeline directly."""
+    from app.domain.semantic_contract import (
+        DocumentArchetype,
+        GroundedPersonal,
+        GroundedString,
+        SemanticInput,
+        SemanticOutput,
+    )
+    from app.extractors.semantic_extractor import MockSemanticExtractor
+    from app.pipeline.parser import ResumeParser
+
+    monkeypatch.setenv("KAFKA_BROKERS", "localhost:9092")
+    monkeypatch.setenv("MINIO_ENDPOINT", "play.min.io")
+    monkeypatch.setenv("MINIO_ACCESS_KEY", "test-access-key")
+    monkeypatch.setenv("MINIO_SECRET_KEY", "test-secret-key")
+    monkeypatch.setenv("MINIO_BUCKET_NAME", "resumes")
+    monkeypatch.setenv("PARSER_MODE", "auto")
+
+    # Mock storage returning a valid synthetic PDF with text
+    import fitz
+
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((50, 50), "Jane Doe\nSoftware Engineer\njane@example.com")
+    pdf_data = doc.tobytes()
+    doc.close()
+
+    class StorageWithPDF:
+        def __init__(self, s):
+            pass
+
+        def download_pdf(self, key):
+            return pdf_data
+
+    class StubSemanticExtractor:
+        last_usage_metadata = {
+            "provider": "mock_semantic",
+            "model": "stub-model",
+            "prompt_tokens": 150,
+            "output_tokens": 40,
+            "total_tokens": 190,
+        }
+
+        def extract(self, input_data: SemanticInput) -> SemanticOutput:
+            b0 = input_data.blocks[0] if input_data.blocks else None
+            return SemanticOutput(
+                document_archetype=DocumentArchetype.STANDARD_CV,
+                personal=GroundedPersonal(
+                    name=GroundedString(value="Jane Doe", source_block_ids=[b0.block_id] if b0 else [])
+                ),
+            )
+
+    settings = Settings()
+    producer = DummyKafkaProducer(settings)
+    extractor = StubSemanticExtractor()
+    service = ResumeRequestService(
+        settings=settings,
+        storage_client_cls=StorageWithPDF,
+        kafka_producer_cls=lambda s: producer,
+        parser_cls=ResumeParser,
+        semantic_extractor=extractor,
+    )
+
+    import asyncio
+
+    async def run_test():
+        await service.start()
+        try:
+            await service.process({
+                "jobId": "job-prod-auto-1",
+                "resumeId": "resume-prod-auto-1",
+                "storageKey": "resumes/jane_doe.pdf",
+            })
+        finally:
+            await service.shutdown()
+
+    asyncio.run(run_test())
+
+    assert len(producer.sent) == 1
+    topic, event = producer.sent[0]
+    assert topic == settings.kafka_topic_completed
+    assert event["jobId"] == "job-prod-auto-1"
+    assert event["resumeId"] == "resume-prod-auto-1"
+    assert event["status"] == "COMPLETED"
+    assert event["result"]["personal"]["name"] == "Jane Doe"
+    assert event["metadata"]["extractor"] == "semantic_llm"
+    assert event["metadata"]["archetype"] == "standard_cv"
+    assert "processingTimeMs" in event["metadata"]
