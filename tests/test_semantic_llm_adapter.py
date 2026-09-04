@@ -157,6 +157,68 @@ def test_prompt_contains_grounding_and_no_fixture_rules():
         assert fix not in SEMANTIC_EXTRACTION_SYSTEM_PROMPT
 
 
+def test_prompt_contains_positive_grounded_table_guidance():
+    """Verify system prompt contains explicit positive table interpretation and semantic mapping guidance."""
+    sem_input = _sample_semantic_input()
+    prompt = build_extraction_prompt(sem_input)
+
+    # 1. Structured form & archetype completeness
+    assert "STRUCTURED FORMS AND TABLE EXTRACTION GUIDANCE:" in prompt
+    assert "structured_form" in prompt
+    assert "maritime_tabular" in prompt
+    assert "maritime_cv" in prompt
+    assert "does NOT mean the document should produce empty canonical fields" in prompt
+    assert "inspect EVERY table data row" in prompt
+
+    # 2. Table interpretation
+    assert "Table Interpretation:" in prompt
+    assert "HEADER cells (e.g., `cell_role: \"HEADER\"` or row 0 headers) describe the meaning/attribute" in prompt
+    assert "Non-header data cells in the same row form one logical record" in prompt
+    assert "Multiple blocks sharing the same `table` + `row` + `col` belong to the same physical cell" in prompt
+
+    # 3. Allowed vs Prohibited distinctions
+    assert "Grounded Semantic Interpretation (Allowed vs. Prohibited):" in prompt
+    assert "Removing field labels such as `Email:`, `Phone:`, `Name:`" in prompt
+    assert "Mapping a data value to the canonical field whose table column or header label explicitly describes it" in prompt
+    assert "Normalizing dates to ISO format" in prompt
+    assert "Still Prohibited (Invention / Fabrication):" in prompt
+    assert "Renaming companies" in prompt
+    assert "Expanding job titles" in prompt
+
+    # 4. Personal labeled fields & contact guidance
+    assert "Personal Labeled Fields & Contact Information:" in prompt
+    assert "Email: user@example.com` populates `personal.email`" in prompt
+    assert "Phone: ...` populates `personal.phone`" in prompt
+    assert "Assemble personal name tokens from explicit name fields" in prompt
+
+    # 5. Education table guidance
+    assert "Name of Institute / College` / `School / College / University` -> `institution`" in prompt
+    assert "Type of Degree` / `Degree / Certificate` / `Examination Passed` -> `degree` or `fieldOfStudy`" in prompt
+    assert "From` / `Commenced` -> `startDate`" in prompt
+    assert "To` / `Completed` / `Passed` -> `endDate`" in prompt
+
+    # 6. Maritime sea-service guidance
+    assert "Previous Sea Service" in prompt
+    assert "Owners / Manager` / `Company Name` / `Employer` -> `experience.company`" in prompt
+    assert "Rank` / `Position` / `Capacity` -> `experience.designation`" in prompt
+    assert "For tabular experience, designation must be taken strictly from the Rank/Position column" in prompt
+    assert "From` / `Sign On` / `Date Commencing` -> `startDate`" in prompt
+    assert "To` / `Sign Off` / `Date of S/OFF` -> `endDate`" in prompt
+    assert "Vessel Name` is NOT the company" in prompt
+    assert "experience.description" in prompt
+    assert "Never convert vessel names into companies" in prompt
+
+    # 7. Certification & course guidance
+    assert "Certification, Course, & Endorsement Tables:" in prompt
+    assert "STCW Courses" in prompt
+    assert "Dangerous Cargo Endorsements" in prompt
+    assert "Each logical certification data row represents at most one certification record" in prompt
+    assert "Column headers themselves must never become certification values" in prompt
+
+    # 8. Validation reminder
+    assert "IMPORTANT VALIDATION REMINDER:" in prompt
+
+
 # =====================================================================
 # C. Structured SemanticOutput Parsing Tests
 # =====================================================================
