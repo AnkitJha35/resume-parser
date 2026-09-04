@@ -150,6 +150,9 @@ class SemanticBlockInput(BaseModel):
     column_index: int | None = None
     cell_role: str | None = None  # e.g. "HEADER", "DATA"
 
+    # Underlying span geometry if available from reconstruction/IR
+    spans: list[dict[str, Any]] = Field(default_factory=list)
+
 
 class SemanticPageMeta(BaseModel):
     """Page-level spatial metadata only (canonical blocks reside in top-level blocks list)."""
@@ -164,6 +167,7 @@ class SemanticInput(BaseModel):
 
     document_id: str
     page_count: int
+    archetype: DocumentArchetype = DocumentArchetype.STANDARD_CV
     pages: list[SemanticPageMeta] = Field(default_factory=list)
     blocks: list[SemanticBlockInput] = Field(default_factory=list)
 
@@ -198,11 +202,10 @@ class BlockClassification(BaseModel):
 
     block_id: str
     category: SemanticBlockCategory
-    exclusion_reason: str | None = None
 
 
 class GroundedPersonal(BaseModel):
-    """Candidate personal identity with provenance grounding."""
+    """Candidate personal identity and contact info strictly grounded in header evidence."""
 
     name: GroundedString | None = None
     email: GroundedString | None = None
@@ -214,7 +217,7 @@ class GroundedPersonal(BaseModel):
 
 
 class GroundedExperienceItem(BaseModel):
-    """Single professional employment entry with complete provenance."""
+    """Work experience entry strictly grounded in source blocks with reference/table exclusions."""
 
     company: GroundedString | None = None
     designation: GroundedString | None = None
@@ -228,7 +231,7 @@ class GroundedExperienceItem(BaseModel):
 
 
 class GroundedEducationItem(BaseModel):
-    """Single academic credential with complete provenance."""
+    """Education entry grounded in source blocks."""
 
     institution: GroundedString | None = None
     degree: GroundedString | None = None
@@ -240,14 +243,14 @@ class GroundedEducationItem(BaseModel):
 
 
 class GroundedProjectItem(BaseModel):
-    """Single project entry with complete provenance."""
+    """Project entry grounded in source blocks."""
 
     name: GroundedString | None = None
     description: GroundedString | None = None
-    technologies: list[GroundedString] = Field(default_factory=list)
     startDate: GroundedString | None = None
     endDate: GroundedString | None = None
     current: GroundedBool | None = None
+    technologies: list[GroundedString] = Field(default_factory=list)
     source_block_ids: list[str] = Field(default_factory=list)
 
 
@@ -267,20 +270,161 @@ class SemanticOutput(BaseModel):
     achievements: list[GroundedString] = Field(default_factory=list)
 
 
+class PersonalSemanticOutput(BaseModel):
+    """Constrained, provenance-grounded semantic output for candidate identity and contact coordinates (Pass 1)."""
+
+    document_archetype: DocumentArchetype = DocumentArchetype.UNKNOWN
+    block_classifications: list[BlockClassification] = Field(default_factory=list)
+    personal: GroundedPersonal = Field(default_factory=GroundedPersonal)
+
+
+class BodySemanticOutput(BaseModel):
+    """Constrained, provenance-grounded semantic output for core resume body entities and qualification records (Pass 2)."""
+
+    document_archetype: DocumentArchetype = DocumentArchetype.UNKNOWN
+    block_classifications: list[BlockClassification] = Field(default_factory=list)
+    summary: GroundedString | None = None
+    skills: list[GroundedString] = Field(default_factory=list)
+    experience: list[GroundedExperienceItem] = Field(default_factory=list)
+    education: list[GroundedEducationItem] = Field(default_factory=list)
+    projects: list[GroundedProjectItem] = Field(default_factory=list)
+    certifications: list[GroundedString] = Field(default_factory=list)
+    languages: list[GroundedString] = Field(default_factory=list)
+    achievements: list[GroundedString] = Field(default_factory=list)
+
+
+def merge_semantic_passes(
+    personal_output: PersonalSemanticOutput,
+    body_output: BodySemanticOutput,
+) -> SemanticOutput:
+    """Deterministically merge Pass 1 (Personal) and Pass 2 (Body) outputs into canonical SemanticOutput."""
+    if body_output.document_archetype != DocumentArchetype.UNKNOWN:
+        archetype = body_output.document_archetype
+    elif personal_output.document_archetype != DocumentArchetype.UNKNOWN:
+        archetype = personal_output.document_archetype
+    else:
+        archetype = DocumentArchetype.UNKNOWN
+
+    merged_classifications: dict[str, BlockClassification] = {}
+    for bc in personal_output.block_classifications:
+        merged_classifications[bc.block_id] = bc
+
+    for bc in body_output.block_classifications:
+        if bc.block_id in merged_classifications:
+            existing = merged_classifications[bc.block_id]
+            if existing.category == SemanticBlockCategory.PERSONAL and bc.category != SemanticBlockCategory.PERSONAL:
+                continue
+        merged_classifications[bc.block_id] = bc
+
+    sorted_classifications = sorted(merged_classifications.values(), key=lambda x: x.block_id)
+
+    return SemanticOutput(
+        document_archetype=archetype,
+        block_classifications=sorted_classifications,
+        personal=personal_output.personal,
+        summary=body_output.summary,
+        skills=body_output.skills,
+        experience=body_output.experience,
+        education=body_output.education,
+        projects=body_output.projects,
+        certifications=body_output.certifications,
+        languages=body_output.languages,
+        achievements=body_output.achievements,
+    )
+
+
 # =====================================================================
 # 4. Builder and Validation Invariants
 # =====================================================================
+
+_MARITIME_ARCHETYPE_SIGNALS = [
+    re.compile(r"\bcdc\b", re.IGNORECASE),
+    re.compile(r"\bstcw\b", re.IGNORECASE),
+    re.compile(r"\bvessel\b", re.IGNORECASE),
+    re.compile(r"\bsea\s+service\b", re.IGNORECASE),
+    re.compile(r"\bseafarer\b", re.IGNORECASE),
+    re.compile(r"\bdischarge\s+book\b", re.IGNORECASE),
+    re.compile(r"\bgmdss\b", re.IGNORECASE),
+    re.compile(r"\bdeck\s+cadet\b", re.IGNORECASE),
+    re.compile(r"\bmaster\s+mariner\b", re.IGNORECASE),
+    re.compile(r"\b(?:chief|second|2nd|third|3rd)\s+officer\b", re.IGNORECASE),
+    re.compile(r"\bchief\s+engineer\b", re.IGNORECASE),
+    re.compile(r"\bengine\s+room\b", re.IGNORECASE),
+    re.compile(r"\bdwt\b", re.IGNORECASE),
+    re.compile(r"\bgrt\b", re.IGNORECASE),
+    re.compile(r"\bsign\s+on\b", re.IGNORECASE),
+    re.compile(r"\bsign\s+off\b", re.IGNORECASE),
+]
+
+_FORM_ARCHETYPE_SIGNALS = [
+    re.compile(r"\bapplication\s+form\b", re.IGNORECASE),
+    re.compile(r"\bbio-?data\b", re.IGNORECASE),
+    re.compile(r"\bseafarer\s+profile\b", re.IGNORECASE),
+    re.compile(r"\bdg\s+shipping\b", re.IGNORECASE),
+    re.compile(r"\bpersonal\s+data\b", re.IGNORECASE),
+    re.compile(r"\bnext\s+of\s+kin\b", re.IGNORECASE),
+]
+
+_ACADEMIC_ARCHETYPE_SIGNALS = [
+    re.compile(r"\bpeer-?reviewed\b", re.IGNORECASE),
+    re.compile(r"\bjournal\s+publications\b", re.IGNORECASE),
+    re.compile(r"\bdissertation\b", re.IGNORECASE),
+    re.compile(r"\bconference\s+proceedings\b", re.IGNORECASE),
+]
+
+
+def classify_document_archetype(document: Document) -> DocumentArchetype:
+    """Deterministically classify document archetype based on layout structure and domain indicators."""
+    all_text = " ".join(
+        line.text
+        for page in document.pages
+        for region in page.regions
+        for line in region.lines
+    )
+    m_count = sum(1 for pat in _MARITIME_ARCHETYPE_SIGNALS if pat.search(all_text))
+    f_count = sum(1 for pat in _FORM_ARCHETYPE_SIGNALS if pat.search(all_text))
+    a_count = sum(1 for pat in _ACADEMIC_ARCHETYPE_SIGNALS if pat.search(all_text))
+
+    cols_per_page = [
+        len([r for r in page.regions if r.kind == "column"])
+        for page in document.pages
+    ]
+    max_cols = max(cols_per_page) if cols_per_page else 0
+
+    if f_count >= 1 and (m_count >= 2 or max_cols >= 3):
+        return DocumentArchetype.STRUCTURED_FORM
+    if m_count >= 2:
+        if max_cols >= 3:
+            return DocumentArchetype.MARITIME_TABULAR
+        return DocumentArchetype.MARITIME_CV
+    if a_count >= 2:
+        return DocumentArchetype.ACADEMIC_CV
+    return DocumentArchetype.STANDARD_CV
 
 
 def build_semantic_input(
     document: Document,
     document_id: str = "doc-1",
     structural_blocks: list[StructuralBlock] | None = None,
+    archetype: DocumentArchetype | None = None,
 ) -> SemanticInput:
     """Build a SemanticInput payload from layout Document IR.
 
-    Populates suggested_role from existing StructuralBlock roles.
+    Populates suggested_role from existing StructuralBlock roles and determines document archetype.
     """
+    if archetype is None:
+        if (
+            hasattr(document, "document_type")
+            and document.document_type
+            and document.document_type != "unknown"
+        ):
+            try:
+                archetype = DocumentArchetype(document.document_type)
+            except ValueError:
+                archetype = classify_document_archetype(document)
+        else:
+            archetype = classify_document_archetype(document)
+
     if structural_blocks is None:
         structural_blocks = build_structural_blocks(document)
 
@@ -312,6 +456,12 @@ def build_semantic_input(
                     is_bold=line.style.bold,
                     font_size=line.style.font_size,
                     suggested_role=suggested_role,
+                    spans=[
+                        {"text": s.text, "bbox": [s.bbox.x0, s.bbox.y0, s.bbox.x1, s.bbox.y1]}
+                        for s in line.spans
+                    ]
+                    if hasattr(line, "spans") and line.spans
+                    else [],
                 )
                 all_blocks.append(sblock)
 
@@ -323,9 +473,20 @@ def build_semantic_input(
             )
         )
 
+    if archetype in (
+        DocumentArchetype.MARITIME_CV,
+        DocumentArchetype.MARITIME_TABULAR,
+        DocumentArchetype.STRUCTURED_FORM,
+    ):
+        from app.pipeline.stages.table_binding import GeometricTableBinder
+
+        binder = GeometricTableBinder()
+        all_blocks = binder.bind_document_tables(all_blocks)
+
     return SemanticInput(
         document_id=document_id,
         page_count=len(document.pages),
+        archetype=archetype,
         pages=pages,
         blocks=all_blocks,
     )
