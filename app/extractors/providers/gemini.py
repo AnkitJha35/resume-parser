@@ -265,7 +265,7 @@ class GeminiSemanticExtractor:
                 pass
 
         # Tier 4: Safe defaults
-        model = model or "gemini-2.5-flash"
+        model = model or "gemini-3.5-flash-lite"
         base_url = (base_url or "https://generativelanguage.googleapis.com").rstrip("/")
         timeout = timeout if timeout is not None else 30.0
         max_retries = max_retries if max_retries is not None else 2
@@ -290,7 +290,7 @@ class GeminiSemanticExtractor:
         prompt_tokens: int | None = None
         output_tokens: int | None = None
         total_tokens: int | None = None
-        model_for_metadata = self._explicit_model or os.environ.get("GEMINI_MODEL") or "gemini-2.5-flash"
+        model_for_metadata = self._explicit_model or os.environ.get("GEMINI_MODEL") or "gemini-3.5-flash-lite"
 
         try:
             api_key, model, base_url, timeout, max_retries = self._resolve_config()

@@ -296,7 +296,7 @@ def test_gemini_config_defaults_and_override():
     extractor = GeminiSemanticExtractor(api_key="my-test-key")
     k, m, b, t, r = extractor._resolve_config()
     assert k == "my-test-key"
-    assert m == "gemini-2.5-flash"
+    assert m == "gemini-3.5-flash-lite"
     assert b == "https://generativelanguage.googleapis.com"
     assert t == 30.0
     assert r == 2
@@ -1382,7 +1382,7 @@ def test_gemini_configuration_safely_defaults_invalid_numeric_settings(monkeypat
     api_key, model, base_url, timeout, max_retries = extractor._resolve_config()
 
     assert api_key == "valid-key"
-    assert model == "gemini-2.5-flash"
+    assert model == "gemini-3.5-flash-lite"
     assert base_url == "https://generativelanguage.googleapis.com"
     assert timeout == 30.0
     assert max_retries == 2

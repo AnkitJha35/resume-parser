@@ -21,6 +21,12 @@ from app.pipeline.stages.layout import interpret_layout
 from app.pipeline.stages.reconstruction import reconstruct_document
 from app.pipeline.semantic_pipeline import parse_document_semantically
 from tests.benchmark.expectations import evaluate_status
+from tests.benchmark.generalization import (
+    GENERALIZATION_FIXTURES_DIR,
+    BenchmarkSuiteId,
+    GeneralizationCorpus,
+    GeneralizationFixtureMetadata,
+)
 from tests.benchmark.metadata import BENCHMARK_FIXTURES, DocumentArchetype, ResumeMetadata
 
 FIXTURES_DIR = Path(__file__).resolve().parent.parent / "fixtures"
@@ -67,8 +73,9 @@ class SemanticParseResult:
 @dataclass
 class SemanticBenchmarkSummary:
     timestamp: str
+    suite_id: str = BenchmarkSuiteId.REGRESSION_12.value
     provider: str = "gemini"
-    model: str = "gemini-2.5-flash"
+    model: str = "gemini-3.5-flash-lite"
     representation: str = "candidate_b_compact"
     total_cases: int = 0
     successful_cases: int = 0
@@ -96,8 +103,19 @@ class SemanticBenchmarkRunner:
         fixtures_dir: Path | None = None,
         provider_name: str | None = None,
         model_name: str | None = None,
+        suite_id: str = BenchmarkSuiteId.REGRESSION_12.value,
+        metadata_registry: dict[str, Any] | None = None,
     ) -> None:
-        self.fixtures_dir = fixtures_dir or FIXTURES_DIR
+        self.suite_id = suite_id
+        if fixtures_dir is not None:
+            self.fixtures_dir = fixtures_dir
+        elif suite_id == BenchmarkSuiteId.GENERALIZATION.value:
+            self.fixtures_dir = GENERALIZATION_FIXTURES_DIR
+        else:
+            self.fixtures_dir = FIXTURES_DIR
+
+        self.metadata_registry = metadata_registry
+
         if extractor is None:
             from app.extractors.providers.ollama import OllamaSemanticExtractor
             self.extractor = OllamaSemanticExtractor()
@@ -130,12 +148,24 @@ class SemanticBenchmarkRunner:
     def discover_fixtures(self, fixture_name: str | None = None) -> list[Path]:
         """Discover existing PDF benchmark fixtures in the fixtures directory.
 
-        If fixture_name is provided, validates that it is a registered benchmark fixture
-        and returns only that fixture path.
-
-        Raises:
-            ValueError: If fixture_name is not registered in BENCHMARK_FIXTURES or not found on disk.
+        Supports both regression_12 and generalization suites.
         """
+        if self.suite_id == BenchmarkSuiteId.GENERALIZATION.value or self.fixtures_dir != FIXTURES_DIR:
+            if fixture_name:
+                path = self.fixtures_dir / fixture_name
+                if not path.exists():
+                    raise ValueError(
+                        f"Generalization fixture file '{fixture_name}' not found at '{path}'."
+                    )
+                return [path]
+            found: list[Path] = []
+            if self.fixtures_dir.exists():
+                for root, _, files in os.walk(self.fixtures_dir):
+                    for f in files:
+                        if f.lower().endswith(".pdf"):
+                            found.append(Path(root) / f)
+            return sorted(found, key=lambda p: p.name)
+
         if fixture_name:
             if fixture_name not in BENCHMARK_FIXTURES:
                 registered = ", ".join(sorted(BENCHMARK_FIXTURES.keys()))
@@ -150,7 +180,7 @@ class SemanticBenchmarkRunner:
                 )
             return [path]
 
-        found: list[Path] = []
+        found = []
         for filename in BENCHMARK_FIXTURES:
             path = self.fixtures_dir / filename
             if path.exists():
@@ -160,18 +190,22 @@ class SemanticBenchmarkRunner:
     def run_single(self, pdf_path: Path) -> SemanticParseResult:
         """Parse a single PDF resume through the semantic extraction pipeline."""
         filename = pdf_path.name
-        metadata = BENCHMARK_FIXTURES.get(
-            filename,
-            ResumeMetadata(
-                filename=filename,
-                archetype=DocumentArchetype.STANDARD_CV,
-                candidate_name="",
-                target_domain="Unknown",
-                page_count_estimate=1,
-                has_tables=False,
-                notes="",
-            ),
-        )
+
+        # Resolve metadata from registry or defaults
+        target_archetype = DocumentArchetype.STANDARD_CV
+        target_domain = "Unknown"
+        notes = ""
+
+        if self.metadata_registry and filename in self.metadata_registry:
+            m = self.metadata_registry[filename]
+            target_archetype = getattr(m, "archetype", DocumentArchetype.STANDARD_CV)
+            target_domain = getattr(m, "domain", getattr(m, "target_domain", "Unknown"))
+            notes = getattr(m, "notes", "")
+        elif filename in BENCHMARK_FIXTURES:
+            m = BENCHMARK_FIXTURES[filename]
+            target_archetype = m.archetype
+            target_domain = m.target_domain
+            notes = m.notes
 
         start_t = time.perf_counter()
         try:
@@ -240,8 +274,8 @@ class SemanticBenchmarkRunner:
 
             return SemanticParseResult(
                 filename=filename,
-                archetype=metadata.archetype.value,
-                target_domain=metadata.target_domain,
+                archetype=target_archetype.value if hasattr(target_archetype, "value") else str(target_archetype),
+                target_domain=target_domain,
                 semantic_success=True,
                 status=status,
                 passed_validation=True,
@@ -260,7 +294,7 @@ class SemanticBenchmarkRunner:
                 languages_count=len(resume.languages),
                 achievements_count=len(resume.achievements),
                 diagnostics=diagnostics,
-                notes=metadata.notes,
+                notes=notes,
             )
 
         except SemanticValidationError as exc:
@@ -268,8 +302,8 @@ class SemanticBenchmarkRunner:
             usage = getattr(self.extractor, "last_usage_metadata", None)
             return SemanticParseResult(
                 filename=filename,
-                archetype=metadata.archetype.value,
-                target_domain=metadata.target_domain,
+                archetype=target_archetype.value if hasattr(target_archetype, "value") else str(target_archetype),
+                target_domain=target_domain,
                 semantic_success=False,
                 status="VALIDATION_FAILED",
                 failure_type="VALIDATION_ERROR",
@@ -287,8 +321,8 @@ class SemanticBenchmarkRunner:
             usage = getattr(self.extractor, "last_usage_metadata", None)
             return SemanticParseResult(
                 filename=filename,
-                archetype=metadata.archetype.value,
-                target_domain=metadata.target_domain,
+                archetype=target_archetype.value if hasattr(target_archetype, "value") else str(target_archetype),
+                target_domain=target_domain,
                 semantic_success=False,
                 status="EXTRACTION_FAILED",
                 failure_type="EXTRACTION_ERROR",
@@ -304,8 +338,8 @@ class SemanticBenchmarkRunner:
             elapsed = time.perf_counter() - start_t
             return SemanticParseResult(
                 filename=filename,
-                archetype=metadata.archetype.value,
-                target_domain=metadata.target_domain,
+                archetype=target_archetype.value if hasattr(target_archetype, "value") else str(target_archetype),
+                target_domain=target_domain,
                 semantic_success=False,
                 status="PARSER_EXCEPTION",
                 failure_type="PARSER_EXCEPTION",
@@ -348,7 +382,13 @@ class SemanticBenchmarkRunner:
         for r in results:
             arch = r.archetype
             if arch not in breakdown:
-                breakdown[arch] = {"total": 0, "SUCCESS": 0, "VALIDATION_FAILED": 0, "EXTRACTION_FAILED": 0, "EXCEPTION": 0}
+                breakdown[arch] = {
+                    "total": 0,
+                    "SUCCESS": 0,
+                    "VALIDATION_FAILED": 0,
+                    "EXTRACTION_FAILED": 0,
+                    "PARSER_EXCEPTION": 0,
+                }
             breakdown[arch]["total"] += 1
             if r.semantic_success:
                 breakdown[arch]["SUCCESS"] += 1
@@ -357,17 +397,14 @@ class SemanticBenchmarkRunner:
             elif r.failure_type == "EXTRACTION_ERROR":
                 breakdown[arch]["EXTRACTION_FAILED"] += 1
             else:
-                breakdown[arch]["EXCEPTION"] += 1
-
-        representation_name = "candidate_b_compact"
-        if getattr(self.extractor, "_compact", None) is False:
-            representation_name = "full_reference"
+                breakdown[arch]["PARSER_EXCEPTION"] += 1
 
         return SemanticBenchmarkSummary(
-            timestamp=time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()),
+            timestamp=time.strftime("%Y-%m-%d %H:%M:%S"),
+            suite_id=self.suite_id,
             provider=self.provider_name,
             model=self.model_name,
-            representation=representation_name,
+            representation="candidate_b_compact",
             total_cases=len(results),
             successful_cases=successful,
             extraction_failures=ext_fails,
