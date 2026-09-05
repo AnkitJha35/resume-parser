@@ -20,6 +20,8 @@ from app.domain.semantic_contract import (
     SemanticInput,
     SemanticOutput,
     SemanticPageMeta,
+    _is_multiblock_text_semantically_supported,
+    _is_value_semantically_supported,
     build_semantic_input,
     semantic_output_to_resume,
     validate_semantic_output,
@@ -497,3 +499,180 @@ def test_constrained_document_archetype_enum():
 
     output = SemanticOutput(document_archetype=DocumentArchetype.MARITIME_CV)
     assert output.document_archetype == DocumentArchetype.MARITIME_CV
+
+
+def test_phone_normalization_rules():
+    # 1. (650) 498-1240 -> +16504981240 accepted (1-digit country code prefix)
+    assert _is_value_semantically_supported("+16504981240", "(650) 498-1240")
+    assert _is_value_semantically_supported("16504981240", "(650) 498-1240")
+
+    # 2. +91 98295 19017 -> +919829519017 accepted (country code already in source)
+    assert _is_value_semantically_supported("+919829519017", "+91 98295 19017")
+
+    # 3. Exact phone digit normalization still accepted
+    assert _is_value_semantically_supported("6504981240", "(650) 498-1240")
+    assert _is_value_semantically_supported("9829519017", "98295-19017")
+
+    # 4. Unrelated canonical number rejected
+    assert not _is_value_semantically_supported("+19998887766", "(650) 498-1240")
+    assert not _is_value_semantically_supported("+441234567890", "+91 98295 19017")
+
+    # 5. Canonical number with modified subscriber digits rejected
+    assert not _is_value_semantically_supported("+16504989999", "(650) 498-1240")
+    assert not _is_value_semantically_supported("+919829519099", "+91 98295 19017")
+
+    # 6. Prefix longer than 3 digits rejected
+    assert not _is_value_semantically_supported("+12346504981240", "(650) 498-1240")
+    assert not _is_value_semantically_supported("999996504981240", "(650) 498-1240")
+
+
+def test_personal_phone_country_code_e2e_contract_validation():
+    doc = _make_test_document()
+    sem_input = build_semantic_input(doc, document_id="test-doc-1")
+
+    # b_p1_3 has text "+91 98295 19017"
+    output_valid = SemanticOutput(
+        personal=GroundedPersonal(
+            phone=GroundedString(value="+919829519017", source_block_ids=["b_p1_3"]),
+        )
+    )
+    violations = validate_semantic_output(output_valid, sem_input)
+    assert not violations
+
+    # Modified digits should violate UNSUPPORTED_CANONICAL_VALUE
+    output_invalid = SemanticOutput(
+        personal=GroundedPersonal(
+            phone=GroundedString(value="+919829519999", source_block_ids=["b_p1_3"]),
+        )
+    )
+    violations = validate_semantic_output(output_invalid, sem_input)
+    assert any("UNSUPPORTED_CANONICAL_VALUE in personal.phone" in v for v in violations)
+
+
+def test_multiblock_text_grounding_consulting_descriptions():
+    # Consulting Fixture Row 1
+    s1 = "Omni-channel logistics and supply Reduced annual logistics costs by $38M;improved order fulfillment SLA by 40%. chain restructuring across 400 stores."
+    v1 = "Omni-channel logistics and supply chain restructuring across 400 stores. Reduced annual logistics costs by $38M; improved order fulfillment SLA by 40%."
+    assert not _is_value_semantically_supported(v1, s1)
+    assert _is_multiblock_text_semantically_supported(v1, s1)
+
+    # Consulting Fixture Row 2
+    s2 = "Core transaction processing cloud Successfully migrated 12M accounts with zero migration & regulatory risk compliance. operational downtime."
+    v2 = "Core transaction processing cloud migration & regulatory risk compliance. Successfully migrated 12M accounts with zero operational downtime."
+    assert not _is_value_semantically_supported(v2, s2)
+    assert _is_multiblock_text_semantically_supported(v2, s2)
+
+    # Consulting Fixture Row 3
+    s3 = "Post-merger integration of 14 regional hospital clinical networks.months of acquisition. Realized $24M in operating synergies within 18"
+    v3 = "Post-merger integration of 14 regional hospital clinical networks. Realized $24M in operating synergies within 18 months of acquisition."
+    assert not _is_value_semantically_supported(v3, s3)
+    assert _is_multiblock_text_semantically_supported(v3, s3)
+
+    # Consulting Fixture Row 4
+    s4 = "Strategic procurement optimization Achieved 14% direct material cost reduction & automated supplier bidding portal. across 6 global business units."
+    v4 = "Strategic procurement optimization & automated supplier bidding portal. Achieved 14% direct material cost reduction across 6 global business units."
+    assert not _is_value_semantically_supported(v4, s4)
+    assert _is_multiblock_text_semantically_supported(v4, s4)
+
+
+def test_multiblock_text_grounding_reordered_and_rejections():
+    s_text = "part two here. part one first."
+    v_reordered = "Part one first. Part two here."
+    assert not _is_value_semantically_supported(v_reordered, s_text)
+    assert _is_multiblock_text_semantically_supported(v_reordered, s_text)
+
+    # Missing token rejected (e.g. omitted word "two")
+    v_missing = "Part one first. Part here."
+    assert not _is_multiblock_text_semantically_supported(v_missing, s_text)
+
+    # Extra token rejected (e.g. hallucinated word "extra")
+    v_extra = "Part one first. Part two here extra."
+    assert not _is_multiblock_text_semantically_supported(v_extra, s_text)
+
+    # Modified number rejected (e.g. "400" -> "500")
+    s_num = "Restructured supply chain across 400 stores."
+    v_mod_num = "Restructured supply chain across 500 stores."
+    assert not _is_multiblock_text_semantically_supported(v_mod_num, s_num)
+
+    # Unsupported date rejected
+    s_date = "· 'Architecting Design Tokens for Enterprise Scale' - Published on Medium"
+    v_date = "2022"
+    assert not _is_value_semantically_supported(v_date, s_date)
+    assert not _is_multiblock_text_semantically_supported(v_date, s_date)
+
+
+def test_multiblock_description_e2e_contract_validation():
+    sem_input = SemanticInput(
+        document_id="test-doc-multiblock-desc",
+        page_count=1,
+        archetype=DocumentArchetype.STANDARD_CV,
+        pages=[SemanticPageMeta(page_number=1, width=612.0, height=792.0)],
+        blocks=[
+            SemanticBlockInput(
+                block_id="b_p1_0",
+                text="Arthur Pendelton",
+                page=1,
+                bbox=[50.0, 50.0, 200.0, 70.0],
+                region_id="r1",
+                region_kind="header",
+                reading_order=1,
+                suggested_role="HEADER",
+            ),
+            SemanticBlockInput(
+                block_id="b_p1_1",
+                text="Omni-channel logistics and supply Reduced annual logistics costs by $38M;",
+                page=1,
+                bbox=[50.0, 100.0, 450.0, 115.0],
+                region_id="r1",
+                region_kind="physical_region",
+                reading_order=2,
+                suggested_role="DESCRIPTION",
+            ),
+            SemanticBlockInput(
+                block_id="b_p1_2",
+                text="improved order fulfillment SLA by 40%. chain restructuring across 400 stores.",
+                page=1,
+                bbox=[50.0, 120.0, 450.0, 135.0],
+                region_id="r1",
+                region_kind="physical_region",
+                reading_order=3,
+                suggested_role="DESCRIPTION",
+            ),
+        ],
+    )
+
+    # Valid reordered multi-block description
+    output_valid = SemanticOutput(
+        personal=GroundedPersonal(
+            name=GroundedString(value="Arthur Pendelton", source_block_ids=["b_p1_0"]),
+        ),
+        projects=[
+            GroundedProjectItem(
+                name=GroundedString(value="Omni-channel logistics", source_block_ids=["b_p1_1"]),
+                description=GroundedString(
+                    value="Omni-channel logistics and supply chain restructuring across 400 stores. Reduced annual logistics costs by $38M; improved order fulfillment SLA by 40%.",
+                    source_block_ids=["b_p1_1", "b_p1_2"],
+                ),
+            )
+        ],
+    )
+    violations = validate_semantic_output(output_valid, sem_input)
+    assert not violations
+
+    # Invalid: extra hallucinated token in description
+    output_hallucinated = SemanticOutput(
+        personal=GroundedPersonal(
+            name=GroundedString(value="Arthur Pendelton", source_block_ids=["b_p1_0"]),
+        ),
+        projects=[
+            GroundedProjectItem(
+                name=GroundedString(value="Omni-channel logistics", source_block_ids=["b_p1_1"]),
+                description=GroundedString(
+                    value="Omni-channel logistics and global supply chain restructuring across 400 stores. Reduced annual logistics costs by $38M; improved order fulfillment SLA by 40%.",
+                    source_block_ids=["b_p1_1", "b_p1_2"],
+                ),
+            )
+        ],
+    )
+    violations_h = validate_semantic_output(output_hallucinated, sem_input)
+    assert any("UNSUPPORTED_CANONICAL_VALUE in projects[0].description" in v for v in violations_h)

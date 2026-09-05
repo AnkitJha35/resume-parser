@@ -557,11 +557,17 @@ def _is_value_semantically_supported(canonical_val: str, source_text: str) -> bo
                 return day in s_text or day_stripped in s_text
             return True
 
-    # 3. Phone digit normalization (e.g. "+919829519017" from "+91 98295 19017")
+    # 3. Phone digit normalization (e.g. "+919829519017" from "+91 98295 19017", "+16504981240" from "(650) 498-1240")
     if _PHONE_CANONICAL_RE.match(c_val):
         val_digits = "".join(ch for ch in c_val if ch.isdigit())
         src_digits = "".join(ch for ch in s_text if ch.isdigit())
         if val_digits and val_digits in src_digits:
+            return True
+        if (
+            len(src_digits) >= 7
+            and 1 <= len(val_digits) - len(src_digits) <= 3
+            and val_digits.endswith(src_digits)
+        ):
             return True
 
     return False
@@ -623,6 +629,24 @@ def _is_name_semantically_supported(canonical_name: str, source_text: str) -> bo
     return _is_name_form_descriptor_supported(canonical_name, source_text)
 
 
+def _is_multiblock_text_semantically_supported(canonical_val: str, source_text: str) -> bool:
+    """Deterministic validation boundary for multi-block long text (e.g. descriptions, summaries).
+
+    Permits deterministic sentence reconstruction / clause reordering across split/interleaved
+    layout blocks (such as multi-column table cells) ONLY when:
+    1. Canonical text tokens and source evidence tokens have exact multiset equality.
+    2. Zero tokens are added (no hallucinated words, numbers, or facts).
+    3. Zero tokens are omitted (no truncated evidence).
+    """
+    val_tokens = [t.lower() for t in re.findall(r"[A-Za-z0-9]+", canonical_val)]
+    src_tokens = [t.lower() for t in re.findall(r"[A-Za-z0-9]+", source_text)]
+
+    if not val_tokens or not src_tokens:
+        return False
+
+    return sorted(val_tokens) == sorted(src_tokens)
+
+
 def validate_semantic_output(output: SemanticOutput, input_data: SemanticInput) -> list[str]:
     """Validate semantic invariants on LLM output to prevent systemic failure modes.
 
@@ -653,6 +677,19 @@ def validate_semantic_output(output: SemanticOutput, input_data: SemanticInput) 
         if gs.source_block_ids:
             source_text = " ".join(known_blocks[bid].text for bid in gs.source_block_ids if bid in known_blocks)
             if not _is_value_semantically_supported(gs.value, source_text):
+                violations.append(f"UNSUPPORTED_CANONICAL_VALUE in {context}: {gs.value!r} not supported by {source_text!r}")
+
+    # Helper specifically for long-text description/summary validation
+    def _verify_grounded_text(gs: GroundedString | None, context: str) -> None:
+        if gs is None:
+            return
+        _verify_block_ids(gs.source_block_ids, context)
+        if gs.source_block_ids:
+            source_text = " ".join(known_blocks[bid].text for bid in gs.source_block_ids if bid in known_blocks)
+            if not _is_value_semantically_supported(gs.value, source_text):
+                # Narrowly scoped fallback only for long-text fields with multiple source_block_ids
+                if len(gs.source_block_ids) > 1 and _is_multiblock_text_semantically_supported(gs.value, source_text):
+                    return
                 violations.append(f"UNSUPPORTED_CANONICAL_VALUE in {context}: {gs.value!r} not supported by {source_text!r}")
 
     # Helper specifically for personal.name validation
@@ -794,7 +831,7 @@ def validate_semantic_output(output: SemanticOutput, input_data: SemanticInput) 
             _verify_grounded_string(exp.location, f"experience[{i}].location")
             all_exp_block_ids.extend(exp.location.source_block_ids)
         if exp.description:
-            _verify_grounded_string(exp.description, f"experience[{i}].description")
+            _verify_grounded_text(exp.description, f"experience[{i}].description")
             all_exp_block_ids.extend(exp.description.source_block_ids)
         for tech in exp.technologies:
             _verify_grounded_string(tech, f"experience[{i}].technologies")
@@ -844,7 +881,7 @@ def validate_semantic_output(output: SemanticOutput, input_data: SemanticInput) 
         if prj.name:
             _verify_grounded_string(prj.name, f"projects[{i}].name")
         if prj.description:
-            _verify_grounded_string(prj.description, f"projects[{i}].description")
+            _verify_grounded_text(prj.description, f"projects[{i}].description")
         if prj.startDate:
             _verify_grounded_string(prj.startDate, f"projects[{i}].startDate")
         if prj.endDate:
@@ -854,7 +891,9 @@ def validate_semantic_output(output: SemanticOutput, input_data: SemanticInput) 
         for tech in prj.technologies:
             _verify_grounded_string(tech, f"projects[{i}].technologies")
 
-    # 7. Provenance for Skills, Certifications, Languages, Achievements
+    # 7. Provenance for Summary, Skills, Certifications, Languages, Achievements
+    if output.summary:
+        _verify_grounded_text(output.summary, "summary")
     for i, s in enumerate(output.skills):
         _verify_grounded_string(s, f"skills[{i}]")
     for i, c in enumerate(output.certifications):
