@@ -32,6 +32,7 @@ from app.domain.semantic_contract import (
     is_body_output_suspiciously_empty,
     merge_semantic_passes,
     semantic_output_to_resume,
+    summarize_body_evidence,
     validate_semantic_output,
 )
 from app.extractors.providers.fallback import FallbackSemanticExtractor
@@ -46,6 +47,7 @@ from app.extractors.semantic_extractor import (
 )
 from app.extractors.semantic_prompt import (
     build_body_extraction_prompt,
+    build_body_recovery_prompt,
     build_personal_extraction_prompt,
     get_body_schema,
     get_personal_schema,
@@ -894,7 +896,8 @@ def test_gemini_two_pass_body_recovery_on_silent_omission_success():
                 return httpx.Response(200, json=envelope, request=request)
             else:
                 # Second Body pass (recovery attempt) returns populated body
-                assert "IMPORTANT RECOVERY INSTRUCTION" in prompt_text
+                assert "CRITICAL RECOVERY INSTRUCTION" in prompt_text
+                assert "Deterministic structural analysis identified" in prompt_text
                 populated_body_payload = {
                     "document_archetype": "standard_cv",
                     "experience": [
@@ -1124,7 +1127,7 @@ def test_phase10e_recovery_propagation_to_final_resume_and_benchmark_counts():
             return httpx.Response(200, json=envelope, request=request)
         else:
             body_call_count += 1
-            if "IMPORTANT RECOVERY INSTRUCTION" not in prompt_text:
+            if "CRITICAL RECOVERY INSTRUCTION" not in prompt_text:
                 # Initial Body pass returns empty body (silent omission)
                 empty_body_payload = {
                     "document_archetype": "standard_cv",
@@ -1439,3 +1442,389 @@ def test_phase10f_completeness_failure_reaches_benchmark_runner_and_quality_gate
     md = format_quality_gate_markdown(qg_summary)
     assert "- **Completeness Failures:** 1" in md
     assert "GATE FAILED" in md
+
+
+# =====================================================================
+# 9. Phase 10H: Evidence-Directed Semantic Body Recovery Tests
+# =====================================================================
+
+
+def test_summarize_body_evidence_grouping_and_ordering():
+    """Verify summarize_body_evidence correctly groups by structural role, sorts deterministically, and preserves block IDs."""
+    sem_input = SemanticInput(
+        document_id="evidence-test-1",
+        page_count=2,
+        blocks=[
+            # Page 1: Header/contact (should be excluded)
+            SemanticBlockInput(
+                block_id="b_p1_1",
+                text="John Doe",
+                page=1,
+                bbox=[50, 50, 200, 70],
+                region_id="r1",
+                region_kind="header",
+                reading_order=1,
+                suggested_role="HEADER",
+            ),
+            SemanticBlockInput(
+                block_id="b_p1_2",
+                text="john@example.com",
+                page=1,
+                bbox=[50, 75, 200, 90],
+                region_id="r1",
+                region_kind="header",
+                reading_order=2,
+                suggested_role="CONTACT",
+            ),
+            # Page 1: Section heading
+            SemanticBlockInput(
+                block_id="b_p1_3",
+                text="EXPERIENCE",
+                page=1,
+                bbox=[50, 100, 200, 115],
+                region_id="r2",
+                region_kind="column",
+                reading_order=3,
+                suggested_role="SECTION_HEADING",
+            ),
+            # Page 1: Entry & Org
+            SemanticBlockInput(
+                block_id="b_p1_4",
+                text="Software Engineer",
+                page=1,
+                bbox=[50, 120, 250, 135],
+                region_id="r2",
+                region_kind="column",
+                reading_order=4,
+                suggested_role="ENTRY_TITLE",
+            ),
+            SemanticBlockInput(
+                block_id="b_p1_5",
+                text="Acme Corp",
+                page=1,
+                bbox=[50, 140, 200, 155],
+                region_id="r2",
+                region_kind="column",
+                reading_order=5,
+                suggested_role="ORGANIZATION",
+            ),
+            # Page 1: Bullets / Description
+            SemanticBlockInput(
+                block_id="b_p1_6",
+                text="Built distributed key-value store in Go",
+                page=1,
+                bbox=[50, 160, 400, 175],
+                region_id="r2",
+                region_kind="column",
+                reading_order=6,
+                suggested_role="BULLET",
+            ),
+            SemanticBlockInput(
+                block_id="b_p1_7",
+                text="Improved latency by 40%",
+                page=1,
+                bbox=[50, 180, 400, 195],
+                region_id="r2",
+                region_kind="column",
+                reading_order=7,
+                suggested_role="DESCRIPTION",
+            ),
+            # Page 2: Skills / Tech
+            SemanticBlockInput(
+                block_id="b_p2_1",
+                text="Python, Go, Rust, Kubernetes",
+                page=2,
+                bbox=[50, 50, 300, 65],
+                region_id="r3",
+                region_kind="column",
+                reading_order=8,
+                suggested_role="TECHNOLOGY",
+            ),
+            SemanticBlockInput(
+                block_id="b_p2_2",
+                text="B.S. Computer Science",
+                page=2,
+                bbox=[50, 80, 250, 95],
+                region_id="r3",
+                region_kind="column",
+                reading_order=9,
+                suggested_role="CREDENTIAL",
+            ),
+            # Page 2: Footer (should be excluded)
+            SemanticBlockInput(
+                block_id="b_p2_3",
+                text="Page 2 of 2",
+                page=2,
+                bbox=[50, 750, 200, 765],
+                region_id="r4",
+                region_kind="footer",
+                reading_order=10,
+                suggested_role="FOOTER",
+            ),
+        ],
+    )
+
+    ev = summarize_body_evidence(sem_input)
+
+    # 1. Total body blocks count (excluding header b_p1_1, contact b_p1_2, footer b_p2_3)
+    assert ev["total_body_blocks"] == 7
+    assert ev["evidence_block_ids"] == [
+        "b_p1_3", "b_p1_4", "b_p1_5", "b_p1_6", "b_p1_7", "b_p2_1", "b_p2_2"
+    ]
+
+    # 2. Section headings list
+    assert ev["section_headings"] == ["b_p1_3"]
+
+    # 3. Roles dictionary grouping and deterministic ordering
+    roles = ev["roles"]
+    assert list(roles.keys()) == sorted(roles.keys())  # Deterministically sorted keys
+    assert roles["SECTION_HEADING"] == ["b_p1_3"]
+    assert roles["ENTRY_TITLE"] == ["b_p1_4"]
+    assert roles["ORGANIZATION"] == ["b_p1_5"]
+    assert roles["BULLET"] == ["b_p1_6"]
+    assert roles["DESCRIPTION"] == ["b_p1_7"]
+    assert roles["TECHNOLOGY"] == ["b_p2_1"]
+    assert roles["CREDENTIAL"] == ["b_p2_2"]
+
+
+def test_summarize_body_evidence_sparse_and_empty():
+    """Verify summarize_body_evidence handles empty and header-only inputs gracefully."""
+    # Completely empty input
+    empty_input = SemanticInput(
+        document_id="empty-doc",
+        page_count=1,
+        blocks=[],
+    )
+    ev_empty = summarize_body_evidence(empty_input)
+    assert ev_empty["total_body_blocks"] == 0
+    assert ev_empty["roles"] == {}
+    assert ev_empty["section_headings"] == []
+    assert ev_empty["table_blocks"] == []
+    assert ev_empty["evidence_block_ids"] == []
+
+    # Header and contact only input
+    header_only_input = SemanticInput(
+        document_id="header-only-doc",
+        page_count=1,
+        blocks=[
+            SemanticBlockInput(
+                block_id="b1",
+                text="Jane Doe",
+                page=1,
+                bbox=[50, 50, 200, 70],
+                region_id="r1",
+                region_kind="header",
+                reading_order=1,
+                suggested_role="HEADER",
+            ),
+            SemanticBlockInput(
+                block_id="b2",
+                text="jane@example.com",
+                page=1,
+                bbox=[50, 75, 200, 90],
+                region_id="r1",
+                region_kind="header",
+                reading_order=2,
+                suggested_role="CONTACT",
+            ),
+            SemanticBlockInput(
+                block_id="b3",
+                text="+1-555-0100",
+                page=1,
+                bbox=[50, 95, 200, 110],
+                region_id="r1",
+                region_kind="header",
+                reading_order=3,
+                suggested_role="CONTACT",
+            ),
+        ],
+    )
+    ev_header = summarize_body_evidence(header_only_input)
+    assert ev_header["total_body_blocks"] == 0
+    assert ev_header["roles"] == {}
+    assert ev_header["section_headings"] == []
+    assert ev_header["table_blocks"] == []
+    assert ev_header["evidence_block_ids"] == []
+
+
+def test_summarize_body_evidence_table_blocks():
+    """Verify summarize_body_evidence correctly identifies and groups table blocks."""
+    table_input = SemanticInput(
+        document_id="table-doc",
+        page_count=1,
+        blocks=[
+            SemanticBlockInput(
+                block_id="t_h1",
+                text="Company",
+                page=1,
+                bbox=[50, 100, 150, 120],
+                region_id="r1",
+                region_kind="column",
+                reading_order=1,
+                table_id="table_1",
+                row_index=0,
+                column_index=0,
+                cell_role="HEADER",
+            ),
+            SemanticBlockInput(
+                block_id="t_d1",
+                text="Unix Line PTE LTD",
+                page=1,
+                bbox=[50, 125, 150, 145],
+                region_id="r1",
+                region_kind="column",
+                reading_order=2,
+                table_id="table_1",
+                row_index=1,
+                column_index=0,
+                cell_role="DATA",
+                suggested_role="ORGANIZATION",
+            ),
+            SemanticBlockInput(
+                block_id="t_d2",
+                text="Deck Cadet",
+                page=1,
+                bbox=[155, 125, 250, 145],
+                region_id="r1",
+                region_kind="column",
+                reading_order=3,
+                table_id="table_1",
+                row_index=1,
+                column_index=1,
+                cell_role="DATA",
+            ),
+        ],
+    )
+
+    ev_tbl = summarize_body_evidence(table_input)
+    assert ev_tbl["total_body_blocks"] == 3
+    assert ev_tbl["table_blocks"] == ["t_h1", "t_d1", "t_d2"]
+    assert "ORGANIZATION" in ev_tbl["roles"]
+    assert ev_tbl["roles"]["ORGANIZATION"] == ["t_d1"]
+    assert "TABLE_CELL" in ev_tbl["roles"]
+    assert ev_tbl["roles"]["TABLE_CELL"] == ["t_h1", "t_d2"]
+
+
+def test_summarize_body_evidence_no_invented_evidence():
+    """Verify summarize_body_evidence does not invent ungrounded roles or classifications."""
+    sem_input = _sample_semantic_input()
+    ev = summarize_body_evidence(sem_input)
+
+    # _sample_semantic_input has ENTRY role on b3, b4, b5
+    assert "ENTRY" in ev["roles"]
+    assert ev["roles"]["ENTRY"] == ["b3", "b4", "b5"]
+
+    # Roles not present in the input must NOT appear
+    assert "CERTIFICATION" not in ev["roles"]
+    assert "EXPERIENCE" not in ev["roles"]
+    assert "EDUCATION" not in ev["roles"]
+    assert "PROJECT" not in ev["roles"]
+    assert "SKILL" not in ev["roles"]
+
+
+def test_build_body_recovery_prompt_evidence_directed():
+    """Verify build_body_recovery_prompt incorporates the deterministic evidence summary and mandatory recovery rules."""
+    sem_input = _sample_semantic_input()
+    rec_prompt = build_body_recovery_prompt(sem_input)
+
+    # 1. Contains base prompt components
+    assert "BodySemanticOutput" in rec_prompt
+    assert "DOCUMENT BLOCKS (JSON):" in rec_prompt
+    assert "b3" in rec_prompt
+
+    # 2. Contains evidence-directed recovery header
+    assert "CRITICAL RECOVERY INSTRUCTION (EVIDENCE-DIRECTED):" in rec_prompt
+    assert "Deterministic structural analysis identified" in rec_prompt
+
+    # 3. Contains role evidence breakdown
+    assert "- Evidence by Structural Role:" in rec_prompt
+    assert "ENTRY (3 blocks): b3, b4, b5" in rec_prompt
+
+    # 4. Contains strict mandatory requirements
+    assert "MANDATORY EXTRACTION REQUIREMENTS FOR RECOVERY:" in rec_prompt
+    assert "Inspect the identified evidence blocks individually" in rec_prompt
+    assert "DO NOT return only a summary or document archetype" in rec_prompt
+    assert "Every non-null extracted value MUST cite the exact `source_block_ids`" in rec_prompt
+    assert "DO NOT perform semantic renaming" in rec_prompt
+
+
+def test_normal_body_prompt_regression_unchanged():
+    """Verify normal Pass 2 body prompt remains completely unchanged without recovery instructions."""
+    sem_input = _sample_semantic_input()
+    normal_prompt = build_body_extraction_prompt(sem_input)
+
+    assert "BodySemanticOutput" in normal_prompt
+    assert "DOCUMENT BLOCKS (JSON):" in normal_prompt
+    assert "Extract the resume body data as a JSON object adhering strictly to the BodySemanticOutput schema." in normal_prompt
+
+    # Crucial regression invariant: normal prompt must NOT contain recovery text
+    assert "CRITICAL RECOVERY INSTRUCTION" not in normal_prompt
+    assert "RECOVERY INSTRUCTION" not in normal_prompt
+    assert "Deterministic structural analysis identified" not in normal_prompt
+
+
+def test_gemini_recovery_prompt_received_by_provider():
+    """Verify Gemini provider sends evidence-directed recovery prompt and aggregates recovery telemetry."""
+    captured_requests: list[httpx.Request] = []
+    body_call_count = 0
+
+    def mock_transport(request: httpx.Request) -> httpx.Response:
+        nonlocal body_call_count
+        captured_requests.append(request)
+        req_body = json.loads(request.content.decode("utf-8"))
+        prompt_text = req_body["contents"][0]["parts"][0]["text"]
+
+        if "PersonalSemanticOutput" in prompt_text:
+            personal_payload = {
+                "document_archetype": "standard_cv",
+                "personal": {"name": {"value": "Jane Doe", "source_block_ids": ["b1"]}},
+            }
+            envelope = {"candidates": [{"content": {"parts": [{"text": json.dumps(personal_payload)}]}}]}
+            return httpx.Response(200, json=envelope, request=request)
+        else:
+            body_call_count += 1
+            if body_call_count == 1:
+                # First pass returns empty collections
+                empty_body_payload = {
+                    "document_archetype": "standard_cv",
+                    "skills": [],
+                    "experience": [],
+                    "education": [],
+                    "projects": [],
+                    "certifications": [],
+                    "languages": [],
+                    "achievements": [],
+                }
+                envelope = {"candidates": [{"content": {"parts": [{"text": json.dumps(empty_body_payload)}]}}]}
+                return httpx.Response(200, json=envelope, request=request)
+            else:
+                # Second pass (recovery) receives evidence summary and returns populated body
+                assert "CRITICAL RECOVERY INSTRUCTION (EVIDENCE-DIRECTED):" in prompt_text
+                assert "ENTRY (3 blocks): b3, b4, b5" in prompt_text
+                populated_body_payload = {
+                    "document_archetype": "standard_cv",
+                    "experience": [
+                        {
+                            "company": {"value": "Acme Corp", "source_block_ids": ["b3"]},
+                            "source_block_ids": ["b3"],
+                        }
+                    ],
+                }
+                envelope = {"candidates": [{"content": {"parts": [{"text": json.dumps(populated_body_payload)}]}}]}
+                return httpx.Response(200, json=envelope, request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(mock_transport))
+    extractor = GeminiSemanticExtractor(
+        api_key="test-api-key",
+        client=client,
+        two_pass=True,
+    )
+
+    sem_input = _sample_semantic_input()
+    output = extractor.extract(sem_input)
+
+    assert len(output.experience) == 1
+    assert extractor.last_usage_metadata["body_recovery_invoked"] is True
+    assert extractor.last_usage_metadata["body_recovery_attempts"] == 1
+    assert extractor.last_usage_metadata["final_body_empty"] is False
+    assert extractor.last_usage_metadata["body_completeness_failure"] is False

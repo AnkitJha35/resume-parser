@@ -15,6 +15,7 @@ from app.domain.semantic_contract import (
     SemanticBlockInput,
     SemanticInput,
     SemanticOutput,
+    summarize_body_evidence,
 )
 from app.extractors.semantic_extractor import SemanticExtractionError
 
@@ -131,6 +132,12 @@ CRITICAL GROUNDING AND PROVENANCE RULES:
 7. Every boolean field (e.g., `current`) MUST reference the source block IDs providing evidence (e.g., blocks containing 'Present' or 'Current').
 8. If evidence for a field is absent or ambiguous, return null or empty list rather than guessing.
 9. Return a single valid JSON object adhering strictly to the BodySemanticOutput schema.
+
+OUTPUT COMPLETENESS & STRUCTURE REQUIREMENTS:
+1. The response JSON MUST explicitly include every field defined by BodySemanticOutput: `document_archetype`, `block_classifications`, `summary`, `skills`, `experience`, `education`, `projects`, `certifications`, `languages`, `achievements`.
+2. NEVER omit optional body fields from the output JSON. Use `[]` for empty collections and `null` for unavailable scalar/object values.
+3. EXTRACT EVERY applicable body collection supported by the supplied evidence (including all experience, education, certifications, and skills present in document tables or sections).
+4. DO NOT return only summary or document_archetype when body evidence exists across the document.
 
 STRUCTURED FORMS AND TABLE EXTRACTION GUIDANCE:
 1. Form & Archetype Completeness:
@@ -550,6 +557,54 @@ def build_body_extraction_prompt(semantic_input: SemanticInput) -> str:
         f"```json\n{serialized_input}\n```\n\n"
         f"Extract the resume body data as a JSON object adhering strictly to the BodySemanticOutput schema."
     )
+
+
+def build_body_recovery_prompt(semantic_input: SemanticInput) -> str:
+    """Construct focused recovery prompt for Pass 2 when initial body output was suspiciously empty.
+
+    Surfaces deterministic structural evidence summary and instructs the model to inspect
+    evidence blocks individually without omitting body collections.
+    """
+    base_prompt = build_body_extraction_prompt(semantic_input)
+    evidence = summarize_body_evidence(semantic_input)
+
+    lines = [
+        base_prompt,
+        "",
+        "CRITICAL RECOVERY INSTRUCTION (EVIDENCE-DIRECTED):",
+        "The previous extraction returned empty lists for all body collections (skills, experience, education, projects, certifications, etc.) despite rich body content in the supplied blocks.",
+        f"Deterministic structural analysis identified {evidence['total_body_blocks']} body evidence blocks in this document:",
+    ]
+
+    if evidence["section_headings"]:
+        lines.append(f"- Section Heading Blocks: {', '.join(evidence['section_headings'])}")
+
+    if evidence["roles"]:
+        lines.append("- Evidence by Structural Role:")
+        for role, b_ids in evidence["roles"].items():
+            if role == "SECTION_HEADING":
+                continue
+            sample_ids = b_ids if len(b_ids) <= 12 else b_ids[:12]
+            suffix = f" (showing first 12 of {len(b_ids)})" if len(b_ids) > 12 else ""
+            lines.append(f"  * {role} ({len(b_ids)} blocks){suffix}: {', '.join(sample_ids)}")
+
+    if evidence["table_blocks"]:
+        sample_tbl = evidence["table_blocks"] if len(evidence["table_blocks"]) <= 12 else evidence["table_blocks"][:12]
+        suffix = f" (showing first 12 of {len(evidence['table_blocks'])})" if len(evidence['table_blocks']) > 12 else ""
+        lines.append(f"- Table Data Blocks ({len(evidence['table_blocks'])} blocks){suffix}: {', '.join(sample_tbl)}")
+
+    lines.extend([
+        "",
+        "MANDATORY EXTRACTION REQUIREMENTS FOR RECOVERY:",
+        "1. Inspect the identified evidence blocks individually and extract all applicable entities (experience, education, skills, projects, certifications, languages, achievements) supported by the source text.",
+        "2. DO NOT return only a summary or document archetype when body evidence exists.",
+        "3. Every non-null extracted value MUST cite the exact `source_block_ids` from which it was extracted.",
+        "4. DO NOT perform semantic renaming, title expansion, or ungrounded inference.",
+        "5. Use `[]` for collections where no source evidence exists and `null` for missing scalar/object fields.",
+        "6. Return a single valid JSON object adhering strictly to the BodySemanticOutput schema.",
+    ])
+
+    return "\n".join(lines)
 
 
 def get_personal_schema() -> dict[str, Any]:

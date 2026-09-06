@@ -409,6 +409,72 @@ def get_body_evidence_category(semantic_input: SemanticInput) -> str | None:
     return None
 
 
+def summarize_body_evidence(semantic_input: SemanticInput) -> dict[str, Any]:
+    """Deterministically summarize structural body evidence present in SemanticInput.
+
+    Derives evidence strictly from existing fields (suggested_role, region_kind, table_id,
+    cell_role, block_id, text, page, reading_order).
+    Does NOT invent classifications or use ungrounded text heuristics.
+    """
+    sorted_blocks = sorted(
+        semantic_input.blocks,
+        key=lambda b: (b.page, b.reading_order, b.block_id),
+    )
+
+    roles: dict[str, list[str]] = {}
+    section_headings: list[str] = []
+    table_blocks: list[str] = []
+    evidence_block_ids: list[str] = []
+
+    for b in sorted_blocks:
+        if not b.text.strip():
+            continue
+
+        role_upper = (b.suggested_role or "").strip().upper()
+
+        # Exclude pure footer and contact blocks
+        if b.region_kind == "footer" or role_upper in ("FOOTER", "CONTACT"):
+            continue
+
+        # Exclude page 1 personal/header blocks that have no body role or table
+        if b.page == 1 and b.region_kind == "header" and b.table_id is None and role_upper in ("HEADER", "UNKNOWN", ""):
+            continue
+
+        # Exclude page 2+ running header blocks if they are marked as HEADER with no body role or table
+        if b.page > 1 and role_upper == "HEADER" and b.table_id is None:
+            continue
+
+        evidence_block_ids.append(b.block_id)
+
+        if b.table_id is not None:
+            table_blocks.append(b.block_id)
+
+        if role_upper == "SECTION_HEADING":
+            section_headings.append(b.block_id)
+
+        # Record in roles dictionary if suggested_role is present and not UNKNOWN
+        if role_upper and role_upper != "UNKNOWN":
+            if role_upper not in roles:
+                roles[role_upper] = []
+            roles[role_upper].append(b.block_id)
+        elif b.table_id is not None:
+            tbl_role = "TABLE_CELL"
+            if tbl_role not in roles:
+                roles[tbl_role] = []
+            roles[tbl_role].append(b.block_id)
+
+    # Deterministically sort dictionary keys
+    sorted_roles = {k: roles[k] for k in sorted(roles.keys())}
+
+    return {
+        "total_body_blocks": len(evidence_block_ids),
+        "roles": sorted_roles,
+        "section_headings": section_headings,
+        "table_blocks": table_blocks,
+        "evidence_block_ids": evidence_block_ids,
+    }
+
+
 def is_body_output_suspiciously_empty(
     body_output: BodySemanticOutput | SemanticOutput,
     semantic_input: SemanticInput,

@@ -21,6 +21,7 @@ from app.domain.semantic_contract import (
     get_body_evidence_category,
     is_body_output_suspiciously_empty,
     merge_semantic_passes,
+    summarize_body_evidence,
 )
 from app.extractors.semantic_extractor import (
     SemanticCompletenessError,
@@ -35,6 +36,7 @@ from app.extractors.semantic_extractor import (
 )
 from app.extractors.semantic_prompt import (
     build_body_extraction_prompt,
+    build_body_recovery_prompt,
     build_compact_extraction_prompt,
     build_extraction_prompt,
     build_full_extraction_prompt,
@@ -724,12 +726,7 @@ class GeminiSemanticExtractor:
                         input_data.document_id,
                         model,
                     )
-                    prompt_body_recovery = (
-                        f"{prompt_body}\n\n"
-                        f"IMPORTANT RECOVERY INSTRUCTION: The previous extraction returned empty lists for all body collections "
-                        f"(experience, education, skills, projects, certifications, etc.) despite rich body content in the supplied blocks. "
-                        f"Please re-examine the document blocks carefully and extract all grounded body entities into their appropriate collections."
-                    )
+                    prompt_body_recovery = build_body_recovery_prompt(input_data)
                     raw_text_rec, usage_rec, retries_rec = self._execute_prompt_request(
                         prompt=prompt_body_recovery,
                         response_schema=schema_body,
