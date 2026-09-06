@@ -25,12 +25,24 @@ class Settings(BaseSettings):
     parser_version: str = "1.0.0"
     parser_mode: Literal["auto", "legacy", "layout"] = "auto"
 
+    # Provider selection
+    semantic_provider: Literal["gemini", "openrouter", "ollama"] = "gemini"
+
     # Semantic LLM configuration (optional)
     gemini_api_key: str | None = None
     gemini_model: str = "gemini-3.5-flash-lite"
     gemini_base_url: str = "https://generativelanguage.googleapis.com"
     gemini_timeout: float = 30.0
     gemini_max_retries: int = 2
+    gemini_two_pass: bool = False
+
+    # OpenRouter LLM configuration
+    openrouter_api_key: str | None = None
+    openrouter_model: str = "google/gemini-3.5-flash-lite"
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    openrouter_timeout: float = 60.0
+    openrouter_max_retries: int = 2
+    openrouter_two_pass: bool = False
 
     # Ollama LLM configuration
     ollama_base_url: str = "http://localhost:11434"
