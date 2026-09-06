@@ -133,9 +133,14 @@ def test_prompt_contains_grounding_and_no_fixture_rules():
     assert "source_block_ids" in prompt
     assert "raw_value" in prompt
     assert "CRITICAL GROUNDING AND PROVENANCE RULES" in prompt
+    assert "NEVER pad a year-only source with '-01' or '-01-01'" in prompt
     assert "DO NOT treat document headers, form titles" in prompt
     assert "DO NOT treat table column headers" in prompt
     assert "DO NOT classify referee" in prompt
+    assert "Skills Sections & Explicit Inventories:" in prompt
+    assert "Extract skills only from an explicit skills section" in prompt
+    assert "Do NOT infer or synthesize skills from:" in prompt
+    assert "skills: []" in prompt
     assert "DOCUMENT BLOCKS (JSON):" in prompt
 
     # No benchmark-specific PDF names or fixture names
@@ -344,6 +349,8 @@ def test_pydantic_to_gemini_schema_derivation():
     name_schema = personal_props["name"]
     name_obj = name_schema["anyOf"][0] if "anyOf" in name_schema else name_schema
     assert "source_block_ids" in name_obj["properties"]
+    assert "source_block_ids" in name_obj["required"]
+    assert "value" in name_obj["required"]
 
 
 def test_gemini_endpoint_url():

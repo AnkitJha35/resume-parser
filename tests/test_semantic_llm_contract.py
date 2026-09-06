@@ -15,6 +15,8 @@ from app.domain.semantic_contract import (
     GroundedPersonal,
     GroundedProjectItem,
     GroundedString,
+    PersonalSemanticOutput,
+    BodySemanticOutput,
     SemanticBlockCategory,
     SemanticBlockInput,
     SemanticInput,
@@ -23,6 +25,9 @@ from app.domain.semantic_contract import (
     _is_multiblock_text_semantically_supported,
     _is_value_semantically_supported,
     build_semantic_input,
+    has_explicit_skills_evidence,
+    normalize_semantic_output_skills,
+    sanitize_grounded_skills,
     semantic_output_to_resume,
     validate_semantic_output,
 )
@@ -801,3 +806,336 @@ def test_explicit_current_status_grounding_suite():
     )
     viol_past = validate_semantic_output(out_past_true, sem_input)
     assert any("UNSUPPORTED_CURRENT_STATUS in projects[0].current" in v for v in viol_past)
+
+
+# =====================================================================
+# 11. Provenance-Schema Hardening Tests
+# =====================================================================
+
+
+def test_grounded_string_schema_requires_value_and_provenance():
+    """GroundedString generated JSON schema explicitly marks value and source_block_ids as required."""
+    schema = GroundedString.model_json_schema()
+    assert "required" in schema
+    assert "value" in schema["required"]
+    assert "source_block_ids" in schema["required"]
+    assert schema["properties"]["source_block_ids"]["type"] == "array"
+
+
+def test_grounded_bool_schema_requires_value_and_provenance():
+    """GroundedBool generated JSON schema explicitly marks value and source_block_ids as required."""
+    schema = GroundedBool.model_json_schema()
+    assert "required" in schema
+    assert "value" in schema["required"]
+    assert "source_block_ids" in schema["required"]
+    assert schema["properties"]["source_block_ids"]["type"] == "array"
+
+
+def test_nested_grounded_fields_inherit_provenance_requirement():
+    """Nested grounded fields across SemanticOutput, PersonalSemanticOutput, and BodySemanticOutput inherit required provenance."""
+    from app.extractors.semantic_prompt import resolve_schema_defs
+
+    # 1. SemanticOutput model_json_schema contains $defs with required provenance
+    full_raw_schema = SemanticOutput.model_json_schema()
+    defs = full_raw_schema.get("$defs", {})
+    assert "GroundedString" in defs
+    assert "value" in defs["GroundedString"]["required"]
+    assert "source_block_ids" in defs["GroundedString"]["required"]
+    assert "GroundedBool" in defs
+    assert "value" in defs["GroundedBool"]["required"]
+    assert "source_block_ids" in defs["GroundedBool"]["required"]
+
+    # 2. Inlined PersonalSemanticOutput schema requires provenance on all personal fields
+    personal_schema = resolve_schema_defs(PersonalSemanticOutput)
+    name_schema = personal_schema["properties"]["personal"]["properties"]["name"]
+    name_obj = name_schema["anyOf"][0] if "anyOf" in name_schema else name_schema
+    assert "value" in name_obj["required"]
+    assert "source_block_ids" in name_obj["required"]
+
+    email_schema = personal_schema["properties"]["personal"]["properties"]["email"]
+    email_obj = email_schema["anyOf"][0] if "anyOf" in email_schema else email_schema
+    assert "value" in email_obj["required"]
+    assert "source_block_ids" in email_obj["required"]
+
+    phone_schema = personal_schema["properties"]["personal"]["properties"]["phone"]
+    phone_obj = phone_schema["anyOf"][0] if "anyOf" in phone_schema else phone_schema
+    assert "value" in phone_obj["required"]
+    assert "source_block_ids" in phone_obj["required"]
+
+    # 3. Inlined BodySemanticOutput schema requires provenance on skills, experience, and boolean current
+    body_schema = resolve_schema_defs(BodySemanticOutput)
+    skill_item = body_schema["properties"]["skills"]["items"]
+    assert "value" in skill_item["required"]
+    assert "source_block_ids" in skill_item["required"]
+
+    comp_schema = body_schema["properties"]["experience"]["items"]["properties"]["company"]
+    comp_obj = comp_schema["anyOf"][0] if "anyOf" in comp_schema else comp_schema
+    assert "value" in comp_obj["required"]
+    assert "source_block_ids" in comp_obj["required"]
+
+    curr_schema = body_schema["properties"]["experience"]["items"]["properties"]["current"]
+    curr_obj = curr_schema["anyOf"][0] if "anyOf" in curr_schema else curr_schema
+    assert "value" in curr_obj["required"]
+    assert "source_block_ids" in curr_obj["required"]
+
+
+def test_grounded_models_runtime_behavior_preserved():
+    """Pydantic runtime behavior remains unchanged (defaults source_block_ids to empty list when instantiated)."""
+    gs = GroundedString(value="test")
+    assert gs.value == "test"
+    assert gs.raw_value is None
+    assert gs.source_block_ids == []
+
+    gb = GroundedBool(value=True)
+    assert gb.value is True
+    assert gb.source_block_ids == []
+
+    gs_with_ids = GroundedString(value="test", source_block_ids=["b0"])
+    assert gs_with_ids.source_block_ids == ["b0"]
+
+
+# =====================================================================
+# 12. Deterministic Skills-Evidence Guard Tests
+# =====================================================================
+
+
+def _make_block(
+    block_id: str,
+    text: str,
+    page: int = 1,
+    reading_order: int = 0,
+    region_kind: str = "physical_region",
+    suggested_role: str = "UNKNOWN",
+    is_bold: bool = False,
+) -> SemanticBlockInput:
+    return SemanticBlockInput(
+        block_id=block_id,
+        text=text,
+        page=page,
+        bbox=[50.0, 50.0, 300.0, 70.0],
+        region_id=f"page-{page}-region-0",
+        region_kind=region_kind,
+        column_id=None,
+        reading_order=reading_order,
+        is_bold=is_bold,
+        font_size=11.0,
+        suggested_role=suggested_role,
+        spans=[{"text": text, "bbox": [50.0, 50.0, 300.0, 70.0]}],
+    )
+
+
+def test_consulting_style_input_no_skills_section_forces_empty_skills():
+    """8a: Consulting-style input with client engagements and table layout but no skills section forces skills = []."""
+    blocks = [
+        _make_block("b_hdr_0", "Arthur Pendelton", 1, 0, region_kind="header", suggested_role="HEADER"),
+        _make_block("b_hdr_1", "Principal Strategy & Operations Consultant", 1, 1, region_kind="header", suggested_role="HEADER"),
+        _make_block("b_sec_sum", "EXECUTIVE SUMMARY", 1, 2, region_kind="column", suggested_role="ENTRY_TITLE", is_bold=True),
+        _make_block("b_sum_text", "Senior management consultant with 12+ years experience.", 1, 3, region_kind="column", suggested_role="DESCRIPTION"),
+        _make_block("b_sec_eng", "MAJOR CLIENT ENGAGEMENTS & PROGRAM PORTFOLIO", 1, 4, region_kind="column", suggested_role="ORGANIZATION", is_bold=True),
+        _make_block("b_eng_col1", "Engagement Scope", 1, 5, region_kind="column", suggested_role="TECHNOLOGY"),
+        _make_block("b_eng_client1", "Multinational Healthcare", 1, 6, region_kind="column", suggested_role="TECHNOLOGY"),
+        _make_block("b_eng_client2", "Industrial Manufacturer", 1, 7, region_kind="column", suggested_role="TECHNOLOGY"),
+        _make_block("b_eng_desc1", "chain restructuring across 400", 1, 8, region_kind="column", suggested_role="UNKNOWN"),
+        _make_block("b_eng_desc2", "stores.", 1, 9, region_kind="column", suggested_role="DESCRIPTION"),
+        _make_block("b_sec_emp", "EMPLOYMENT HISTORY", 2, 10, region_kind="physical_region", suggested_role="SECTION_HEADING", is_bold=True),
+        _make_block("b_emp_title", "Principal Consultant", 2, 11, region_kind="physical_region", suggested_role="ENTRY_TITLE"),
+        _make_block("b_sec_edu", "EDUCATION", 2, 12, region_kind="physical_region", suggested_role="SECTION_HEADING", is_bold=True),
+        _make_block("b_edu_deg", "Master of Business Administration (MBA)", 2, 13, region_kind="physical_region", suggested_role="DESCRIPTION"),
+        _make_block("b_sec_cert", "PROFESSIONAL CERTIFICATIONS", 2, 14, region_kind="physical_region", suggested_role="SECTION_HEADING", is_bold=True),
+        _make_block("b_cert_val", "Project Management Professional (PMP)", 2, 15, region_kind="physical_region", suggested_role="BULLET"),
+    ]
+    sem_input = SemanticInput(
+        document_id="doc-consulting",
+        page_count=2,
+        archetype=DocumentArchetype.STANDARD_CV,
+        pages=[SemanticPageMeta(page_number=1, width=612.0, height=792.0), SemanticPageMeta(page_number=2, width=612.0, height=792.0)],
+        blocks=blocks,
+    )
+
+    # 1. Structural evidence check
+    assert has_explicit_skills_evidence(sem_input) is False
+
+    # 2. LLM incorrectly synthesized skills from job titles and narrative metrics
+    raw_output = SemanticOutput(
+        document_archetype=DocumentArchetype.STANDARD_CV,
+        block_classifications=[],
+        skills=[
+            GroundedString(value="Strategy & Operations", source_block_ids=["b_hdr_1"]),
+            GroundedString(value="400 stores", source_block_ids=["b_eng_desc1", "b_eng_desc2"]),
+        ],
+    )
+
+    # 3. Deterministic normalization forces skills = []
+    normalized_output = sanitize_grounded_skills(raw_output, sem_input)
+    assert normalized_output.skills == []
+
+    # 4. Normalized output passes validation cleanly
+    violations = validate_semantic_output(normalized_output, sem_input)
+    assert violations == []
+
+
+def test_explicit_skills_section_preserves_skills():
+    """8b: Explicit skills section preserves LLM-extracted grounded skills."""
+    blocks = [
+        _make_block("b_hdr", "Jane Smith", 1, 0, region_kind="header", suggested_role="HEADER"),
+        _make_block("b_sec_sk", "TECHNICAL SKILLS", 1, 1, region_kind="physical_region", suggested_role="SECTION_HEADING", is_bold=True),
+        _make_block("b_sk_1", "Python, Kubernetes, Docker, Go", 1, 2, region_kind="physical_region", suggested_role="SKILL"),
+    ]
+    sem_input = SemanticInput(
+        document_id="doc-tech-skills",
+        page_count=1,
+        archetype=DocumentArchetype.STANDARD_CV,
+        pages=[SemanticPageMeta(page_number=1, width=612.0, height=792.0)],
+        blocks=blocks,
+    )
+
+    assert has_explicit_skills_evidence(sem_input) is True
+
+    raw_output = SemanticOutput(
+        document_archetype=DocumentArchetype.STANDARD_CV,
+        block_classifications=[],
+        skills=[
+            GroundedString(value="Python", source_block_ids=["b_sk_1"]),
+            GroundedString(value="Docker", source_block_ids=["b_sk_1"]),
+        ],
+    )
+
+    normalized_output = sanitize_grounded_skills(raw_output, sem_input)
+    assert len(normalized_output.skills) == 2
+    assert normalized_output.skills[0].value == "Python"
+    assert normalized_output.skills[1].value == "Docker"
+
+    violations = validate_semantic_output(normalized_output, sem_input)
+    assert violations == []
+
+
+def test_technology_blocks_in_client_section_not_skills_evidence():
+    """8c: TECHNOLOGY blocks inside a non-skills/client section do not activate skills evidence."""
+    blocks = [
+        _make_block("b_sec_clients", "CLIENTS", 1, 0, region_kind="physical_region", suggested_role="SECTION_HEADING", is_bold=True),
+        _make_block("b_client_1", "Multinational Healthcare", 1, 1, region_kind="column", suggested_role="TECHNOLOGY"),
+        _make_block("b_client_2", "Industrial Manufacturer", 1, 2, region_kind="column", suggested_role="TECHNOLOGY"),
+    ]
+    sem_input = SemanticInput(
+        document_id="doc-clients-only",
+        page_count=1,
+        archetype=DocumentArchetype.STANDARD_CV,
+        pages=[SemanticPageMeta(page_number=1, width=612.0, height=792.0)],
+        blocks=blocks,
+    )
+
+    assert has_explicit_skills_evidence(sem_input) is False
+
+    raw_output = SemanticOutput(
+        document_archetype=DocumentArchetype.STANDARD_CV,
+        block_classifications=[],
+        skills=[
+            GroundedString(value="Multinational Healthcare", source_block_ids=["b_client_1"]),
+        ],
+    )
+
+    normalized_output = sanitize_grounded_skills(raw_output, sem_input)
+    assert normalized_output.skills == []
+
+
+def test_existing_grounded_skills_behavior_remains_unchanged_and_strict():
+    """8d: When explicit skills evidence exists, provenance validation remains strictly enforced."""
+    blocks = [
+        _make_block("b_sec_sk", "SKILLS", 1, 0, region_kind="physical_region", suggested_role="SECTION_HEADING", is_bold=True),
+        _make_block("b_sk_1", "Python, SQL", 1, 1, region_kind="physical_region", suggested_role="SKILL"),
+    ]
+    sem_input = SemanticInput(
+        document_id="doc-strict-validation",
+        page_count=1,
+        archetype=DocumentArchetype.STANDARD_CV,
+        pages=[SemanticPageMeta(page_number=1, width=612.0, height=792.0)],
+        blocks=blocks,
+    )
+
+    # 1. Hallucinated skill value not supported by source block is flagged
+    output_hallucinated = SemanticOutput(
+        document_archetype=DocumentArchetype.STANDARD_CV,
+        block_classifications=[],
+        skills=[
+            GroundedString(value="Rust", source_block_ids=["b_sk_1"]),
+        ],
+    )
+    normalized_hallucinated = sanitize_grounded_skills(output_hallucinated, sem_input)
+    assert len(normalized_hallucinated.skills) == 1
+    violations = validate_semantic_output(normalized_hallucinated, sem_input)
+    assert any("UNSUPPORTED_CANONICAL_VALUE in skills[0]" in v for v in violations)
+
+    # 2. Missing provenance is flagged
+    output_missing_prov = SemanticOutput(
+        document_archetype=DocumentArchetype.STANDARD_CV,
+        block_classifications=[],
+        skills=[
+            GroundedString(value="Python", source_block_ids=[]),
+        ],
+    )
+    normalized_missing = sanitize_grounded_skills(output_missing_prov, sem_input)
+    violations_missing = validate_semantic_output(normalized_missing, sem_input)
+    assert any("MISSING_PROVENANCE in skills[0]" in v for v in violations_missing)
+
+
+def test_sanitize_grounded_skills_idempotence():
+    """8e: sanitize_grounded_skills is strictly idempotent across both presence and absence of skills evidence."""
+    import copy
+
+    # Case 1: Absence of skills evidence
+    blocks_no_skills = [
+        _make_block("b_sec_exp", "EXPERIENCE", 1, 0, region_kind="physical_region", suggested_role="SECTION_HEADING", is_bold=True),
+        _make_block("b_exp_title", "Consultant", 1, 1, region_kind="physical_region", suggested_role="ENTRY_TITLE"),
+    ]
+    sem_input_no_skills = SemanticInput(
+        document_id="doc-idempotent-no-skills",
+        page_count=1,
+        archetype=DocumentArchetype.STANDARD_CV,
+        pages=[SemanticPageMeta(page_number=1, width=612.0, height=792.0)],
+        blocks=blocks_no_skills,
+    )
+    output_no_skills = SemanticOutput(
+        document_archetype=DocumentArchetype.STANDARD_CV,
+        block_classifications=[],
+        skills=[GroundedString(value="Consulting", source_block_ids=["b_exp_title"])],
+    )
+
+    out1 = sanitize_grounded_skills(copy.deepcopy(output_no_skills), sem_input_no_skills)
+    out2 = sanitize_grounded_skills(copy.deepcopy(out1), sem_input_no_skills)
+    out3 = normalize_semantic_output_skills(copy.deepcopy(out2), sem_input_no_skills)
+    assert out1.skills == []
+    assert out2.skills == []
+    assert out3.skills == []
+
+    # Case 2: Presence of skills evidence
+    blocks_with_skills = [
+        _make_block("b_sec_sk", "SKILLS", 1, 0, region_kind="physical_region", suggested_role="SECTION_HEADING", is_bold=True),
+        _make_block("b_sk_1", "Python, SQL", 1, 1, region_kind="physical_region", suggested_role="SKILL"),
+    ]
+    sem_input_with_skills = SemanticInput(
+        document_id="doc-idempotent-with-skills",
+        page_count=1,
+        archetype=DocumentArchetype.STANDARD_CV,
+        pages=[SemanticPageMeta(page_number=1, width=612.0, height=792.0)],
+        blocks=blocks_with_skills,
+    )
+    output_with_skills = SemanticOutput(
+        document_archetype=DocumentArchetype.STANDARD_CV,
+        block_classifications=[],
+        skills=[
+            GroundedString(value="Python", source_block_ids=["b_sk_1"]),
+            GroundedString(value="SQL", source_block_ids=["b_sk_1"]),
+        ],
+    )
+
+    out_s1 = sanitize_grounded_skills(copy.deepcopy(output_with_skills), sem_input_with_skills)
+    out_s2 = sanitize_grounded_skills(copy.deepcopy(out_s1), sem_input_with_skills)
+    out_s3 = normalize_semantic_output_skills(copy.deepcopy(out_s2), sem_input_with_skills)
+    assert len(out_s1.skills) == 2
+    assert len(out_s2.skills) == 2
+    assert len(out_s3.skills) == 2
+    assert [s.value for s in out_s1.skills] == ["Python", "SQL"]
+    assert [s.value for s in out_s2.skills] == ["Python", "SQL"]
+    assert [s.value for s in out_s3.skills] == ["Python", "SQL"]
+
+

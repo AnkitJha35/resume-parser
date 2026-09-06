@@ -200,6 +200,7 @@ def test_personal_and_body_prompt_builders():
     assert "Education Tables:" in body_prompt
     assert "Maritime Sea-Service & Employment Tables:" in body_prompt
     assert "Certification, Course, & Endorsement Tables:" in body_prompt
+    assert "Skills Sections & Explicit Inventories:" in body_prompt
     assert "DOCUMENT BLOCKS (JSON):" in body_prompt
 
     personal_schema = get_personal_schema()
@@ -212,6 +213,27 @@ def test_personal_and_body_prompt_builders():
     assert "experience" in body_schema["properties"]
     assert "education" in body_schema["properties"]
     assert "personal" not in body_schema["properties"]
+
+
+def test_body_prompt_contains_skills_extraction_boundary():
+    """Verify body extraction prompt strictly bounds skills to explicit sections/lists and forbids prose inference."""
+    sem_input = _sample_semantic_input()
+    prompt = build_body_extraction_prompt(sem_input)
+
+    assert "Skills Sections & Explicit Inventories:" in prompt
+    assert "Extract skills only from an explicit skills section" in prompt
+    assert "Do NOT infer or synthesize skills from:" in prompt
+    assert "narrative summaries" in prompt
+    assert "job titles" in prompt
+    assert "experience descriptions" in prompt
+    assert "project descriptions" in prompt
+    assert "table rows" in prompt
+    assert "employer/company names" in prompt
+    assert "client/industry labels" in prompt
+    assert "If the resume contains no explicit skills inventory/list, return `skills: []`" in prompt
+    assert "Every extracted skill must be grounded in the source block(s)" in prompt
+    assert "Do not convert concepts mentioned in prose into skills" in prompt
+
 
 
 # =====================================================================

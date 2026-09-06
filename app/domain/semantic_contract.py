@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 from enum import Enum
 from typing import Any, TypeVar
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.domain.document import Document
 from app.domain.resume import (
@@ -197,6 +197,13 @@ class SemanticInput(BaseModel):
 # =====================================================================
 
 
+def _enforce_provenance_json_schema(schema: dict[str, Any]) -> None:
+    """Ensure generated JSON Schema structurally marks source_block_ids as required."""
+    req = schema.setdefault("required", [])
+    if "source_block_ids" not in req:
+        req.append("source_block_ids")
+
+
 class GroundedString(BaseModel):
     """A field value retaining mandatory source provenance and supporting canonical normalization.
 
@@ -205,6 +212,8 @@ class GroundedString(BaseModel):
     - source_block_ids: Mandatory list of referenced block IDs providing evidence.
     """
 
+    model_config = ConfigDict(json_schema_extra=_enforce_provenance_json_schema)
+
     value: str
     raw_value: str | None = None
     source_block_ids: list[str] = Field(default_factory=list)
@@ -212,6 +221,8 @@ class GroundedString(BaseModel):
 
 class GroundedBool(BaseModel):
     """A boolean field with mandatory source provenance evidence (e.g. current employment)."""
+
+    model_config = ConfigDict(json_schema_extra=_enforce_provenance_json_schema)
 
     value: bool
     source_block_ids: list[str] = Field(default_factory=list)
@@ -518,6 +529,19 @@ _GRANT_OR_AWARD_PATTERN = re.compile(
     r"[\$€£]|(?:\b(?:grant|award|fellowship|honor|funding|scholarship)\b)",
     re.IGNORECASE,
 )
+_SKILL_SECTION_HEADING_PATTERN = re.compile(
+    r"\b(?:skills?|technolog(?:y|ies)|competenc(?:y|ies)|proficienc(?:y|ies)|"
+    r"tools?|tooling|tech\s+stack|technical\s+expertise|technical\s+strengths|"
+    r"technical\s+environment|languages\s+(&|and)\s+frameworks)\b",
+    re.IGNORECASE,
+)
+_NON_SKILLS_HEADING_PATTERN = re.compile(
+    r"\b(?:clients?|customers?|engagements?|portfolio|experience|employment|history|"
+    r"work|projects?|education|academics?|certifications?|credentials?|licenses?|"
+    r"achievements?|awards?|publications?|teaching|service|references?|declarations?)\b",
+    re.IGNORECASE,
+)
+
 
 
 class SemanticSection:
@@ -626,8 +650,13 @@ def _infer_section_target(
         return "experience"
 
     # 4. Skills / Technologies
-    if any(r in ("SKILL", "TECHNOLOGY") for r in child_roles):
-        return "skills"
+    if not _NON_SKILLS_HEADING_PATTERN.search(clean_h):
+        if any(r == "SKILL" for r in child_roles):
+            return "skills"
+        if any(r == "TECHNOLOGY" for r in child_roles) and (
+            bool(_SKILL_SECTION_HEADING_PATTERN.search(clean_h)) or not clean_h
+        ):
+            return "skills"
 
     # 5. Certifications / Credentials
     if any(r in ("CERTIFICATION", "CREDENTIAL") for r in child_roles):
@@ -981,6 +1010,73 @@ def sanitize_grounded_current_status(
 
     return output
 
+
+def has_explicit_skills_evidence(semantic_input: SemanticInput) -> bool:
+    """Determine whether SemanticInput contains structural evidence of an explicit skills inventory.
+
+    Returns True only when supported by existing structural/section information:
+    - a section inferred to target 'skills' (excluding non-skills/client headings)
+    - SKILL blocks within an appropriate skills-oriented section
+    - TECHNOLOGY blocks only when they belong to an appropriate skills/technologies section
+
+    Arbitrary TECHNOLOGY blocks (e.g. within client, project, or engagement sections)
+    do not count as skills evidence.
+    """
+    sections = partition_semantic_input_into_sections(semantic_input)
+    if not sections:
+        return False
+
+    blocks_by_id = {b.block_id: b for b in semantic_input.blocks}
+
+    for sec in sections:
+        heading_clean = re.sub(r"\(.*?\)", "", sec.heading_text).strip().lower()
+        is_non_skills = bool(_NON_SKILLS_HEADING_PATTERN.search(heading_clean))
+        is_skills_heading = bool(_SKILL_SECTION_HEADING_PATTERN.search(heading_clean))
+
+        child_blocks = [
+            blocks_by_id[bid]
+            for bid in sec.block_ids
+            if bid != sec.heading_block_id and bid in blocks_by_id
+        ]
+        child_roles = {b.suggested_role for b in child_blocks if b.suggested_role}
+
+        # 1. A section inferred to target "skills" (excluding non-skills/client headings)
+        if sec.canonical_target == "skills" and not is_non_skills:
+            return True
+
+        # 2. SKILL blocks within an appropriate skills-oriented section
+        if (
+            "SKILL" in child_roles
+            or (sec.heading_block_id in blocks_by_id and blocks_by_id[sec.heading_block_id].suggested_role == "SKILL")
+        ) and not is_non_skills:
+            return True
+
+        # 3. TECHNOLOGY blocks only when they belong to an appropriate skills/technologies section
+        if "TECHNOLOGY" in child_roles:
+            if is_skills_heading or (sec.canonical_target == "skills" and not is_non_skills):
+                return True
+
+    return False
+
+
+def sanitize_grounded_skills(
+    output: TOutput,
+    semantic_input: SemanticInput,
+) -> TOutput:
+    """Deterministically enforce skills-evidence boundaries on semantic output.
+
+    When the source document contains no explicit skills inventory/section,
+    force output.skills = [].
+    When explicit skills evidence exists, preserve output.skills for normal
+    grounding and provenance validation.
+    """
+    if not has_explicit_skills_evidence(semantic_input):
+        if getattr(output, "skills", None):
+            output.skills = []
+    return output
+
+
+normalize_semantic_output_skills = sanitize_grounded_skills
 
 
 # 4. Builder and Validation Invariants

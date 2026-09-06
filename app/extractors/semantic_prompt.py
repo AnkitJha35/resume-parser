@@ -26,7 +26,7 @@ CRITICAL GROUNDING AND PROVENANCE RULES:
 1. Every non-null grounded value MUST reference the exact `source_block_ids` from which it was extracted.
 2. EXTRACT ONLY supported information. DO NOT invent, hallucinate, or infer missing values.
 3. DO NOT perform semantic renaming or enrichment (e.g., do not rename companies, do not expand job titles).
-4. Use exact verbatim text from source blocks in `raw_value` when available. In `value`, only safe canonical normalizations are permitted (e.g., ISO dates 'YYYY-MM-DD'/'YYYY-MM'/'YYYY', phone digits, whitespace/case cleanup).
+4. Use exact verbatim text from source blocks in `raw_value` when available. In `value`, only safe canonical normalizations are permitted (e.g., ISO dates 'YYYY-MM-DD'/'YYYY-MM'/'YYYY', phone digits, whitespace/case cleanup). When source evidence contains only a year (for example '2020' or a range such as '2020 - 2024'), preserve year precision and return '2020' and '2024'. NEVER pad a year-only source with '-01' or '-01-01'. Only include month/day when those components are explicitly present in the source evidence.
 5. DO NOT treat document headers, form titles (e.g., 'APPLICATION FORM', 'Curriculum Vitae', 'Surname'), or section labels as personal names.
 6. DO NOT treat table column headers (e.g., 'Ship Name', 'Period', 'S.No.', 'Documents Details') as actual company, designation, or degree values.
 7. DO NOT classify referee or reference contacts as employment experience. Mark referee and boilerplate blocks explicitly under block_classifications.
@@ -92,6 +92,20 @@ SPECIFIC SECTION EXTRACTION MAPPINGS:
    * When a data row contains a specific certificate, course, or endorsement name, extract it as an entry in `certifications`. Each logical certification data row represents at most one certification record. Do not repeat a certification across rows. All source_block_ids for a certification must come from that same logical table row.
    * Column headers themselves must never become certification values.
 
+5. Skills Sections & Explicit Inventories:
+   * Extract skills only from an explicit skills section, technical-skills section, competencies section, technologies section, or clearly enumerated skill list.
+   * Do NOT infer or synthesize skills from:
+     - narrative summaries
+     - job titles
+     - experience descriptions
+     - project descriptions
+     - table rows
+     - employer/company names
+     - client/industry labels
+   * If the resume contains no explicit skills inventory/list, return `skills: []`.
+   * Every extracted skill must be grounded in the source block(s) containing that skill.
+   * Do not convert concepts mentioned in prose into skills merely because they are plausible resume skills.
+
 IMPORTANT VALIDATION REMINDER:
 These guidelines are extraction mappings grounded in explicit source relationships, not new domain facts. Every resulting value must strictly satisfy deterministic provenance and grounding validators."""
 
@@ -126,7 +140,7 @@ CRITICAL GROUNDING AND PROVENANCE RULES:
 1. Every non-null grounded value MUST reference the exact `source_block_ids` from which it was extracted.
 2. EXTRACT ONLY supported information. DO NOT invent, hallucinate, or infer missing values.
 3. DO NOT perform semantic renaming or enrichment (e.g., do not rename companies, do not expand job titles).
-4. Use exact verbatim text from source blocks in `raw_value` when available. In `value`, only safe canonical normalizations are permitted (e.g., ISO dates 'YYYY-MM-DD'/'YYYY-MM'/'YYYY', whitespace/case cleanup).
+4. Use exact verbatim text from source blocks in `raw_value` when available. In `value`, only safe canonical normalizations are permitted (e.g., ISO dates 'YYYY-MM-DD'/'YYYY-MM'/'YYYY', whitespace/case cleanup). When source evidence contains only a year (for example '2020' or a range such as '2020 - 2024'), preserve year precision and return '2020' and '2024'. NEVER pad a year-only source with '-01' or '-01-01'. Only include month/day when those components are explicitly present in the source evidence.
 5. DO NOT treat table column headers (e.g., 'Ship Name', 'Period', 'S.No.', 'Documents Details') as actual company, designation, or degree values.
 6. DO NOT classify referee or reference contacts as employment experience. Mark referee and boilerplate blocks explicitly under block_classifications.
 7. Every boolean field (e.g., `current`) MUST reference the source block IDs providing explicit evidence (e.g., blocks explicitly containing 'Present', 'Current', 'Currently', 'Ongoing', 'Till Date', 'Now'). An end date or year alone (including future years, current calendar years, or date ranges without explicit current wording like 'Present' or 'Current') DOES NOT establish `current=true`. When explicit current wording is absent, set `current: null`.
@@ -187,6 +201,20 @@ SPECIFIC SECTION EXTRACTION MAPPINGS:
    * Inspect every data row in tables describing `Courses & Certificates`, `STCW Courses`, `Dangerous Cargo Endorsements`, `Vaccinations`, or `Trainings`.
    * When a data row contains a specific certificate, course, or endorsement name, extract it as an entry in `certifications`. Each logical certification data row represents at most one certification record. Do not repeat a certification across rows. All source_block_ids for a certification must come from that same logical table row.
    * Column headers themselves must never become certification values.
+
+4. Skills Sections & Explicit Inventories:
+   * Extract skills only from an explicit skills section, technical-skills section, competencies section, technologies section, or clearly enumerated skill list.
+   * Do NOT infer or synthesize skills from:
+     - narrative summaries
+     - job titles
+     - experience descriptions
+     - project descriptions
+     - table rows
+     - employer/company names
+     - client/industry labels
+   * If the resume contains no explicit skills inventory/list, return `skills: []`.
+   * Every extracted skill must be grounded in the source block(s) containing that skill.
+   * Do not convert concepts mentioned in prose into skills merely because they are plausible resume skills.
 
 IMPORTANT VALIDATION REMINDER:
 These guidelines are extraction mappings grounded in explicit source relationships, not new domain facts. Every resulting value must strictly satisfy deterministic provenance and grounding validators."""
