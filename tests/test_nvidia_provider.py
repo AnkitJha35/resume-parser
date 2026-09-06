@@ -95,7 +95,7 @@ def _make_mock_client(handler) -> httpx.Client:
 # =====================================================================
 
 def test_nvidia_default_max_tokens_and_format():
-    """Default max_tokens (16384) and json_object response format are used."""
+    """Default max_tokens (16384), json_schema response format, and disabled thinking are used."""
     captured_payloads = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -118,8 +118,91 @@ def test_nvidia_default_max_tokens_and_format():
     assert len(captured_payloads) == 1
     assert captured_payloads[0]["max_tokens"] == 16384
     assert captured_payloads[0]["model"] == "nvidia/nemotron-3.5-lightning-30b-a3b"
-    assert captured_payloads[0]["response_format"] == {"type": "json_object"}
+    assert captured_payloads[0]["response_format"]["type"] == "json_schema"
+    assert "schema" in captured_payloads[0]["response_format"]["json_schema"]
     assert captured_payloads[0]["temperature"] == 0.0
+    assert captured_payloads[0]["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+def test_nvidia_json_object_response_format_override():
+    """When configured with response_format_type='json_object', json_object payload is sent."""
+    captured_payloads = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        captured_payloads.append(body)
+        resp_data = {
+            "choices": [{"message": {"content": json.dumps({"document_archetype": "standard_cv"})}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+        }
+        return httpx.Response(200, json=resp_data)
+
+    client = _make_mock_client(handler)
+    extractor = NvidiaSemanticExtractor(
+        api_key="nvapi-testkey",
+        response_format_type="json_object",
+        client=client,
+        two_pass=False,
+    )
+
+    extractor.extract(_sample_input())
+    assert len(captured_payloads) == 1
+    assert captured_payloads[0]["response_format"] == {"type": "json_object"}
+
+
+def test_nvidia_enable_thinking_override():
+    """When configured with enable_thinking=True, chat_template_kwargs passes enable_thinking=True."""
+    captured_payloads = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        captured_payloads.append(body)
+        resp_data = {
+            "choices": [{"message": {"content": json.dumps({"document_archetype": "standard_cv"})}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+        }
+        return httpx.Response(200, json=resp_data)
+
+    client = _make_mock_client(handler)
+    extractor = NvidiaSemanticExtractor(
+        api_key="nvapi-testkey",
+        enable_thinking=True,
+        client=client,
+        two_pass=False,
+    )
+
+    extractor.extract(_sample_input())
+    assert len(captured_payloads) == 1
+    assert captured_payloads[0]["chat_template_kwargs"] == {"enable_thinking": True}
+
+
+
+def test_nvidia_payload_disables_thinking():
+    """NVIDIA request payload explicitly disables reasoning via chat_template_kwargs."""
+    captured_payloads = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        captured_payloads.append(body)
+        resp_data = {
+            "choices": [{"message": {"content": json.dumps({"document_archetype": "standard_cv"})}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+        }
+        return httpx.Response(200, json=resp_data)
+
+    client = _make_mock_client(handler)
+    extractor = NvidiaSemanticExtractor(
+        api_key="nvapi-testkey",
+        client=client,
+        two_pass=False,
+    )
+
+    extractor.extract(_sample_input())
+    assert len(captured_payloads) == 1
+    assert "chat_template_kwargs" in captured_payloads[0]
+    assert captured_payloads[0]["chat_template_kwargs"] == {
+        "enable_thinking": False,
+    }
 
 
 def test_nvidia_configured_max_tokens():
@@ -247,7 +330,9 @@ def test_nvidia_single_pass_success():
         assert body["messages"][0]["role"] == "user"
         assert body["temperature"] == 0.0
         assert body["max_tokens"] == 16384
-        assert body["response_format"]["type"] == "json_object"
+        assert body["response_format"]["type"] == "json_schema"
+        assert "schema" in body["response_format"]["json_schema"]
+        assert body["chat_template_kwargs"] == {"enable_thinking": False}
 
         resp_data = {
             "id": "nv-123",
@@ -612,11 +697,30 @@ def test_factory_returns_nvidia_when_selected():
     )
     extractor = get_semantic_extractor(settings, provider="nvidia")
     assert isinstance(extractor, NvidiaSemanticExtractor)
-    api_key, model, base_url, timeout, max_retries, max_tokens, fmt_type = extractor._resolve_config()
+    api_key, model, base_url, timeout, max_retries, max_tokens, fmt_type, thinking = extractor._resolve_config()
     assert api_key == "nvapi-factory-test"
     assert model == "nvidia/nemotron-3.5-lightning-30b-a3b"
     assert max_tokens == 4096
     assert fmt_type == "json_object"
+    assert thinking is False
+
+
+def test_factory_defaults_for_nvidia():
+    """get_semantic_extractor uses default json_schema format and thinking=False."""
+    settings = Settings(
+        kafka_brokers="localhost:9092",
+        minio_endpoint="localhost:9000",
+        minio_access_key="minioadmin",
+        minio_secret_key="minioadmin",
+        minio_bucket_name="resumes",
+        nvidia_api_key="nvapi-factory-defaults",
+    )
+    extractor = get_semantic_extractor(settings, provider="nvidia")
+    assert isinstance(extractor, NvidiaSemanticExtractor)
+    api_key, model, base_url, timeout, max_retries, max_tokens, fmt_type, thinking = extractor._resolve_config()
+    assert fmt_type == "json_schema"
+    assert thinking is False
+
 
 
 def test_factory_returns_nvidia_from_settings():

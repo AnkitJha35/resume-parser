@@ -53,7 +53,8 @@ class Settings(BaseSettings):
     nvidia_max_retries: int = 2
     nvidia_max_tokens: int = 16384
     nvidia_two_pass: bool = False
-    nvidia_response_format_type: Literal["json_object", "json_schema"] = "json_object"
+    nvidia_response_format_type: Literal["json_object", "json_schema"] = "json_schema"
+    nvidia_enable_thinking: bool = False
 
     # Ollama LLM configuration
     ollama_base_url: str = "http://localhost:11434"

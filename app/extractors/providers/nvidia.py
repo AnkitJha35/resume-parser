@@ -176,6 +176,7 @@ class NvidiaSemanticExtractor:
         max_retries: int | None = None,
         max_tokens: int | None = None,
         response_format_type: Literal["json_object", "json_schema"] | None = None,
+        enable_thinking: bool | None = None,
         initial_backoff: float = 1.0,
         max_backoff: float = 30.0,
         backoff_multiplier: float = 2.0,
@@ -192,6 +193,7 @@ class NvidiaSemanticExtractor:
         self._explicit_max_retries = max_retries
         self._explicit_max_tokens = max_tokens
         self._explicit_response_format_type = response_format_type
+        self._explicit_enable_thinking = enable_thinking
         self._explicit_two_pass = two_pass
         self._initial_backoff = initial_backoff
         self._max_backoff = max_backoff
@@ -222,8 +224,8 @@ class NvidiaSemanticExtractor:
             pass
         return False
 
-    def _resolve_config(self) -> tuple[str, str, str, float, int, int, str]:
-        """Resolve API key, model, base_url, timeout, max_retries, max_tokens, and response_format_type with strict precedence."""
+    def _resolve_config(self) -> tuple[str, str, str, float, int, int, str, bool]:
+        """Resolve API key, model, base_url, timeout, max_retries, max_tokens, response_format_type, and enable_thinking with strict precedence."""
         api_key = self._explicit_api_key
         if api_key is not None and not api_key.strip():
             api_key = None
@@ -287,8 +289,16 @@ class NvidiaSemanticExtractor:
             if env_fmt in ("json_object", "json_schema"):
                 response_format_type = env_fmt
 
+        enable_thinking = self._explicit_enable_thinking
+        if enable_thinking is None and "NVIDIA_ENABLE_THINKING" in os.environ:
+            env_thinking = os.environ["NVIDIA_ENABLE_THINKING"].strip().lower()
+            if env_thinking in ("1", "true", "yes"):
+                enable_thinking = True
+            elif env_thinking in ("0", "false", "no"):
+                enable_thinking = False
+
         # Check Settings for unresolved fields
-        if any(v is None for v in (api_key, model, base_url, timeout, max_retries, max_tokens, response_format_type)):
+        if any(v is None for v in (api_key, model, base_url, timeout, max_retries, max_tokens, response_format_type, enable_thinking)):
             try:
                 settings = Settings()
                 if api_key is None:
@@ -319,6 +329,10 @@ class NvidiaSemanticExtractor:
                     st_fmt = getattr(settings, "nvidia_response_format_type", None)
                     if st_fmt in ("json_object", "json_schema"):
                         response_format_type = st_fmt
+                if enable_thinking is None:
+                    st_thinking = getattr(settings, "nvidia_enable_thinking", None)
+                    if isinstance(st_thinking, bool):
+                        enable_thinking = st_thinking
             except (ValidationError, OSError):
                 pass
 
@@ -334,7 +348,9 @@ class NvidiaSemanticExtractor:
         if max_tokens is None:
             max_tokens = 16384
         if response_format_type is None:
-            response_format_type = "json_object"
+            response_format_type = "json_schema"
+        if enable_thinking is None:
+            enable_thinking = False
 
         if not api_key:
             raise SemanticConfigurationError(
@@ -342,7 +358,7 @@ class NvidiaSemanticExtractor:
                 "or pass api_key explicitly."
             )
 
-        return api_key, model, base_url, timeout, max_retries, max_tokens, response_format_type
+        return api_key, model, base_url, timeout, max_retries, max_tokens, response_format_type, enable_thinking
 
     @property
     def last_run_meta(self) -> dict[str, Any]:
@@ -366,7 +382,8 @@ class NvidiaSemanticExtractor:
         timeout: float,
         max_retries: int,
         max_tokens: int = 16384,
-        response_format_type: str = "json_object",
+        response_format_type: str = "json_schema",
+        enable_thinking: bool = False,
         pass_name: str = "single",
     ) -> tuple[str, dict[str, Any], int]:
         """Execute a single HTTP request to the NVIDIA chat/completions endpoint with retries and return (text, usage_dict, retry_count)."""
@@ -386,6 +403,9 @@ class NvidiaSemanticExtractor:
             ],
             "temperature": 0.0,
             "max_tokens": max_tokens,
+            "chat_template_kwargs": {
+                "enable_thinking": enable_thinking,
+            },
         }
 
         if response_format_type == "json_schema":
@@ -573,7 +593,7 @@ class NvidiaSemanticExtractor:
 
     def extract_single_pass(self, input_data: SemanticInput) -> SemanticOutput:
         """Single-pass extraction mode."""
-        api_key, model, base_url, timeout, max_retries, max_tokens, response_format_type = self._resolve_config()
+        api_key, model, base_url, timeout, max_retries, max_tokens, response_format_type, enable_thinking = self._resolve_config()
         start_time = self._time_fn()
         schema = get_compact_schema(SemanticOutput)
         prompt = build_compact_extraction_prompt(input_data)
@@ -588,6 +608,7 @@ class NvidiaSemanticExtractor:
             max_retries=max_retries,
             max_tokens=max_tokens,
             response_format_type=response_format_type,
+            enable_thinking=enable_thinking,
             pass_name="single",
         )
 
@@ -610,7 +631,7 @@ class NvidiaSemanticExtractor:
         if not self._resolve_two_pass():
             return self.extract_single_pass(input_data)
 
-        api_key, model, base_url, timeout, max_retries, max_tokens, response_format_type = self._resolve_config()
+        api_key, model, base_url, timeout, max_retries, max_tokens, response_format_type, enable_thinking = self._resolve_config()
         start_time = self._time_fn()
 
         schema_personal = get_personal_schema()
@@ -629,6 +650,7 @@ class NvidiaSemanticExtractor:
                 max_retries=max_retries,
                 max_tokens=max_tokens,
                 response_format_type=response_format_type,
+                enable_thinking=enable_thinking,
                 pass_name="personal",
             )
             parsed = parse_personal_output(raw_text)
@@ -653,6 +675,7 @@ class NvidiaSemanticExtractor:
                 max_retries=max_retries,
                 max_tokens=max_tokens,
                 response_format_type=response_format_type,
+                enable_thinking=enable_thinking,
                 pass_name=pass_name,
             )
             parsed = parse_body_output(raw_text)
@@ -761,6 +784,7 @@ class NvidiaSemanticExtractor:
                             max_retries=max_retries,
                             max_tokens=max_tokens,
                             response_format_type=response_format_type,
+                            enable_thinking=enable_thinking,
                             pass_name="body_sectioned_recovery",
                         )
                         parsed_rec = parse_body_output(raw_text_rec)
@@ -843,6 +867,7 @@ class NvidiaSemanticExtractor:
                 max_retries=max_retries,
                 max_tokens=max_tokens,
                 response_format_type=response_format_type,
+                enable_thinking=enable_thinking,
                 pass_name="body",
             )
             parsed = parse_body_output(raw_text)
@@ -891,6 +916,7 @@ class NvidiaSemanticExtractor:
                         max_retries=max_retries,
                         max_tokens=max_tokens,
                         response_format_type=response_format_type,
+                        enable_thinking=enable_thinking,
                         pass_name="body_recovery",
                     )
                     parsed_rec = parse_body_output(raw_text_rec)
