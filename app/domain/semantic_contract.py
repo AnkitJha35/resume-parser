@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import re
 from enum import Enum
-from typing import Any
+from typing import Any, TypeVar
 from pydantic import BaseModel, Field
 
 from app.domain.document import Document
@@ -811,6 +811,70 @@ def merge_body_outputs(outputs: list[BodySemanticOutput]) -> BodySemanticOutput:
         languages=sum((o.languages for o in outputs), []),
         achievements=sum((o.achievements for o in outputs), []),
     )
+
+
+def should_use_section_aware_body_extraction(input_data: SemanticInput) -> bool:
+    """Determine whether section-aware body extraction should be used for a document.
+
+    Decision matrix:
+    - ACADEMIC_CV: Section-aware if at least 1 supported section exists.
+    - STANDARD_CV: Section-aware if at least 2 supported sections exist.
+    - All other archetypes (MARITIME_CV, MARITIME_TABULAR, STRUCTURED_FORM, UNKNOWN)
+      or STANDARD_CV with < 2 supported sections: monolithic body pass.
+    """
+    if input_data.archetype == DocumentArchetype.ACADEMIC_CV:
+        sections = partition_semantic_input_into_sections(input_data)
+        return any(s.canonical_target != "unsupported" for s in sections)
+    if input_data.archetype == DocumentArchetype.STANDARD_CV:
+        sections = partition_semantic_input_into_sections(input_data)
+        supported = [s for s in sections if s.canonical_target != "unsupported"]
+        return len(supported) >= 2
+    return False
+
+
+TOutput = TypeVar("TOutput", SemanticOutput, BodySemanticOutput)
+
+
+def sanitize_grounded_current_status(
+    output: TOutput,
+    semantic_input: SemanticInput,
+) -> TOutput:
+    """Deterministically sanitize ungrounded current=True status on experience and project items.
+
+    If an experience or project item asserts current=True, but the cited source blocks do not
+    contain any explicit textual marker matching ACCEPTED_CURRENT_MARKERS (e.g. 'present',
+    'currently', 'till date', 'now', 'ongoing'), normalize current = None prior to validation
+    and projection.
+
+    Invariants preserved:
+    - Does not convert True to False (which would assert an ungrounded non-current fact).
+    - Preserves explicitly grounded current=True.
+    - Preserves explicitly grounded current=False.
+    - Does not alter non-current fields (dates, titles, descriptions, etc.).
+    - Strict provenance isolation: un-cited blocks containing current markers cannot validate
+      the field.
+    """
+    known_blocks = {b.block_id: b for b in semantic_input.blocks}
+
+    def _is_current_grounded(gb: GroundedBool) -> bool:
+        if not gb.source_block_ids:
+            return False
+        source_text = " ".join(
+            known_blocks[bid].text for bid in gb.source_block_ids if bid in known_blocks
+        )
+        return any(pat.search(source_text) for pat in ACCEPTED_CURRENT_MARKERS)
+
+    for exp in getattr(output, "experience", []):
+        if exp.current is not None and exp.current.value is True:
+            if not _is_current_grounded(exp.current):
+                exp.current = None
+
+    for prj in getattr(output, "projects", []):
+        if prj.current is not None and prj.current.value is True:
+            if not _is_current_grounded(prj.current):
+                prj.current = None
+
+    return output
 
 
 

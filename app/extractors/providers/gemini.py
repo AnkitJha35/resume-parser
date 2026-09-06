@@ -25,6 +25,8 @@ from app.domain.semantic_contract import (
     merge_body_outputs,
     merge_semantic_passes,
     partition_semantic_input_into_sections,
+    sanitize_grounded_current_status,
+    should_use_section_aware_body_extraction,
     summarize_body_evidence,
 )
 from app.extractors.semantic_extractor import (
@@ -621,6 +623,7 @@ class GeminiSemanticExtractor:
                     pass_name="single",
                 )
                 result = parse_semantic_output(raw_text)
+                result = sanitize_grounded_current_status(result, input_data)
 
                 ev_cat = get_body_evidence_category(input_data)
                 is_empty = not bool(
@@ -748,23 +751,30 @@ class GeminiSemanticExtractor:
             def _run_body() -> tuple[BodySemanticOutput, dict[str, Any], int]:
                 """Execute body extraction.
 
-                For ACADEMIC_CV: partition into logical sections, skip unsupported
-                sections (publications, teaching, editorial service, references, declarations),
-                send one focused extraction request per supported section group, and merge.
+                When section-aware extraction is applicable (ACADEMIC_CV with supported
+                sections, or STANDARD_CV with >= 2 supported sections): partition into logical
+                sections, skip unsupported sections, send one focused extraction request per
+                supported section group, and merge.
 
-                For all other archetypes: monolithic body pass with existing recovery.
+                Otherwise: monolithic body pass with existing recovery.
                 """
-                is_academic = input_data.archetype == DocumentArchetype.ACADEMIC_CV
+                use_section_aware = should_use_section_aware_body_extraction(input_data)
 
-                if is_academic:
+                if use_section_aware:
                     sections = partition_semantic_input_into_sections(input_data)
                     supported = [s for s in sections if s.canonical_target != "unsupported"]
                     skipped = [s for s in sections if s.canonical_target == "unsupported"]
 
+                    arch_name = (
+                        input_data.archetype.value
+                        if hasattr(input_data.archetype, "value")
+                        else str(input_data.archetype)
+                    )
                     logger.info(
-                        "Gemini body pass section-aware mode doc_id=%s archetype=academic_cv "
+                        "Gemini body pass section-aware mode doc_id=%s archetype=%s "
                         "total_sections=%d supported=%d skipped_unsupported=%d",
                         input_data.document_id,
+                        arch_name,
                         len(sections),
                         len(supported),
                         len(skipped),
@@ -778,9 +788,9 @@ class GeminiSemanticExtractor:
                             "falling through to monolithic pass doc_id=%s",
                             input_data.document_id,
                         )
-                        is_academic = False  # trigger fallthrough below
+                        use_section_aware = False  # trigger fallthrough below
 
-                    if is_academic:
+                    if use_section_aware:
                         section_outputs: list[BodySemanticOutput] = []
                         total_p_t = 0
                         total_o_t = 0
@@ -1030,6 +1040,7 @@ class GeminiSemanticExtractor:
                 body_res, body_usage, body_retries = fut_body.result()
 
             merged_result = merge_semantic_passes(personal_res, body_res)
+            merged_result = sanitize_grounded_current_status(merged_result, input_data)
 
             p_p = personal_usage.get("prompt_tokens")
             b_p = body_usage.get("prompt_tokens")
