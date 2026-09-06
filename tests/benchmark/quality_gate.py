@@ -18,6 +18,7 @@ class BenchmarkOutcome(str, Enum):
     PARTIAL = "PARTIAL"
     FAIL = "FAIL"
     ERROR = "ERROR"
+    COMPLETENESS_FAILED = "COMPLETENESS_FAILED"
 
 
 class FailureCategory(str, Enum):
@@ -27,6 +28,7 @@ class FailureCategory(str, Enum):
     JSON_DECODE_ERROR = "JSON_DECODE_ERROR"
     SCHEMA_ERROR = "SCHEMA_ERROR"
     VALIDATION_ERROR = "VALIDATION_ERROR"
+    COMPLETENESS_ERROR = "COMPLETENESS_ERROR"
     ANOMALY_ERROR = "ANOMALY_ERROR"
     EXPECTATION_MISMATCH = "EXPECTATION_MISMATCH"
     PIPELINE_ERROR = "PIPELINE_ERROR"
@@ -40,6 +42,7 @@ class QualityGateThresholds:
     max_fail_rate_pct: float = 0.0
     max_errors_allowed: int = 0
     max_validation_failures: int = 0
+    max_completeness_failures: int = 0
     max_avg_latency_seconds: float = 20.0
     max_avg_tokens: int = 15000
 
@@ -58,6 +61,7 @@ class QualityGateSummary:
     error_rate_pct: float = 0.0
 
     validation_failure_count: int = 0
+    completeness_failure_count: int = 0
     provider_error_count: int = 0
     fallback_count: int = 0
     body_recovery_count: int = 0
@@ -152,12 +156,29 @@ def evaluate_quality_gate(
         summary.archetype_breakdown[arch]["total"] += 1
 
         # Classify status
+        is_completeness_fail = (
+            status == "COMPLETENESS_FAILED"
+            or r_dict.get("failure_type") == "COMPLETENESS_ERROR"
+            or r_dict.get("body_completeness_failure", False)
+        )
+        is_val_fail = (
+            status == "VALIDATION_FAILED"
+            or r_dict.get("failure_type") == "VALIDATION_ERROR"
+        )
+
         if status == BenchmarkOutcome.PASS.value:
             summary.pass_count += 1
             summary.archetype_breakdown[arch]["PASS"] += 1
         elif status == BenchmarkOutcome.PARTIAL.value:
             summary.partial_count += 1
             summary.archetype_breakdown[arch]["PARTIAL"] += 1
+        elif is_completeness_fail:
+            summary.completeness_failure_count += 1
+            summary.fail_count += 1
+            summary.archetype_breakdown[arch]["FAIL"] += 1
+        elif is_val_fail:
+            summary.fail_count += 1
+            summary.archetype_breakdown[arch]["FAIL"] += 1
         elif status == BenchmarkOutcome.ERROR.value or not r_dict.get("semantic_success", True):
             summary.error_count += 1
             summary.provider_error_count += 1
@@ -234,6 +255,11 @@ def evaluate_quality_gate(
             f"Validation failures exceed threshold: {summary.validation_failure_count} > {th.max_validation_failures}"
         )
 
+    if summary.completeness_failure_count > th.max_completeness_failures:
+        failure_reasons.append(
+            f"Completeness failures exceed threshold: {summary.completeness_failure_count} > {th.max_completeness_failures}"
+        )
+
     if summary.pass_rate_pct < th.min_pass_rate_pct:
         failure_reasons.append(
             f"Pass rate below threshold: {summary.pass_rate_pct:.1f}% < {th.min_pass_rate_pct:.1f}%"
@@ -283,6 +309,7 @@ def format_quality_gate_markdown(summary: QualityGateSummary) -> str:
         f"- **FAIL:** {summary.fail_count} ({summary.fail_rate_pct:.1f}%)",
         f"- **ERROR:** {summary.error_count} ({summary.error_rate_pct:.1f}%)",
         f"- **Validation Violations:** {summary.validation_failure_count}",
+        f"- **Completeness Failures:** {summary.completeness_failure_count}",
         f"- **Fallbacks Invoked:** {summary.fallback_count}",
         f"- **Body Recoveries Invoked:** {summary.body_recovery_count}",
         f"- **Total Tokens:** {summary.total_tokens} (Prompt: {summary.total_prompt_tokens}, Output: {summary.total_output_tokens})",

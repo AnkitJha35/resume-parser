@@ -11,6 +11,7 @@ from typing import Any
 
 from app.domain.resume import Resume
 from app.extractors.semantic_extractor import (
+    SemanticCompletenessError,
     SemanticExtractionError,
     SemanticExtractor,
     SemanticValidationError,
@@ -38,8 +39,8 @@ class SemanticParseResult:
     archetype: str
     target_domain: str
     semantic_success: bool
-    status: str  # PASS, VALIDATION_FAILED, EXTRACTION_FAILED, PARSER_EXCEPTION
-    failure_type: str | None = None  # None, VALIDATION_ERROR, EXTRACTION_ERROR, PARSER_EXCEPTION
+    status: str  # PASS, VALIDATION_FAILED, COMPLETENESS_FAILED, EXTRACTION_FAILED, PARSER_EXCEPTION
+    failure_type: str | None = None  # None, VALIDATION_ERROR, COMPLETENESS_ERROR, EXTRACTION_ERROR, PARSER_EXCEPTION
     error_message: str | None = None
     validation_violations: list[str] = field(default_factory=list)
     passed_validation: bool = False
@@ -57,6 +58,9 @@ class SemanticParseResult:
     http_failures: int = 0
     fallback_invoked: bool = False
     body_recovery_invoked: bool = False
+    final_body_empty: bool = False
+    body_completeness_failure: bool = False
+    evidence_category: str | None = None
     hallucinated_block_ids: list[str] = field(default_factory=list)
     unsupported_canonical_values: list[str] = field(default_factory=list)
 
@@ -95,6 +99,7 @@ class SemanticBenchmarkSummary:
     successful_cases: int = 0
     extraction_failures: int = 0
     validation_failures: int = 0
+    completeness_failures: int = 0
     parser_exceptions: int = 0
     grounded_semantic_outputs: int = 0
     outputs_rejected_by_validation: int = 0
@@ -324,6 +329,9 @@ class SemanticBenchmarkRunner:
             retries = int(usage.get("retry_count", 0)) if isinstance(usage, dict) else 0
             fallback = bool(usage.get("fallback_invoked", False)) if isinstance(usage, dict) else False
             recovery = bool(usage.get("body_recovery_invoked", False)) if isinstance(usage, dict) else False
+            final_empty = bool(usage.get("final_body_empty", False)) if isinstance(usage, dict) else False
+            comp_fail = bool(usage.get("body_completeness_failure", False)) if isinstance(usage, dict) else False
+            ev_cat = usage.get("evidence_category") if isinstance(usage, dict) else None
 
             return SemanticParseResult(
                 filename=filename,
@@ -342,6 +350,9 @@ class SemanticBenchmarkRunner:
                 http_failures=retries,
                 fallback_invoked=fallback,
                 body_recovery_invoked=recovery,
+                final_body_empty=final_empty,
+                body_completeness_failure=comp_fail,
+                evidence_category=ev_cat,
                 hallucinated_block_ids=[],
                 unsupported_canonical_values=[],
                 personal=personal_dict,
@@ -370,6 +381,9 @@ class SemanticBenchmarkRunner:
             retries = int(usage.get("retry_count", 0)) if isinstance(usage, dict) else 0
             fallback = bool(usage.get("fallback_invoked", False)) if isinstance(usage, dict) else False
             recovery = bool(usage.get("body_recovery_invoked", False)) if isinstance(usage, dict) else False
+            final_empty = bool(usage.get("final_body_empty", False)) if isinstance(usage, dict) else False
+            comp_fail = bool(usage.get("body_completeness_failure", False)) if isinstance(usage, dict) else False
+            ev_cat = usage.get("evidence_category") if isinstance(usage, dict) else None
             hallucinated = [v for v in violations if "UNKNOWN_BLOCK_ID" in v]
             unsupported = [v for v in violations if "UNSUPPORTED_CANONICAL_VALUE" in v]
 
@@ -391,12 +405,52 @@ class SemanticBenchmarkRunner:
                 http_failures=retries,
                 fallback_invoked=fallback,
                 body_recovery_invoked=recovery,
+                final_body_empty=final_empty,
+                body_completeness_failure=comp_fail,
+                evidence_category=ev_cat,
                 hallucinated_block_ids=hallucinated,
                 unsupported_canonical_values=unsupported,
                 error_message=str(exc),
                 validation_violations=violations,
                 diagnostics=[f"VALIDATION_VIOLATION: {v}" for v in violations],
                 notes=f"Semantic output failed validation invariants: {exc}",
+            )
+
+        except SemanticCompletenessError as exc:
+            elapsed = time.perf_counter() - start_t
+            usage = getattr(self.extractor, "last_usage_metadata", None)
+            two_pass_flag = bool(usage.get("two_pass", False)) if isinstance(usage, dict) else (self.extraction_mode == "two_pass")
+            mode = "two_pass" if two_pass_flag else "single_pass"
+            pass_cnt = 2 if two_pass_flag else 1
+            retries = int(usage.get("retry_count", 0)) if isinstance(usage, dict) else 0
+            fallback = bool(usage.get("fallback_invoked", False)) if isinstance(usage, dict) else False
+            recovery = bool(usage.get("body_recovery_invoked", False)) if isinstance(usage, dict) else True
+            ev_category = getattr(exc, "evidence_category", None) or (usage.get("evidence_category") if isinstance(usage, dict) else None)
+
+            return SemanticParseResult(
+                filename=filename,
+                archetype=target_archetype.value if hasattr(target_archetype, "value") else str(target_archetype),
+                target_domain=target_domain,
+                semantic_success=False,
+                status="COMPLETENESS_FAILED",
+                failure_type="COMPLETENESS_ERROR",
+                passed_validation=False,
+                elapsed_seconds=round(elapsed, 4),
+                usage=usage,
+                provider=self.provider_name,
+                model=self.model_name,
+                representation=self.representation,
+                extraction_mode=mode,
+                pass_count=pass_cnt,
+                http_failures=retries,
+                fallback_invoked=fallback,
+                body_recovery_invoked=recovery,
+                final_body_empty=True,
+                body_completeness_failure=True,
+                evidence_category=ev_category,
+                error_message=str(exc),
+                diagnostics=[f"COMPLETENESS_ERROR: {exc}"],
+                notes=f"Body completeness failure: {exc}",
             )
 
         except SemanticExtractionError as exc:
@@ -408,6 +462,9 @@ class SemanticBenchmarkRunner:
             retries = int(usage.get("retry_count", 0)) if isinstance(usage, dict) else 0
             fallback = bool(usage.get("fallback_invoked", False)) if isinstance(usage, dict) else False
             recovery = bool(usage.get("body_recovery_invoked", False)) if isinstance(usage, dict) else False
+            final_empty = bool(usage.get("final_body_empty", False)) if isinstance(usage, dict) else False
+            comp_fail = bool(usage.get("body_completeness_failure", False)) if isinstance(usage, dict) else False
+            ev_cat = usage.get("evidence_category") if isinstance(usage, dict) else None
 
             return SemanticParseResult(
                 filename=filename,
@@ -427,6 +484,9 @@ class SemanticBenchmarkRunner:
                 http_failures=retries,
                 fallback_invoked=fallback,
                 body_recovery_invoked=recovery,
+                final_body_empty=final_empty,
+                body_completeness_failure=comp_fail,
+                evidence_category=ev_cat,
                 error_message=str(exc),
                 diagnostics=[f"EXTRACTION_ERROR: {exc}"],
                 notes=f"Extraction failed: {exc}",
@@ -466,6 +526,7 @@ class SemanticBenchmarkRunner:
         total_elapsed = time.perf_counter() - start_t
         successful = sum(1 for r in results if r.semantic_success)
         val_fails = sum(1 for r in results if r.failure_type == "VALIDATION_ERROR")
+        comp_fails = sum(1 for r in results if r.failure_type == "COMPLETENESS_ERROR")
         ext_fails = sum(1 for r in results if r.failure_type == "EXTRACTION_ERROR")
         exc_fails = sum(1 for r in results if r.failure_type == "PARSER_EXCEPTION")
 
@@ -489,6 +550,7 @@ class SemanticBenchmarkRunner:
                     "total": 0,
                     "SUCCESS": 0,
                     "VALIDATION_FAILED": 0,
+                    "COMPLETENESS_FAILED": 0,
                     "EXTRACTION_FAILED": 0,
                     "PARSER_EXCEPTION": 0,
                 }
@@ -497,6 +559,8 @@ class SemanticBenchmarkRunner:
                 breakdown[arch]["SUCCESS"] += 1
             elif r.failure_type == "VALIDATION_ERROR":
                 breakdown[arch]["VALIDATION_FAILED"] += 1
+            elif r.failure_type == "COMPLETENESS_ERROR":
+                breakdown[arch]["COMPLETENESS_FAILED"] += 1
             elif r.failure_type == "EXTRACTION_ERROR":
                 breakdown[arch]["EXTRACTION_FAILED"] += 1
             else:
@@ -514,6 +578,7 @@ class SemanticBenchmarkRunner:
             successful_cases=successful,
             extraction_failures=ext_fails,
             validation_failures=val_fails,
+            completeness_failures=comp_fails,
             parser_exceptions=exc_fails,
             grounded_semantic_outputs=grounded_count,
             outputs_rejected_by_validation=val_fails,

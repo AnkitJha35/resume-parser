@@ -373,11 +373,47 @@ _BODY_STRUCTURAL_ROLES: frozenset[str] = frozenset({
 })
 
 
+def get_body_evidence_category(semantic_input: SemanticInput) -> str | None:
+    """Classify the primary reason why semantic_input contains meaningful body evidence, or None if sparse/header-only."""
+    # 1. Check for blocks with explicit structural body roles
+    explicit_body_roles = sum(
+        1
+        for b in semantic_input.blocks
+        if (b.suggested_role or "").upper() in _BODY_STRUCTURAL_ROLES
+    )
+    if explicit_body_roles >= 2:
+        return "structural_body_roles"
+
+    # 2. Check for structured table data cells (tabular experience/education/certifications)
+    table_data_cells = sum(
+        1
+        for b in semantic_input.blocks
+        if b.table_id is not None and (b.cell_role != "HEADER" or (b.row_index is not None and b.row_index > 0))
+    )
+    if table_data_cells >= 2:
+        return "table_data_cells"
+
+    # 3. Check for meaningful non-header body blocks with substantial text
+    non_header_body_blocks = [
+        b
+        for b in semantic_input.blocks
+        if b.region_kind != "header"
+        and (b.suggested_role or "").upper() not in ("HEADER", "CONTACT", "FOOTER")
+        and b.text.strip()
+    ]
+    total_body_text_len = sum(len(b.text.strip()) for b in non_header_body_blocks)
+
+    if len(non_header_body_blocks) >= 3 and total_body_text_len >= 80:
+        return "dense_body_text"
+
+    return None
+
+
 def is_body_output_suspiciously_empty(
-    body_output: BodySemanticOutput,
+    body_output: BodySemanticOutput | SemanticOutput,
     semantic_input: SemanticInput,
 ) -> bool:
-    """Detect if BodySemanticOutput returned empty collections despite meaningful body evidence in the input.
+    """Detect if BodySemanticOutput or SemanticOutput returned empty collections despite meaningful body evidence in the input.
 
     Returns False if any primary body collection (skills, experience, education, projects,
     certifications, languages, achievements) is populated.
@@ -397,38 +433,7 @@ def is_body_output_suspiciously_empty(
     if has_entities:
         return False
 
-    # 1. Check for blocks with explicit structural body roles
-    explicit_body_roles = sum(
-        1
-        for b in semantic_input.blocks
-        if (b.suggested_role or "").upper() in _BODY_STRUCTURAL_ROLES
-    )
-    if explicit_body_roles >= 2:
-        return True
-
-    # 2. Check for structured table data cells (tabular experience/education/certifications)
-    table_data_cells = sum(
-        1
-        for b in semantic_input.blocks
-        if b.table_id is not None and (b.cell_role != "HEADER" or (b.row_index is not None and b.row_index > 0))
-    )
-    if table_data_cells >= 2:
-        return True
-
-    # 3. Check for meaningful non-header body blocks with substantial text
-    non_header_body_blocks = [
-        b
-        for b in semantic_input.blocks
-        if b.region_kind != "header"
-        and (b.suggested_role or "").upper() not in ("HEADER", "CONTACT", "FOOTER")
-        and b.text.strip()
-    ]
-    total_body_text_len = sum(len(b.text.strip()) for b in non_header_body_blocks)
-
-    if len(non_header_body_blocks) >= 3 and total_body_text_len >= 80:
-        return True
-
-    return False
+    return get_body_evidence_category(semantic_input) is not None
 
 
 # =====================================================================

@@ -28,6 +28,7 @@ from app.domain.semantic_contract import (
     SemanticInput,
     SemanticOutput,
     build_semantic_input,
+    get_body_evidence_category,
     is_body_output_suspiciously_empty,
     merge_semantic_passes,
     semantic_output_to_resume,
@@ -37,6 +38,7 @@ from app.extractors.providers.fallback import FallbackSemanticExtractor
 from app.extractors.providers.gemini import GeminiSemanticExtractor
 from app.extractors.semantic_extractor import (
     MockSemanticExtractor,
+    SemanticCompletenessError,
     SemanticExtractionError,
     SemanticRateLimitError,
     SemanticResponseError,
@@ -1005,18 +1007,22 @@ def test_gemini_two_pass_body_recovery_bounded_when_second_remains_empty():
     )
 
     sem_input = _sample_semantic_input()
-    output = extractor.extract(sem_input)
+    with pytest.raises(SemanticCompletenessError) as exc_info:
+        extractor.extract(sem_input)
+
+    assert "empty_body_after_recovery" in exc_info.value.reason
+    assert exc_info.value.evidence_category == "structural_body_roles"
 
     # Verify exactly 1 personal + 2 body requests (no infinite/unbounded retries)
     assert len(captured_requests) == 3
     assert body_call_count == 2
-    assert output.personal.name.value == "Jane Doe"
-    assert len(output.experience) == 0
-    assert len(output.education) == 0
 
     meta = extractor.last_usage_metadata
     assert meta["body_recovery_invoked"] is True
     assert meta["body_recovery_attempts"] == 1
+    assert meta["final_body_empty"] is True
+    assert meta["body_completeness_failure"] is True
+    assert meta["evidence_category"] == "structural_body_roles"
 
 
 def test_gemini_two_pass_body_recovery_independent_of_http_retries():
@@ -1227,3 +1233,209 @@ def test_phase10e_recovery_propagation_to_final_resume_and_benchmark_counts():
     md = format_quality_gate_markdown(qg_summary)
     assert "- **Body Recoveries Invoked:** 1" in md
     assert "1/1/1/0" in md
+
+
+# =====================================================================
+# 8. Phase 10F: Reject Evidence-Rich Empty Final Body Outputs Tests
+# =====================================================================
+
+
+def test_phase10f_sparse_input_empty_body_valid():
+    """Requirement 8c: Sparse/header-only document with empty body succeeds without completeness failure."""
+    sparse_input = SemanticInput(
+        document_id="sparse-doc",
+        page_count=1,
+        blocks=[
+            SemanticBlockInput(
+                block_id="b1",
+                text="John Doe",
+                page=1,
+                bbox=[0, 0, 100, 20],
+                region_id="r1",
+                region_kind="header",
+                reading_order=1,
+                suggested_role="HEADER",
+            ),
+            SemanticBlockInput(
+                block_id="b2",
+                text="john@example.com",
+                page=1,
+                bbox=[0, 20, 100, 40],
+                region_id="r1",
+                region_kind="header",
+                reading_order=2,
+                suggested_role="CONTACT",
+            ),
+        ],
+    )
+
+    def mock_transport(request: httpx.Request) -> httpx.Response:
+        req_body = json.loads(request.content.decode("utf-8"))
+        prompt_text = req_body["contents"][0]["parts"][0]["text"]
+
+        if "PersonalSemanticOutput" in prompt_text:
+            personal_payload = {
+                "document_archetype": "standard_cv",
+                "personal": {
+                    "name": {"value": "John Doe", "source_block_ids": ["b1"]},
+                    "email": {"value": "john@example.com", "source_block_ids": ["b2"]},
+                },
+            }
+            envelope = {"candidates": [{"content": {"parts": [{"text": json.dumps(personal_payload)}]}}]}
+            return httpx.Response(200, json=envelope, request=request)
+        else:
+            empty_body_payload = {
+                "document_archetype": "standard_cv",
+                "skills": [],
+                "experience": [],
+                "education": [],
+                "projects": [],
+                "certifications": [],
+                "languages": [],
+                "achievements": [],
+            }
+            envelope = {"candidates": [{"content": {"parts": [{"text": json.dumps(empty_body_payload)}]}}]}
+            return httpx.Response(200, json=envelope, request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(mock_transport))
+    extractor = GeminiSemanticExtractor(
+        api_key="test-api-key",
+        client=client,
+        two_pass=True,
+    )
+
+    output = extractor.extract(sparse_input)
+    assert output.personal.name.value == "John Doe"
+    assert len(output.experience) == 0
+
+    meta = extractor.last_usage_metadata
+    assert meta["body_recovery_invoked"] is False
+    assert meta["final_body_empty"] is True
+    assert meta["body_completeness_failure"] is False
+    assert meta["evidence_category"] is None
+
+
+def test_phase10f_populated_body_no_completeness_failure():
+    """Requirement 8d: Populated body on evidence-rich input succeeds immediately without recovery or completeness failure."""
+    def mock_transport(request: httpx.Request) -> httpx.Response:
+        req_body = json.loads(request.content.decode("utf-8"))
+        prompt_text = req_body["contents"][0]["parts"][0]["text"]
+
+        if "PersonalSemanticOutput" in prompt_text:
+            personal_payload = {
+                "document_archetype": "standard_cv",
+                "personal": {
+                    "name": {"value": "Jane Doe", "source_block_ids": ["b1"]},
+                },
+            }
+            envelope = {"candidates": [{"content": {"parts": [{"text": json.dumps(personal_payload)}]}}]}
+            return httpx.Response(200, json=envelope, request=request)
+        else:
+            body_payload = {
+                "document_archetype": "standard_cv",
+                "experience": [
+                    {
+                        "company": {"value": "Acme Corp", "source_block_ids": ["b3"]},
+                        "source_block_ids": ["b3"],
+                    }
+                ],
+            }
+            envelope = {"candidates": [{"content": {"parts": [{"text": json.dumps(body_payload)}]}}]}
+            return httpx.Response(200, json=envelope, request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(mock_transport))
+    extractor = GeminiSemanticExtractor(
+        api_key="test-api-key",
+        client=client,
+        two_pass=True,
+    )
+
+    sem_input = _sample_semantic_input()
+    output = extractor.extract(sem_input)
+    assert len(output.experience) == 1
+
+    meta = extractor.last_usage_metadata
+    assert meta["body_recovery_invoked"] is False
+    assert meta["final_body_empty"] is False
+    assert meta["body_completeness_failure"] is False
+    assert meta["evidence_category"] == "structural_body_roles"
+
+
+def test_phase10f_completeness_failure_reaches_benchmark_runner_and_quality_gate(tmp_path: Path):
+    """Requirement 8e: Unrecovered empty body generates a COMPLETENESS_FAILED parse result and fails the Quality Gate."""
+    from tests.benchmark.quality_gate import QualityGateThresholds, evaluate_quality_gate, format_quality_gate_markdown
+    from tests.benchmark.semantic_runner import SemanticBenchmarkRunner
+
+    def mock_transport(request: httpx.Request) -> httpx.Response:
+        req_body = json.loads(request.content.decode("utf-8"))
+        prompt_text = req_body["contents"][0]["parts"][0]["text"]
+
+        if "PersonalSemanticOutput" in prompt_text:
+            personal_payload = {
+                "document_archetype": "standard_cv",
+                "personal": {"name": {"value": "Jane Doe", "source_block_ids": ["b1"]}},
+            }
+            envelope = {"candidates": [{"content": {"parts": [{"text": json.dumps(personal_payload)}]}}]}
+            return httpx.Response(200, json=envelope, request=request)
+        else:
+            empty_body_payload = {
+                "document_archetype": "standard_cv",
+                "skills": [],
+                "experience": [],
+                "education": [],
+                "projects": [],
+                "certifications": [],
+                "languages": [],
+                "achievements": [],
+            }
+            envelope = {"candidates": [{"content": {"parts": [{"text": json.dumps(empty_body_payload)}]}}]}
+            return httpx.Response(200, json=envelope, request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(mock_transport))
+    extractor = GeminiSemanticExtractor(
+        api_key="test-api-key",
+        client=client,
+        two_pass=True,
+    )
+
+    # 1. Create a minimal PDF fixture with multiple body lines
+    import fitz
+    pdf_doc = fitz.open()
+    page = pdf_doc.new_page()
+    page.insert_text((50, 50), "Jane Doe\njane@example.com")
+    page.insert_text((50, 150), "Work Experience\nAcme Corporation - Senior Software Engineer\n2020 - Present")
+    page.insert_text((50, 250), "Education\nMIT - B.S. Computer Science\n2016 - 2020")
+    pdf_path = tmp_path / "rich_unrecovered_cv.pdf"
+    pdf_doc.save(str(pdf_path))
+    pdf_doc.close()
+
+    runner = SemanticBenchmarkRunner(
+        extractor=extractor,
+        fixtures_dir=tmp_path,
+        provider_name="gemini",
+        model_name="gemini-3.5-flash-lite",
+        representation="two_pass_candidate_b",
+    )
+
+    result = runner.run_single(pdf_path)
+
+    # 2. Assert runner parse result classification
+    assert result.semantic_success is False
+    assert result.status == "COMPLETENESS_FAILED"
+    assert result.failure_type == "COMPLETENESS_ERROR"
+    assert result.body_recovery_invoked is True
+    assert result.final_body_empty is True
+    assert result.body_completeness_failure is True
+    assert "COMPLETENESS_ERROR" in result.diagnostics[0]
+
+    # 3. Assert evaluate_quality_gate classification
+    qg_summary = evaluate_quality_gate([result])
+    assert qg_summary.completeness_failure_count == 1
+    assert qg_summary.fail_count == 1
+    assert qg_summary.pass_count == 0
+    assert qg_summary.passed_gate is False
+    assert any("Completeness failures exceed threshold" in r for r in qg_summary.failure_reasons)
+
+    md = format_quality_gate_markdown(qg_summary)
+    assert "- **Completeness Failures:** 1" in md
+    assert "GATE FAILED" in md

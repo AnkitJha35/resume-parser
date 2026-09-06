@@ -18,10 +18,12 @@ from app.domain.semantic_contract import (
     PersonalSemanticOutput,
     SemanticInput,
     SemanticOutput,
+    get_body_evidence_category,
     is_body_output_suspiciously_empty,
     merge_semantic_passes,
 )
 from app.extractors.semantic_extractor import (
+    SemanticCompletenessError,
     SemanticConfigurationError,
     SemanticExtractionError,
     SemanticRateLimitError,
@@ -614,6 +616,17 @@ class GeminiSemanticExtractor:
                 )
                 result = parse_semantic_output(raw_text)
 
+                ev_cat = get_body_evidence_category(input_data)
+                is_empty = not bool(
+                    result.skills
+                    or result.experience
+                    or result.education
+                    or result.projects
+                    or result.certifications
+                    or result.languages
+                    or result.achievements
+                )
+
                 total_latency_ms = max(0.0, (self._time_fn() - start_time) * 1000.0)
                 self.last_usage_metadata = {
                     "provider": "gemini",
@@ -625,6 +638,12 @@ class GeminiSemanticExtractor:
                     "latency_ms": round(total_latency_ms, 2),
                     "retry_count": retry_count,
                     "two_pass": False,
+                    "body_recovery_invoked": False,
+                    "body_recovery_reason": None,
+                    "body_recovery_attempts": 0,
+                    "final_body_empty": is_empty,
+                    "body_completeness_failure": False,
+                    "evidence_category": ev_cat,
                     "status": "success",
                 }
                 logger.info(
@@ -696,10 +715,12 @@ class GeminiSemanticExtractor:
                 )
                 parsed = parse_body_output(raw_text)
 
-                # Phase 10D: Bounded semantic recovery for silent empty-body omission
+                # Phase 10D / 10F: Bounded semantic recovery for silent empty-body omission
                 if is_body_output_suspiciously_empty(parsed, input_data):
+                    ev_category = get_body_evidence_category(input_data)
                     logger.warning(
-                        "Gemini body pass returned suspiciously empty collections on evidence-rich document; triggering bounded recovery attempt doc_id=%s model=%s",
+                        "Gemini body pass returned suspiciously empty collections on evidence-rich document (evidence_category=%s); triggering bounded recovery attempt doc_id=%s model=%s",
+                        ev_category,
                         input_data.document_id,
                         model,
                     )
@@ -725,6 +746,8 @@ class GeminiSemanticExtractor:
                     o_t = (usage.get("output_tokens") or 0) + (usage_rec.get("output_tokens") or 0)
                     tot_t = (usage.get("total_tokens") or 0) + (usage_rec.get("total_tokens") or 0)
 
+                    still_empty = is_body_output_suspiciously_empty(parsed_rec, input_data)
+
                     combined_usage = {
                         "prompt_tokens": p_t,
                         "output_tokens": o_t,
@@ -732,10 +755,28 @@ class GeminiSemanticExtractor:
                         "body_recovery_invoked": True,
                         "body_recovery_reason": "suspicious_empty_body",
                         "body_recovery_attempts": 1,
+                        "final_body_empty": still_empty,
+                        "body_completeness_failure": still_empty,
+                        "evidence_category": ev_category,
                         "initial_pass": usage,
                         "recovery_pass": usage_rec,
                     }
                     combined_retries = retries + retries_rec
+
+                    if still_empty:
+                        self._last_call_meta = combined_usage
+                        logger.error(
+                            "Gemini body recovery failed: body collections remain empty on evidence-rich document doc_id=%s model=%s evidence_category=%s",
+                            input_data.document_id,
+                            model,
+                            ev_category,
+                        )
+                        raise SemanticCompletenessError(
+                            f"Empty body output on evidence-rich document {input_data.document_id!r} after bounded recovery (evidence: {ev_category})",
+                            reason="empty_body_after_recovery",
+                            evidence_category=ev_category,
+                        )
+
                     logger.info(
                         "Gemini body recovery completed doc_id=%s model=%s recovery_result_counts=(skills=%d, exp=%d, edu=%d, proj=%d, certs=%d)",
                         input_data.document_id,
@@ -748,7 +789,26 @@ class GeminiSemanticExtractor:
                     )
                     return parsed_rec, combined_usage, combined_retries
 
-                return parsed, usage, retries
+                ev_cat = get_body_evidence_category(input_data)
+                is_empty = not bool(
+                    parsed.skills
+                    or parsed.experience
+                    or parsed.education
+                    or parsed.projects
+                    or parsed.certifications
+                    or parsed.languages
+                    or parsed.achievements
+                )
+                usage_enriched = {
+                    **usage,
+                    "body_recovery_invoked": False,
+                    "body_recovery_reason": None,
+                    "body_recovery_attempts": 0,
+                    "final_body_empty": is_empty,
+                    "body_completeness_failure": False,
+                    "evidence_category": ev_cat,
+                }
+                return parsed, usage_enriched, retries
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
                 fut_personal = executor.submit(_run_personal)
@@ -785,6 +845,9 @@ class GeminiSemanticExtractor:
                 "body_recovery_invoked": body_usage.get("body_recovery_invoked", False),
                 "body_recovery_reason": body_usage.get("body_recovery_reason"),
                 "body_recovery_attempts": body_usage.get("body_recovery_attempts", 0),
+                "final_body_empty": body_usage.get("final_body_empty", False),
+                "body_completeness_failure": False,
+                "evidence_category": body_usage.get("evidence_category"),
                 "pass_metadata": {
                     "personal": personal_usage,
                     "body": body_usage,
@@ -803,16 +866,30 @@ class GeminiSemanticExtractor:
 
         except Exception as exc:
             total_latency_ms = max(0.0, (self._time_fn() - start_time) * 1000.0)
+            last_meta = getattr(self, "_last_call_meta", {}) or {}
+            is_completeness = isinstance(exc, SemanticCompletenessError)
+            ev_cat = getattr(exc, "evidence_category", None) or last_meta.get("evidence_category")
+
             self.last_usage_metadata = {
                 "provider": "gemini",
                 "model": model,
                 "representation": "candidate_b_compact" if self._compact else "full",
-                "prompt_tokens": None,
-                "output_tokens": None,
-                "total_tokens": None,
+                "prompt_tokens": last_meta.get("prompt_tokens"),
+                "output_tokens": last_meta.get("output_tokens"),
+                "total_tokens": last_meta.get("total_tokens"),
                 "latency_ms": round(total_latency_ms, 2),
-                "retry_count": 0,
+                "retry_count": last_meta.get("retry_count", 0),
                 "two_pass": True,
+                "body_recovery_invoked": is_completeness or last_meta.get("body_recovery_invoked", False),
+                "body_recovery_reason": "suspicious_empty_body" if is_completeness else last_meta.get("body_recovery_reason"),
+                "body_recovery_attempts": 1 if is_completeness else last_meta.get("body_recovery_attempts", 0),
+                "final_body_empty": True if is_completeness else False,
+                "body_completeness_failure": is_completeness,
+                "evidence_category": ev_cat,
+                "pass_metadata": {
+                    "initial_pass": last_meta.get("initial_pass"),
+                    "recovery_pass": last_meta.get("recovery_pass"),
+                } if is_completeness else None,
                 "status": "failure",
                 "error_type": type(exc).__name__,
             }

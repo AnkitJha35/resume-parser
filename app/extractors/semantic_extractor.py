@@ -63,6 +63,20 @@ class SemanticValidationError(SemanticExtractionError):
         )
 
 
+class SemanticCompletenessError(SemanticExtractionError):
+    """Raised when semantic extraction returns empty body collections on an evidence-rich document after recovery."""
+
+    def __init__(
+        self,
+        message: str,
+        reason: str = "empty_body_on_evidence_rich_document",
+        evidence_category: str | None = None,
+    ) -> None:
+        self.reason = reason
+        self.evidence_category = evidence_category
+        super().__init__(message)
+
+
 @runtime_checkable
 class SemanticExtractor(Protocol):
     """Provider-independent interface for extracting semantic resume structures."""
