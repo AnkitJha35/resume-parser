@@ -734,25 +734,33 @@ def partition_semantic_input_into_sections(
 def filter_semantic_input_to_blocks(
     semantic_input: SemanticInput,
     block_ids: list[str],
+    include_headers: bool = True,
 ) -> SemanticInput:
-    """Return a new SemanticInput containing only the specified body block_ids plus all header blocks.
+    """Return a new SemanticInput containing only the specified body block_ids plus optionally header blocks.
 
-    Header blocks are always preserved so that provenance validators can reference them.
+    Header blocks are preserved by default so that provenance validators or prompts can reference them.
     The returned SemanticInput shares the same document_id, archetype, page_count, and pages.
     Block ordering within the result is preserved (same as in semantic_input.blocks).
 
     Args:
         semantic_input: The full SemanticInput to filter.
-        block_ids:      Ordered list of block_ids to retain from non-header regions.
+        block_ids:      Ordered list of block_ids to retain.
+        include_headers: Whether to include header blocks (default: True).
 
     Returns:
-        A new SemanticInput with only the selected body blocks + header blocks.
+        A new SemanticInput with only the selected blocks.
     """
     keep_ids: frozenset[str] = frozenset(block_ids)
-    filtered_blocks = [
-        b for b in semantic_input.blocks
-        if b.region_kind in ("header",) or b.block_id in keep_ids
-    ]
+    if include_headers:
+        filtered_blocks = [
+            b for b in semantic_input.blocks
+            if b.region_kind in ("header",) or b.block_id in keep_ids
+        ]
+    else:
+        filtered_blocks = [
+            b for b in semantic_input.blocks
+            if b.block_id in keep_ids
+        ]
     return SemanticInput(
         document_id=semantic_input.document_id,
         page_count=semantic_input.page_count,
@@ -818,18 +826,115 @@ def should_use_section_aware_body_extraction(input_data: SemanticInput) -> bool:
 
     Decision matrix:
     - ACADEMIC_CV: Section-aware if at least 1 supported section exists.
-    - STANDARD_CV: Section-aware if at least 2 supported sections exist.
-    - All other archetypes (MARITIME_CV, MARITIME_TABULAR, STRUCTURED_FORM, UNKNOWN)
-      or STANDARD_CV with < 2 supported sections: monolithic body pass.
+    - All other archetypes (STANDARD_CV, MARITIME_CV, MARITIME_TABULAR, STRUCTURED_FORM, UNKNOWN):
+      monolithic body extraction by default in normal path.
     """
     if input_data.archetype == DocumentArchetype.ACADEMIC_CV:
         sections = partition_semantic_input_into_sections(input_data)
         return any(s.canonical_target != "unsupported" for s in sections)
-    if input_data.archetype == DocumentArchetype.STANDARD_CV:
-        sections = partition_semantic_input_into_sections(input_data)
-        supported = [s for s in sections if s.canonical_target != "unsupported"]
-        return len(supported) >= 2
     return False
+
+
+def group_sections_by_target(
+    sections: list[SemanticSection],
+) -> list[SemanticSection]:
+    """Deterministically group supported sections by their canonical target.
+
+    Preserves target order of first appearance.
+    Merges block_ids from multiple sections sharing the same canonical_target into a single section.
+    Unsupported sections (canonical_target == 'unsupported') are excluded.
+    """
+    grouped: dict[str, list[SemanticSection]] = {}
+    for sec in sections:
+        if sec.canonical_target == "unsupported":
+            continue
+        grouped.setdefault(sec.canonical_target, []).append(sec)
+
+    result: list[SemanticSection] = []
+    for target, sec_list in grouped.items():
+        combined_blocks: list[str] = []
+        heading_texts: list[str] = []
+        for s in sec_list:
+            combined_blocks.extend(s.block_ids)
+            if s.heading_text:
+                heading_texts.append(s.heading_text)
+
+        first_sec = sec_list[0]
+        result.append(
+            SemanticSection(
+                heading_block_id=first_sec.heading_block_id,
+                heading_text=" / ".join(heading_texts) if heading_texts else first_sec.heading_text,
+                block_ids=combined_blocks,
+                canonical_target=target,
+                page_start=first_sec.page_start,
+            )
+        )
+    return result
+
+
+RECOVERY_OVERVIEW_TARGETS: frozenset[str] = frozenset(
+    {"summary", "skills", "certifications", "languages", "achievements"}
+)
+RECOVERY_ENTITY_TARGETS: frozenset[str] = frozenset(
+    {"experience", "education", "projects"}
+)
+
+
+def group_sections_for_recovery(
+    sections: list[SemanticSection],
+) -> list[SemanticSection]:
+    """Deterministically group supported sections into at most two bounded recovery groups.
+
+    1. 'overview': Declarative / profile sections (summary, skills, certifications, languages, achievements).
+    2. 'entities': Narrative / timeline record sections (experience, education, projects).
+
+    Unsupported sections are excluded. Returns 0, 1, or 2 SemanticSection objects.
+    """
+    overview_blocks: list[str] = []
+    overview_headings: list[str] = []
+    entity_blocks: list[str] = []
+    entity_headings: list[str] = []
+    first_overview: SemanticSection | None = None
+    first_entity: SemanticSection | None = None
+
+    for sec in sections:
+        if sec.canonical_target == "unsupported":
+            continue
+        if sec.canonical_target in RECOVERY_OVERVIEW_TARGETS:
+            if first_overview is None:
+                first_overview = sec
+            overview_blocks.extend(sec.block_ids)
+            if sec.heading_text:
+                overview_headings.append(sec.heading_text)
+        elif sec.canonical_target in RECOVERY_ENTITY_TARGETS:
+            if first_entity is None:
+                first_entity = sec
+            entity_blocks.extend(sec.block_ids)
+            if sec.heading_text:
+                entity_headings.append(sec.heading_text)
+
+    result: list[SemanticSection] = []
+    if overview_blocks and first_overview is not None:
+        result.append(
+            SemanticSection(
+                heading_block_id=first_overview.heading_block_id,
+                heading_text=" / ".join(overview_headings) if overview_headings else "Overview",
+                block_ids=overview_blocks,
+                canonical_target="overview",
+                page_start=first_overview.page_start,
+            )
+        )
+    if entity_blocks and first_entity is not None:
+        result.append(
+            SemanticSection(
+                heading_block_id=first_entity.heading_block_id,
+                heading_text=" / ".join(entity_headings) if entity_headings else "Entities",
+                block_ids=entity_blocks,
+                canonical_target="entities",
+                page_start=first_entity.page_start,
+            )
+        )
+    return result
 
 
 TOutput = TypeVar("TOutput", SemanticOutput, BodySemanticOutput)
