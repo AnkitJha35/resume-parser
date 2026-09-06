@@ -44,9 +44,54 @@ _ROLE_WORDS = {
     "packer",
     "teacher",
     "professor",
+    "physician",
+    "investigator",
+    "scientist",
+    "researcher",
+    "clinician",
+    "fellow",
+    "resident",
+    "architect",
+    "designer",
 }
 
-_ORG_SUFFIXES = ("inc", "llc", "ltd", "corp", "corporation", "company", "co.", "pvt", "private")
+_ORG_SUFFIXES: tuple[str, ...] = (
+    "inc",
+    "llc",
+    "ltd",
+    "corp",
+    "corporation",
+    "company",
+    "co",
+    "pvt",
+    "private",
+)
+
+_INSTITUTIONAL_NOUNS: tuple[str, ...] = (
+    "institute",
+    "institution",
+    "foundation",
+    "alliance",
+    "forum",
+    "laboratories",
+    "laboratory",
+    "labs",
+    "association",
+    "society",
+    "center",
+    "centre",
+    "hospital",
+    "clinic",
+    "university",
+    "college",
+    "school",
+    "academy",
+    "agency",
+    "firm",
+    "group",
+)
+
+_ABBREVIATED_ORG_SUFFIXES: set[str] = {"inc", "corp", "co", "ltd", "pvt"}
 _GEO_TOKENS = {
     "india",
     "usa",
@@ -96,6 +141,50 @@ def _normalized_section_aliases() -> set[str]:
                 normalized.add(re.sub(r"[^a-z0-9]+", "", alias.lower()))
         _section_alias_normalized = normalized
     return _section_alias_normalized
+
+
+_CANONICAL_SECTION_KEYWORDS: set[str] = {
+    "summary",
+    "profile",
+    "overview",
+    "objective",
+    "experience",
+    "employment",
+    "career",
+    "work",
+    "education",
+    "academics",
+    "academic",
+    "training",
+    "postdoctoral",
+    "skills",
+    "expertise",
+    "competencies",
+    "projects",
+    "coursework",
+    "courses",
+    "certifications",
+    "licensure",
+    "licenses",
+    "credentials",
+    "certificates",
+    "honors",
+    "awards",
+    "achievements",
+    "accomplishments",
+    "leadership",
+    "publications",
+    "presentations",
+    "research",
+    "languages",
+    "affiliations",
+    "activities",
+}
+
+
+def _contains_section_keyword(text: str) -> bool:
+    tokens = {token.lower() for token in re.findall(r"[A-Za-z0-9]+", text)}
+    return bool(tokens & _CANONICAL_SECTION_KEYWORDS)
 
 
 def build_structural_blocks(document: Document) -> list[StructuralBlock]:
@@ -169,6 +258,17 @@ def classify_structural_role(
     if _BULLET_ONLY_RE.match(value) or _BULLET_RE.match(value):
         return StructuralRole.BULLET, 1.0, ("bullet_marker",)
 
+    follow = tuple(t for t in ((next_text,) if next_text else ()) + following_texts if t and t.strip())
+
+    if _is_known_section_alias(value):
+        return StructuralRole.SECTION_HEADING, 1.0, ("known_section_alias",)
+
+    if _looks_like_section_heading(value, font_size=font_size, bold=bold, following=follow):
+        return StructuralRole.SECTION_HEADING, 0.8, ("section_boundary_geometry",)
+
+    if _looks_like_entry_title(value, font_size=font_size, bold=bold, following=follow):
+        return StructuralRole.ENTRY_TITLE, 0.8, ("entry_title_structure",)
+
     if _CREDENTIAL_RE.search(value):
         return StructuralRole.CREDENTIAL, 0.85, ("credential_pattern",)
 
@@ -178,20 +278,11 @@ def classify_structural_role(
     if _looks_like_location(value):
         return StructuralRole.LOCATION, 0.8, ("location_pattern",)
 
-    if _is_known_section_alias(value):
-        return StructuralRole.SECTION_HEADING, 1.0, ("known_section_alias",)
-
     if _is_wrapped_description(previous_text, value, font_size=font_size, bold=bold):
         return StructuralRole.DESCRIPTION, 0.75, ("wrapped_continuation",)
 
     if len(value) > 80:
         return StructuralRole.DESCRIPTION, 0.7, ("long_text",)
-
-    follow = tuple(t for t in ((next_text,) if next_text else ()) + following_texts if t and t.strip())
-    if _looks_like_section_heading(value, font_size=font_size, bold=bold, following=follow):
-        return StructuralRole.SECTION_HEADING, 0.8, ("section_boundary_geometry",)
-
-    if _looks_like_entry_title(value, font_size=font_size, bold=bold, following=follow):
         return StructuralRole.ENTRY_TITLE, 0.8, ("entry_title_structure",)
 
     if _looks_like_technology(value, following=follow, previous_text=previous_text):
@@ -328,12 +419,50 @@ def _parenthesized_date(text: str) -> bool:
 
 
 def _looks_like_organization(text: str) -> bool:
-    lowered = text.lower()
-    if any(re.search(rf"\b{re.escape(suffix)}\b", lowered) for suffix in _ORG_SUFFIXES):
-        capitals = sum(1 for word in text.split() if word[:1].isupper())
-        return capitals >= 1 and len(text.split()) <= 10
-    if "&" in text and len(text.split()) <= 6 and any(ch.isupper() for ch in text):
-        return True
+    value = text.strip()
+    if not value:
+        return False
+    words = value.split()
+    if not (1 <= len(words) <= 10):
+        return False
+
+    if _contains_role_word(value):
+        return False
+
+    last_word_clean = re.sub(r"[^A-Za-z0-9]", "", words[-1]).lower()
+
+    if value.endswith((".", "!", "?", ";", ":")):
+        if not (value.endswith(".") and last_word_clean in _ABBREVIATED_ORG_SUFFIXES):
+            return False
+
+    has_corp_suffix = last_word_clean in _ORG_SUFFIXES or any(
+        re.sub(r"[^A-Za-z0-9]", "", w).lower() in {"inc", "llc", "ltd", "corp", "corporation"}
+        for w in words
+    )
+
+    has_institutional_noun = last_word_clean in _INSTITUTIONAL_NOUNS
+
+    has_academic_or_medical_org = any(
+        re.sub(r"[^A-Za-z0-9]", "", w).lower() in {"university", "college", "institute", "hospital"}
+        for w in words
+    )
+
+    if has_corp_suffix or has_institutional_noun or has_academic_or_medical_org:
+        upper_like = value.upper() == value and any(ch.isalpha() for ch in value)
+        content_words = [w for w in words if w.lower() not in {"and", "of", "the", "for", "&", "in", "at"}]
+        all_capitalized = bool(content_words) and all(
+            re.sub(r"^[^A-Za-z0-9]+", "", w)[:1].isupper() for w in content_words if re.sub(r"^[^A-Za-z0-9]+", "", w)
+        )
+        if upper_like or all_capitalized:
+            return True
+
+    if "&" in value and len(words) <= 6:
+        if _is_known_section_alias(value) or _contains_section_keyword(value):
+            return False
+        content_words = [w for w in words if w not in {"&", "and", "of", "the"}]
+        if content_words and all(w[:1].isupper() for w in content_words):
+            return True
+
     return False
 
 
@@ -366,25 +495,50 @@ def _looks_like_section_heading(
 ) -> bool:
     value = text.strip()
     words = value.split()
-    if not value or len(words) > 4 or any(ch.isdigit() for ch in value):
+    if not value or not (1 <= len(words) <= 6) or len(value) > 60:
         return False
-    if value.endswith((".", ";", ",")):
+    if any(ch.isdigit() for ch in value):
         return False
+    if value.endswith((".", ";", ",", ":", "!", "?")):
+        return False
+    if _looks_like_contact(value):
+        return False
+    if _contains_role_word(value):
+        return False
+    if _looks_like_organization(value):
+        return False
+
+    last_word_clean = re.sub(r"[^A-Za-z0-9]", "", words[-1]).lower()
+    if last_word_clean in _INSTITUTIONAL_NOUNS:
+        return False
+
     upper_like = value.upper() == value and any(ch.isalpha() for ch in value)
     if not _has_typography_emphasis(font_size, bold) and not upper_like:
         return False
 
-    # Role/job titles are entry structure, not section boundaries — even when
-    # uppercase/bold. Require employment-like follow-on to reject, or role words.
-    if _contains_role_word(value):
-        return False
+    # Known section alias (single-word or multi-word)
+    if _is_known_section_alias(value):
+        return True
+
+    # Compound section heading (joined by '&', 'and', or '/') containing section keywords
+    # e.g. "HONORS & LEADERSHIP", "EDUCATION & TRAINING", "CLINICAL & PHARMACEUTICAL EXPERIENCE",
+    #      "ACADEMIC & OPEN-SOURCE PROJECTS", "BOARD CERTIFICATIONS & LICENSURE"
+    is_compound = bool(re.search(r"\b(?:&|and)\b|/", value, re.IGNORECASE))
+    if is_compound and _contains_section_keyword(value):
+        return True
+
+    # Qualified section heading without coordinator:
+    # Anchor keyword must appear as head noun (last word) or leading category keyword
+    # e.g. "PROFESSIONAL EXPERIENCE", "TECHNICAL SKILLS", "ACADEMIC PROJECTS",
+    #      "RELEVANT COURSEWORK", "ACADEMIC APPOINTMENTS", "PROJECT HIGHLIGHTS"
+    first_word_clean = re.sub(r"[^A-Za-z0-9]", "", words[0]).lower()
+    if last_word_clean in _CANONICAL_SECTION_KEYWORDS or first_word_clean in _CANONICAL_SECTION_KEYWORDS:
+        return True
+
+    # Section boundary geometry fallback: following content looks like a list / short competency cluster
     if _following_looks_like_entry_metadata(following):
         return False
-
-    # Section boundary: following content looks like a list / short competency
-    # cluster rather than a job header stack.
     if not following:
-        # Alone with typography is weak; prefer UNKNOWN over inventing a section.
         return False
     return _following_looks_like_section_body(following)
 
@@ -408,14 +562,18 @@ def _looks_like_entry_title(
         return False
 
     has_role = _contains_role_word(value)
-    title_case_or_upper = value.upper() == value or all(w[:1].isupper() for w in words if w)
+    if not has_role and _contains_section_keyword(value):
+        return False
+    if not has_role and _looks_like_organization(value):
+        return False
+    title_case_or_upper = value.upper() == value or all(w[:1].isupper() for w in words if w and w[0].isalpha())
     typography = _has_typography_emphasis(font_size, bold) or title_case_or_upper
     if not typography and not has_role:
         return False
 
     if _following_looks_like_entry_metadata(following):
         return True
-    if has_role and typography and len(words) <= 4:
+    if has_role and typography and len(words) <= 5:
         return True
     return False
 
@@ -481,6 +639,10 @@ def _is_wrapped_description(
     if not previous or not value:
         return False
     if previous.endswith((".", "!", "?", ":", ";")):
+        return False
+    if _is_known_section_alias(value):
+        return False
+    if value.upper() == value and any(ch.isalpha() for ch in value) and len(value.split()) <= 6:
         return False
     if not (value[:1].islower() or len(previous.split()) >= 5):
         return False

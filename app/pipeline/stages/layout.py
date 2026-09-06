@@ -4,6 +4,7 @@ import re
 from dataclasses import replace
 
 from app.domain.document import BoundingBox, Document, Line, Page, Region
+from app.pipeline.stages.structural_roles import _is_known_section_alias
 
 
 _MIN_COLUMN_GAP = 32.0
@@ -253,12 +254,15 @@ _ALL_CAPS_HEADING = re.compile(r"^[A-Z][A-Z\s&/()\-]+$")
 def _is_section_heading_line(line: Line, median_size: float) -> bool:
     """Return True when *line* looks like a body section heading.
 
-    Conservatively detects section headings using typography and text shape
-    signals only — no fixture-specific strings.  Two independent signals:
+    Conservatively detects section headings using typography, text shape
+    signals, and known section alias infrastructure — no fixture-specific strings.
 
-    1. **All-caps phrase**: text matches ``_ALL_CAPS_HEADING``, has 2–6 words,
-       contains at least two alphabetic characters, and is not a contact line.
-    2. **Bold oversized short phrase**: bold=True, font_size ≥ median * 1.15,
+    1. **Known section alias**: matches loaded section alias infrastructure
+       (supports single-word headings such as EDUCATION, EXPERIENCE, SKILLS,
+       PROJECTS, SUMMARY, CERTIFICATIONS, AWARDS).
+    2. **All-caps phrase**: text matches ``_ALL_CAPS_HEADING``, has 2–6 words,
+       contains at least four alphabetic characters, and is not a contact line.
+    3. **Bold oversized short phrase**: bold=True, font_size ≥ median * 1.15,
        word count 2–6, and not a contact line.
 
     Name-like lines (very large font ≥ median * 1.35, very short word count)
@@ -267,19 +271,26 @@ def _is_section_heading_line(line: Line, median_size: float) -> bool:
     text = (line.text or "").strip()
     if not text or _is_contact_line(line):
         return False
+    if _YEAR_RANGE.search(text):
+        return False
     words = text.split()
-    if len(words) < 2 or len(words) > 6:
+    if len(words) < 1 or len(words) > 6:
         return False
     # Exclude name-sized lines: same threshold as _is_name_like_line.
     size = line.style.font_size or 0.0
     if size >= max(12.0, median_size * 1.35):
         return False
-    # All-caps heading: letters, spaces, and limited punctuation only.
-    if _ALL_CAPS_HEADING.match(text) and sum(c.isalpha() for c in text) >= 4:
+    # Known section alias (handles single-word and multi-word standard section headings)
+    if _is_known_section_alias(text):
         return True
-    # Bold oversized heading: bold formatting at a clearly larger font.
-    if line.style.bold and size >= max(10.0, median_size * 1.15):
-        return True
+    # Heuristics for multi-word candidate headings (2–6 words)
+    if len(words) >= 2:
+        # All-caps heading: letters, spaces, and limited punctuation only.
+        if _ALL_CAPS_HEADING.match(text) and sum(c.isalpha() for c in text) >= 4:
+            return True
+        # Bold oversized heading: bold formatting at a clearly larger font.
+        if line.style.bold and size >= max(10.0, median_size * 1.15):
+            return True
     return False
 
 
@@ -424,6 +435,8 @@ def _is_compact_letterhead_line(line: Line, page_span: float) -> bool:
     text = (line.text or "").strip()
     words = text.split()
     if not text or _is_wide_prose_line(line, page_span) or _is_contact_line(line):
+        return False
+    if _is_known_section_alias(text):
         return False
     width = line.bbox.x1 - line.bbox.x0
     if width / page_span >= 0.60 or len(words) > 10:
