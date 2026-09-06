@@ -1087,3 +1087,143 @@ def test_gemini_two_pass_body_recovery_independent_of_http_retries():
     assert extractor.last_usage_metadata["retry_count"] == 1  # 1 HTTP retry on initial body request
     assert extractor.last_usage_metadata["body_recovery_invoked"] is True
     assert extractor.last_usage_metadata["body_recovery_attempts"] == 1
+
+
+def test_phase10e_recovery_propagation_to_final_resume_and_benchmark_counts():
+    """Phase 10E: Verify populated recovery result propagates to merged SemanticOutput, Resume, and benchmark counts."""
+    from tests.benchmark.quality_gate import evaluate_quality_gate, format_quality_gate_markdown
+    from tests.benchmark.semantic_runner import SemanticBenchmarkRunner
+    from app.domain.document import Document, Page, Region, Line, Span, BoundingBox, TextStyle
+
+    body_call_count = 0
+
+    def mock_transport(request: httpx.Request) -> httpx.Response:
+        nonlocal body_call_count
+        req_body = json.loads(request.content.decode("utf-8"))
+        prompt_text = req_body["contents"][0]["parts"][0]["text"]
+
+        if "PersonalSemanticOutput" in prompt_text:
+            personal_payload = {
+                "document_archetype": "standard_cv",
+                "personal": {
+                    "name": {"value": "Jane Doe", "source_block_ids": ["b1"]},
+                    "email": {"value": "jane.doe@example.com", "source_block_ids": ["b2"]},
+                },
+                "block_classifications": [
+                    {"block_id": "b1", "category": "PERSONAL"},
+                    {"block_id": "b2", "category": "PERSONAL"},
+                ],
+            }
+            envelope = {"candidates": [{"content": {"parts": [{"text": json.dumps(personal_payload)}]}}]}
+            return httpx.Response(200, json=envelope, request=request)
+        else:
+            body_call_count += 1
+            if "IMPORTANT RECOVERY INSTRUCTION" not in prompt_text:
+                # Initial Body pass returns empty body (silent omission)
+                empty_body_payload = {
+                    "document_archetype": "standard_cv",
+                    "skills": [],
+                    "experience": [],
+                    "education": [],
+                    "projects": [],
+                    "certifications": [],
+                    "languages": [],
+                    "achievements": [],
+                }
+                envelope = {"candidates": [{"content": {"parts": [{"text": json.dumps(empty_body_payload)}]}}]}
+                return httpx.Response(200, json=envelope, request=request)
+            else:
+                # Recovery pass returns populated body grounded in b3, b4, b5
+                recovered_body_payload = {
+                    "document_archetype": "standard_cv",
+                    "skills": [
+                        {"value": "Engineer", "source_block_ids": ["b3"]}
+                    ],
+                    "experience": [
+                        {
+                            "company": {"value": "Acme Corp", "source_block_ids": ["b3"]},
+                            "designation": {"value": "Senior Engineer", "source_block_ids": ["b3"]},
+                            "source_block_ids": ["b3"],
+                        }
+                    ],
+                    "education": [
+                        {
+                            "institution": {"value": "MIT", "source_block_ids": ["b4"]},
+                            "degree": {"value": "B.Sc. Computer Science", "source_block_ids": ["b4"]},
+                            "source_block_ids": ["b4"],
+                        }
+                    ],
+                    "certifications": [
+                        {
+                            "value": "AWS Certified Solutions Architect",
+                            "source_block_ids": ["b5"],
+                        }
+                    ],
+                }
+                envelope = {"candidates": [{"content": {"parts": [{"text": json.dumps(recovered_body_payload)}]}}]}
+                return httpx.Response(200, json=envelope, request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(mock_transport))
+    extractor = GeminiSemanticExtractor(
+        api_key="test-api-key",
+        client=client,
+        two_pass=True,
+    )
+
+    sem_input = _sample_semantic_input()
+
+    # 1. Direct extract() call
+    output = extractor.extract(sem_input)
+    assert len(output.skills) == 1
+    assert len(output.experience) == 1
+    assert len(output.education) == 1
+    assert len(output.certifications) == 1
+
+    # 2. Validation of recovered output passes
+    violations = validate_semantic_output(output, sem_input)
+    assert violations == []
+
+    # 3. Conversion to Resume
+    resume = semantic_output_to_resume(output)
+    assert len(resume.skills) == 1
+    assert resume.skills[0] == "Engineer"
+    assert len(resume.experience) == 1
+    assert resume.experience[0].company == "Acme Corp"
+    assert len(resume.education) == 1
+    assert resume.education[0].institution == "MIT"
+    assert len(resume.certifications) == 1
+    assert resume.certifications[0].name == "AWS Certified Solutions Architect"
+
+    meta = extractor.last_usage_metadata
+    assert meta["body_recovery_invoked"] is True
+    assert meta["body_recovery_attempts"] == 1
+
+    # 4. Check Quality Gate integration
+    qg_summary = evaluate_quality_gate([{
+        "filename": "test_resume.pdf",
+        "archetype": "standard_cv",
+        "status": "PASS",
+        "semantic_success": True,
+        "passed_validation": True,
+        "validation_violations": [],
+        "elapsed_seconds": 1.5,
+        "usage": meta,
+        "body_recovery_invoked": meta.get("body_recovery_invoked", False),
+        "skills_count": len(resume.skills),
+        "experience_count": len(resume.experience),
+        "education_count": len(resume.education),
+        "projects_count": len(resume.projects),
+        "certifications_count": len(resume.certifications),
+        "diagnostics": [],
+    }])
+
+    assert qg_summary.body_recovery_count == 1
+    assert qg_summary.pass_count == 1
+    assert qg_summary.results[0]["skills_count"] == 1
+    assert qg_summary.results[0]["experience_count"] == 1
+    assert qg_summary.results[0]["education_count"] == 1
+    assert qg_summary.results[0]["projects_count"] == 0
+
+    md = format_quality_gate_markdown(qg_summary)
+    assert "- **Body Recoveries Invoked:** 1" in md
+    assert "1/1/1/0" in md

@@ -60,6 +60,12 @@ def _extract_usage_metadata(extractor: SemanticExtractor) -> dict[str, Any]:
             "latency_ms": raw_meta.get("latency_ms"),
             "fallback_invoked": raw_meta.get("fallback_invoked", False),
             "fallback_provider": raw_meta.get("fallback_provider"),
+            "body_recovery_invoked": raw_meta.get("body_recovery_invoked", False),
+            "body_recovery_reason": raw_meta.get("body_recovery_reason"),
+            "body_recovery_attempts": raw_meta.get("body_recovery_attempts", 0),
+            "two_pass": raw_meta.get("two_pass", False),
+            "retry_count": raw_meta.get("retry_count", 0),
+            "pass_metadata": raw_meta.get("pass_metadata"),
             "status": raw_meta.get("status", "success"),
         }
     return {
@@ -72,6 +78,12 @@ def _extract_usage_metadata(extractor: SemanticExtractor) -> dict[str, Any]:
         "latency_ms": None,
         "fallback_invoked": False,
         "fallback_provider": None,
+        "body_recovery_invoked": False,
+        "body_recovery_reason": None,
+        "body_recovery_attempts": 0,
+        "two_pass": False,
+        "retry_count": 0,
+        "pass_metadata": None,
         "status": "success",
     }
 

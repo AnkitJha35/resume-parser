@@ -46,7 +46,19 @@ class SemanticParseResult:
     elapsed_seconds: float = 0.0
 
     # Token/cost instrumentation (None if provider doesn't report)
-    usage: dict[str, int | None] | None = None
+    usage: dict[str, Any] | None = None
+
+    # Benchmark metadata & representation
+    provider: str = ""
+    model: str = ""
+    representation: str = "single_pass_candidate_b"
+    extraction_mode: str = "single_pass"
+    pass_count: int = 1
+    http_failures: int = 0
+    fallback_invoked: bool = False
+    body_recovery_invoked: bool = False
+    hallucinated_block_ids: list[str] = field(default_factory=list)
+    unsupported_canonical_values: list[str] = field(default_factory=list)
 
     # Extracted core fields
     personal: dict[str, Any] = field(default_factory=dict)
@@ -76,7 +88,9 @@ class SemanticBenchmarkSummary:
     suite_id: str = BenchmarkSuiteId.REGRESSION_12.value
     provider: str = "gemini"
     model: str = "gemini-3.5-flash-lite"
-    representation: str = "candidate_b_compact"
+    representation: str = "single_pass_candidate_b"
+    extraction_mode: str = "single_pass"
+    pass_count: int = 1
     total_cases: int = 0
     successful_cases: int = 0
     extraction_failures: int = 0
@@ -103,6 +117,7 @@ class SemanticBenchmarkRunner:
         fixtures_dir: Path | None = None,
         provider_name: str | None = None,
         model_name: str | None = None,
+        representation: str | None = None,
         suite_id: str = BenchmarkSuiteId.REGRESSION_12.value,
         metadata_registry: dict[str, Any] | None = None,
     ) -> None:
@@ -144,6 +159,33 @@ class SemanticBenchmarkRunner:
                     or getattr(extractor, "model", None)
                     or "default"
                 )
+
+        # Detect or configure extraction mode & representation
+        is_two_pass = False
+        if hasattr(self.extractor, "_resolve_two_pass"):
+            try:
+                is_two_pass = bool(self.extractor._resolve_two_pass())
+            except Exception:
+                is_two_pass = False
+        elif getattr(self.extractor, "_explicit_two_pass", False):
+            is_two_pass = True
+
+        if representation:
+            self.representation = representation
+            if "two_pass" in representation.lower():
+                self.extraction_mode = "two_pass"
+                self.pass_count = 2
+            else:
+                self.extraction_mode = "single_pass"
+                self.pass_count = 1
+        elif is_two_pass:
+            self.representation = "two_pass_candidate_b"
+            self.extraction_mode = "two_pass"
+            self.pass_count = 2
+        else:
+            self.representation = "single_pass_candidate_b"
+            self.extraction_mode = "single_pass"
+            self.pass_count = 1
 
     def discover_fixtures(self, fixture_name: str | None = None) -> list[Path]:
         """Discover existing PDF benchmark fixtures in the fixtures directory.
@@ -196,11 +238,14 @@ class SemanticBenchmarkRunner:
         target_domain = "Unknown"
         notes = ""
 
-        if self.metadata_registry and filename in self.metadata_registry:
-            m = self.metadata_registry[filename]
-            target_archetype = getattr(m, "archetype", DocumentArchetype.STANDARD_CV)
-            target_domain = getattr(m, "domain", getattr(m, "target_domain", "Unknown"))
-            notes = getattr(m, "notes", "")
+        if self.metadata_registry:
+            m = self.metadata_registry.get(filename)
+            if m is None:
+                m = next((v for v in self.metadata_registry.values() if getattr(v, "filename", None) == filename), None)
+            if m is not None:
+                target_archetype = getattr(m, "archetype", DocumentArchetype.STANDARD_CV)
+                target_domain = getattr(m, "domain", getattr(m, "target_domain", "Unknown"))
+                notes = getattr(m, "notes", "")
         elif filename in BENCHMARK_FIXTURES:
             m = BENCHMARK_FIXTURES[filename]
             target_archetype = m.archetype
@@ -272,6 +317,14 @@ class SemanticBenchmarkRunner:
                 for prj in resume.projects
             ]
 
+            # Resolve extraction metadata and usage metrics
+            two_pass_flag = bool(usage.get("two_pass", False)) if isinstance(usage, dict) else (self.extraction_mode == "two_pass")
+            mode = "two_pass" if two_pass_flag else "single_pass"
+            pass_cnt = 2 if two_pass_flag else 1
+            retries = int(usage.get("retry_count", 0)) if isinstance(usage, dict) else 0
+            fallback = bool(usage.get("fallback_invoked", False)) if isinstance(usage, dict) else False
+            recovery = bool(usage.get("body_recovery_invoked", False)) if isinstance(usage, dict) else False
+
             return SemanticParseResult(
                 filename=filename,
                 archetype=target_archetype.value if hasattr(target_archetype, "value") else str(target_archetype),
@@ -281,6 +334,16 @@ class SemanticBenchmarkRunner:
                 passed_validation=True,
                 elapsed_seconds=round(elapsed, 4),
                 usage=usage,
+                provider=self.provider_name,
+                model=self.model_name,
+                representation=self.representation,
+                extraction_mode=mode,
+                pass_count=pass_cnt,
+                http_failures=retries,
+                fallback_invoked=fallback,
+                body_recovery_invoked=recovery,
+                hallucinated_block_ids=[],
+                unsupported_canonical_values=[],
                 personal=personal_dict,
                 skills_count=len(resume.skills),
                 skills_sample=resume.skills[:10],
@@ -300,6 +363,16 @@ class SemanticBenchmarkRunner:
         except SemanticValidationError as exc:
             elapsed = time.perf_counter() - start_t
             usage = getattr(self.extractor, "last_usage_metadata", None)
+            violations = list(getattr(exc, "violations", []))
+            two_pass_flag = bool(usage.get("two_pass", False)) if isinstance(usage, dict) else (self.extraction_mode == "two_pass")
+            mode = "two_pass" if two_pass_flag else "single_pass"
+            pass_cnt = 2 if two_pass_flag else 1
+            retries = int(usage.get("retry_count", 0)) if isinstance(usage, dict) else 0
+            fallback = bool(usage.get("fallback_invoked", False)) if isinstance(usage, dict) else False
+            recovery = bool(usage.get("body_recovery_invoked", False)) if isinstance(usage, dict) else False
+            hallucinated = [v for v in violations if "UNKNOWN_BLOCK_ID" in v]
+            unsupported = [v for v in violations if "UNSUPPORTED_CANONICAL_VALUE" in v]
+
             return SemanticParseResult(
                 filename=filename,
                 archetype=target_archetype.value if hasattr(target_archetype, "value") else str(target_archetype),
@@ -310,15 +383,32 @@ class SemanticBenchmarkRunner:
                 passed_validation=False,
                 elapsed_seconds=round(elapsed, 4),
                 usage=usage,
+                provider=self.provider_name,
+                model=self.model_name,
+                representation=self.representation,
+                extraction_mode=mode,
+                pass_count=pass_cnt,
+                http_failures=retries,
+                fallback_invoked=fallback,
+                body_recovery_invoked=recovery,
+                hallucinated_block_ids=hallucinated,
+                unsupported_canonical_values=unsupported,
                 error_message=str(exc),
-                validation_violations=list(getattr(exc, "violations", [])),
-                diagnostics=[f"VALIDATION_VIOLATION: {v}" for v in getattr(exc, "violations", [])],
+                validation_violations=violations,
+                diagnostics=[f"VALIDATION_VIOLATION: {v}" for v in violations],
                 notes=f"Semantic output failed validation invariants: {exc}",
             )
 
         except SemanticExtractionError as exc:
             elapsed = time.perf_counter() - start_t
             usage = getattr(self.extractor, "last_usage_metadata", None)
+            two_pass_flag = bool(usage.get("two_pass", False)) if isinstance(usage, dict) else (self.extraction_mode == "two_pass")
+            mode = "two_pass" if two_pass_flag else "single_pass"
+            pass_cnt = 2 if two_pass_flag else 1
+            retries = int(usage.get("retry_count", 0)) if isinstance(usage, dict) else 0
+            fallback = bool(usage.get("fallback_invoked", False)) if isinstance(usage, dict) else False
+            recovery = bool(usage.get("body_recovery_invoked", False)) if isinstance(usage, dict) else False
+
             return SemanticParseResult(
                 filename=filename,
                 archetype=target_archetype.value if hasattr(target_archetype, "value") else str(target_archetype),
@@ -329,6 +419,14 @@ class SemanticBenchmarkRunner:
                 passed_validation=False,
                 elapsed_seconds=round(elapsed, 4),
                 usage=usage,
+                provider=self.provider_name,
+                model=self.model_name,
+                representation=self.representation,
+                extraction_mode=mode,
+                pass_count=pass_cnt,
+                http_failures=retries,
+                fallback_invoked=fallback,
+                body_recovery_invoked=recovery,
                 error_message=str(exc),
                 diagnostics=[f"EXTRACTION_ERROR: {exc}"],
                 notes=f"Extraction failed: {exc}",
@@ -345,6 +443,11 @@ class SemanticBenchmarkRunner:
                 failure_type="PARSER_EXCEPTION",
                 passed_validation=False,
                 elapsed_seconds=round(elapsed, 4),
+                provider=self.provider_name,
+                model=self.model_name,
+                representation=self.representation,
+                extraction_mode=self.extraction_mode,
+                pass_count=self.pass_count,
                 error_message=str(exc),
                 diagnostics=[f"PARSER_EXCEPTION: {exc}"],
                 notes=f"Unhandled exception: {exc}",
@@ -404,7 +507,9 @@ class SemanticBenchmarkRunner:
             suite_id=self.suite_id,
             provider=self.provider_name,
             model=self.model_name,
-            representation="candidate_b_compact",
+            representation=self.representation,
+            extraction_mode=self.extraction_mode,
+            pass_count=self.pass_count,
             total_cases=len(results),
             successful_cases=successful,
             extraction_failures=ext_fails,
