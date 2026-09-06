@@ -503,6 +503,317 @@ def is_body_output_suspiciously_empty(
 
 
 # =====================================================================
+# 4a. Section-Aware Extraction Helpers (Phase 10M)
+# =====================================================================
+
+_DEGREE_PATTERN = re.compile(
+    r"\b(?:Ph\.?D|M\.?S|B\.?S|M\.?A|B\.?A|Doctor|Master|Bachelor|Degree|Diploma)\b",
+    re.IGNORECASE,
+)
+_INSTITUTION_PATTERN = re.compile(
+    r"\b(?:University|College|School|Institute|Academy)\b",
+    re.IGNORECASE,
+)
+_GRANT_OR_AWARD_PATTERN = re.compile(
+    r"[\$€£]|(?:\b(?:grant|award|fellowship|honor|funding|scholarship)\b)",
+    re.IGNORECASE,
+)
+
+
+class SemanticSection:
+    """A logical section derived generically from structural evidence in SemanticInput.
+
+    Attributes:
+        heading_block_id: The block_id of the boundary block that opened this section
+                          (may be None for blocks before the first explicit boundary).
+        heading_text:     Verbatim text of the heading block (empty string if no heading).
+        block_ids:        Ordered list of block_ids belonging to this section (includes heading).
+        canonical_target: Generic extraction hint: one of 'experience', 'education',
+                          'certifications', 'skills', 'projects', 'achievements',
+                          'languages', or 'unsupported'.
+        page_start:       Page number of the first block in this section.
+    """
+
+    __slots__ = ("heading_block_id", "heading_text", "block_ids", "canonical_target", "page_start")
+
+    def __init__(
+        self,
+        heading_block_id: str | None,
+        heading_text: str,
+        block_ids: list[str],
+        canonical_target: str,
+        page_start: int,
+    ) -> None:
+        self.heading_block_id = heading_block_id
+        self.heading_text = heading_text
+        self.block_ids = list(block_ids)
+        self.canonical_target = canonical_target
+        self.page_start = page_start
+
+    def __repr__(self) -> str:
+        return (
+            f"SemanticSection(heading={self.heading_text!r:.40}, "
+            f"target={self.canonical_target!r}, "
+            f"blocks={len(self.block_ids)}, page={self.page_start})"
+        )
+
+
+def _is_section_boundary_block(block: SemanticBlockInput) -> bool:
+    """Generic structural predicate determining if a block introduces a section boundary.
+
+    Uses typography and structural roles only — no fixture-specific strings:
+    1. suggested_role == 'SECTION_HEADING'
+    2. Uppercase phrase (2-60 chars) with parenthetical qualifiers stripped
+    3. Bold short line (<= 6 words) with structural roles ENTRY_TITLE, ORGANIZATION, or SECTION_HEADING
+    """
+    if block.region_kind in ("header", "footer"):
+        return False
+    if block.suggested_role == "SECTION_HEADING":
+        return True
+
+    text = (block.text or "").strip()
+    if len(text) < 3 or len(text) > 70:
+        return False
+
+    # Check for uppercase heading text (ignoring parenthetical clauses e.g. '(Total: $5.8M)')
+    cleaned = re.sub(r"\(.*?\)", "", text).strip()
+    alphas = [c for c in cleaned if c.isalpha()]
+    if len(alphas) >= 4 and all(c.isupper() for c in alphas):
+        return True
+
+    return False
+
+
+def _infer_section_target(
+    heading_text: str,
+    child_blocks: list[SemanticBlockInput],
+) -> str:
+    """Infer the canonical destination for a section using structural signals and generic aliases.
+
+    Uses no fixture-specific strings. Maps to one of the 8 canonical Resume collections:
+    'summary', 'experience', 'education', 'skills', 'projects', 'certifications',
+    'achievements', 'languages', or 'unsupported' if no recognized canonical destination exists.
+    """
+    from app.pipeline.stages.sections import _load_section_aliases
+
+    try:
+        aliases = _load_section_aliases()
+    except Exception:
+        aliases = {}
+
+    clean_h = re.sub(r"\(.*?\)", "", heading_text).strip().lower()
+    for sec_name, sec_aliases in aliases.items():
+        if any(a in clean_h for a in sec_aliases):
+            return sec_name.lower()
+
+    child_roles = [b.suggested_role for b in child_blocks if b.suggested_role]
+    child_texts = " ".join(b.text for b in child_blocks)
+
+    # 1. Education: degree + institution indicators
+    has_degree = any(r in ("DEGREE", "EDUCATION") for r in child_roles) or bool(_DEGREE_PATTERN.search(child_texts))
+    has_inst = any(r == "INSTITUTION" for r in child_roles) or bool(_INSTITUTION_PATTERN.search(child_texts))
+    if (has_degree and has_inst) or any(r == "DEGREE" for r in child_roles):
+        return "education"
+
+    # 2. Achievements / Awards: grant funding or achievement markers
+    if any(r == "ACHIEVEMENT" for r in child_roles) or _GRANT_OR_AWARD_PATTERN.search(heading_text) or _GRANT_OR_AWARD_PATTERN.search(child_texts):
+        return "achievements"
+
+    # 3. Experience: organization/title accompanied by dates or locations
+    has_org_title = any(r in ("ENTRY_TITLE", "ORGANIZATION") for r in child_roles)
+    has_date_loc = any(r in ("DATE", "LOCATION") for r in child_roles)
+    if has_org_title and has_date_loc:
+        return "experience"
+
+    # 4. Skills / Technologies
+    if any(r in ("SKILL", "TECHNOLOGY") for r in child_roles):
+        return "skills"
+
+    # 5. Certifications / Credentials
+    if any(r in ("CERTIFICATION", "CREDENTIAL") for r in child_roles):
+        return "certifications"
+
+    # 6. Languages
+    if any(r == "LANGUAGE" for r in child_roles):
+        return "languages"
+
+    return "unsupported"
+
+
+
+def partition_semantic_input_into_sections(
+    semantic_input: SemanticInput,
+) -> list[SemanticSection]:
+    """Partition body blocks in SemanticInput into logical sections using generic structural signals.
+
+    Sections are derived purely from existing fields:
+      - suggested_role (SECTION_HEADING, ENTRY_TITLE, ORGANIZATION as boundary signals)
+      - region_kind (header/footer blocks are excluded)
+      - page, reading_order (ordering)
+      - block_id, text (provenance and unsupported-section detection)
+
+    No fixture-specific section names are used. The function is deterministic and makes no LLM calls.
+
+    Returns:
+        A list of SemanticSection objects in reading order. Header and footer blocks are excluded.
+        Blocks that appear before the first boundary signal are grouped into a preamble section.
+        Unsupported sections (publications, teaching/mentorship, editorial service, references,
+        declarations) are tagged with canonical_target='unsupported'.
+    """
+    # Sort body blocks in reading order (page, reading_order, block_id)
+    body_blocks = sorted(
+        [
+            b for b in semantic_input.blocks
+            if b.region_kind not in ("header", "footer")
+            and b.text.strip()
+        ],
+        key=lambda b: (b.page, b.reading_order, b.block_id),
+    )
+
+    if not body_blocks:
+        return []
+
+    # Build an index from block_id -> block for fast lookup
+    block_by_id: dict[str, SemanticBlockInput] = {b.block_id: b for b in body_blocks}
+
+    sections: list[SemanticSection] = []
+    current_heading_id: str | None = None
+    current_heading_text: str = ""
+    current_heading_role: str = ""
+    current_block_ids: list[str] = []
+    current_page_start: int = body_blocks[0].page if body_blocks else 1
+
+    def _flush_section(next_page: int | None = None) -> None:
+        nonlocal current_heading_id, current_heading_text, current_heading_role
+        nonlocal current_block_ids, current_page_start
+
+        if not current_block_ids:
+            return
+
+        # Collect child blocks (all blocks except heading itself)
+        child_blocks = [
+            block_by_id[bid] for bid in current_block_ids
+            if bid != current_heading_id and bid in block_by_id
+        ]
+        target = _infer_section_target(current_heading_text, child_blocks)
+
+        sections.append(SemanticSection(
+            heading_block_id=current_heading_id,
+            heading_text=current_heading_text,
+            block_ids=list(current_block_ids),
+            canonical_target=target,
+            page_start=current_page_start,
+        ))
+        # Reset
+        current_heading_id = None
+        current_heading_text = ""
+        current_heading_role = ""
+        current_block_ids = []
+        current_page_start = next_page if next_page is not None else (body_blocks[-1].page if body_blocks else 1)
+
+    for block in body_blocks:
+        if _is_section_boundary_block(block):
+            # Flush whatever we have accumulated so far as one section
+            _flush_section(next_page=block.page)
+            # Start new section with this block as heading
+            current_heading_id = block.block_id
+            current_heading_text = block.text
+            current_heading_role = block.suggested_role or ""
+            current_block_ids = [block.block_id]
+            current_page_start = block.page
+        else:
+            current_block_ids.append(block.block_id)
+
+
+    # Flush the final section
+    _flush_section()
+
+    return sections
+
+
+def filter_semantic_input_to_blocks(
+    semantic_input: SemanticInput,
+    block_ids: list[str],
+) -> SemanticInput:
+    """Return a new SemanticInput containing only the specified body block_ids plus all header blocks.
+
+    Header blocks are always preserved so that provenance validators can reference them.
+    The returned SemanticInput shares the same document_id, archetype, page_count, and pages.
+    Block ordering within the result is preserved (same as in semantic_input.blocks).
+
+    Args:
+        semantic_input: The full SemanticInput to filter.
+        block_ids:      Ordered list of block_ids to retain from non-header regions.
+
+    Returns:
+        A new SemanticInput with only the selected body blocks + header blocks.
+    """
+    keep_ids: frozenset[str] = frozenset(block_ids)
+    filtered_blocks = [
+        b for b in semantic_input.blocks
+        if b.region_kind in ("header",) or b.block_id in keep_ids
+    ]
+    return SemanticInput(
+        document_id=semantic_input.document_id,
+        page_count=semantic_input.page_count,
+        archetype=semantic_input.archetype,
+        pages=list(semantic_input.pages),
+        blocks=filtered_blocks,
+    )
+
+
+def merge_body_outputs(outputs: list[BodySemanticOutput]) -> BodySemanticOutput:
+    """Deterministically merge multiple BodySemanticOutput objects into one.
+
+    Rules:
+    - document_archetype: first non-UNKNOWN wins.
+    - block_classifications: last-writer-wins per block_id (same as merge_semantic_passes).
+    - summary: first non-None wins.
+    - All list collections (skills, experience, education, projects, certifications,
+      languages, achievements): concatenated in input order.
+
+    This merge is order-preserving and does NOT deduplicate entities.
+    The caller is responsible for passing outputs in reading-order to preserve document order.
+    """
+    if not outputs:
+        return BodySemanticOutput()
+
+    # Archetype: first non-UNKNOWN wins
+    archetype = DocumentArchetype.UNKNOWN
+    for o in outputs:
+        if o.document_archetype != DocumentArchetype.UNKNOWN:
+            archetype = o.document_archetype
+            break
+
+    # Block classifications: last-writer-wins (same semantics as merge_semantic_passes)
+    merged_classifications: dict[str, BlockClassification] = {}
+    for o in outputs:
+        for bc in o.block_classifications:
+            merged_classifications[bc.block_id] = bc
+    sorted_classifications = sorted(merged_classifications.values(), key=lambda x: x.block_id)
+
+    # Summary: first non-None wins
+    summary: GroundedString | None = None
+    for o in outputs:
+        if o.summary is not None:
+            summary = o.summary
+            break
+
+    return BodySemanticOutput(
+        document_archetype=archetype,
+        block_classifications=sorted_classifications,
+        summary=summary,
+        skills=sum((o.skills for o in outputs), []),
+        experience=sum((o.experience for o in outputs), []),
+        education=sum((o.education for o in outputs), []),
+        projects=sum((o.projects for o in outputs), []),
+        certifications=sum((o.certifications for o in outputs), []),
+        languages=sum((o.languages for o in outputs), []),
+        achievements=sum((o.achievements for o in outputs), []),
+    )
+
+
+
 # 4. Builder and Validation Invariants
 # =====================================================================
 

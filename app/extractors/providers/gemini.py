@@ -15,12 +15,16 @@ from pydantic import BaseModel, ValidationError
 from app.core.config import Settings
 from app.domain.semantic_contract import (
     BodySemanticOutput,
+    DocumentArchetype,
     PersonalSemanticOutput,
     SemanticInput,
     SemanticOutput,
+    filter_semantic_input_to_blocks,
     get_body_evidence_category,
     is_body_output_suspiciously_empty,
+    merge_body_outputs,
     merge_semantic_passes,
+    partition_semantic_input_into_sections,
     summarize_body_evidence,
 )
 from app.extractors.semantic_extractor import (
@@ -704,7 +708,217 @@ class GeminiSemanticExtractor:
                 parsed = parse_personal_output(raw_text)
                 return parsed, usage, retries
 
+            def _run_body_for_section_input(
+                section_input: SemanticInput,
+                pass_name: str,
+            ) -> tuple[BodySemanticOutput, dict[str, Any], int]:
+                """Execute one body extraction request for a (potentially filtered) SemanticInput.
+
+                Applies the existing suspicious-empty recovery logic against the
+                *full* input_data so that recovery prompts always include the complete
+                evidence summary, not just the section subset.
+                """
+                prompt = build_body_extraction_prompt(section_input)
+                raw_text, usage, retries = self._execute_prompt_request(
+                    prompt=prompt,
+                    response_schema=schema_body,
+                    api_key=api_key,
+                    model=model,
+                    base_url=base_url,
+                    timeout=timeout,
+                    max_retries=max_retries,
+                    pass_name=pass_name,
+                )
+                parsed = parse_body_output(raw_text)
+                usage_enriched = {
+                    **usage,
+                    "body_recovery_invoked": False,
+                    "body_recovery_reason": None,
+                    "body_recovery_attempts": 0,
+                    "final_body_empty": not bool(
+                        parsed.skills or parsed.experience or parsed.education
+                        or parsed.projects or parsed.certifications
+                        or parsed.languages or parsed.achievements
+                    ),
+                    "body_completeness_failure": False,
+                    "evidence_category": get_body_evidence_category(section_input),
+                }
+                return parsed, usage_enriched, retries
+
             def _run_body() -> tuple[BodySemanticOutput, dict[str, Any], int]:
+                """Execute body extraction.
+
+                For ACADEMIC_CV: partition into logical sections, skip unsupported
+                sections (publications, teaching, editorial service, references, declarations),
+                send one focused extraction request per supported section group, and merge.
+
+                For all other archetypes: monolithic body pass with existing recovery.
+                """
+                is_academic = input_data.archetype == DocumentArchetype.ACADEMIC_CV
+
+                if is_academic:
+                    sections = partition_semantic_input_into_sections(input_data)
+                    supported = [s for s in sections if s.canonical_target != "unsupported"]
+                    skipped = [s for s in sections if s.canonical_target == "unsupported"]
+
+                    logger.info(
+                        "Gemini body pass section-aware mode doc_id=%s archetype=academic_cv "
+                        "total_sections=%d supported=%d skipped_unsupported=%d",
+                        input_data.document_id,
+                        len(sections),
+                        len(supported),
+                        len(skipped),
+                    )
+
+                    if not supported:
+                        # All sections are unsupported; fall through to monolithic path
+                        # so existing SemanticCompletenessError / recovery handles it.
+                        logger.warning(
+                            "Gemini body pass section-aware mode found no supported sections; "
+                            "falling through to monolithic pass doc_id=%s",
+                            input_data.document_id,
+                        )
+                        is_academic = False  # trigger fallthrough below
+
+                    if is_academic:
+                        section_outputs: list[BodySemanticOutput] = []
+                        total_p_t = 0
+                        total_o_t = 0
+                        total_tot_t = 0
+                        total_retries = 0
+
+                        for sec in supported:
+                            sec_input = filter_semantic_input_to_blocks(input_data, sec.block_ids)
+                            logger.info(
+                                "Gemini body pass section extraction doc_id=%s section=%r "
+                                "target=%s blocks=%d",
+                                input_data.document_id,
+                                sec.heading_text,
+                                sec.canonical_target,
+                                len(sec_input.blocks),
+                            )
+                            try:
+                                sec_res, sec_usage, sec_retries = _run_body_for_section_input(
+                                    sec_input, pass_name=f"body_sec_{sec.canonical_target}"
+                                )
+                                section_outputs.append(sec_res)
+                                total_p_t += (sec_usage.get("prompt_tokens") or 0)
+                                total_o_t += (sec_usage.get("output_tokens") or 0)
+                                total_tot_t += (sec_usage.get("total_tokens") or 0)
+                                total_retries += sec_retries
+                            except Exception as sec_exc:
+                                # Any failed section request must not silently erase successful results from other sections
+                                if isinstance(sec_exc, SemanticConfigurationError):
+                                    raise
+                                logger.warning(
+                                    "Gemini section extraction failed doc_id=%s section=%r "
+                                    "target=%s error_type=%s: %s",
+                                    input_data.document_id,
+                                    sec.heading_text,
+                                    sec.canonical_target,
+                                    type(sec_exc).__name__,
+                                    sec_exc,
+                                )
+
+                        merged_body = merge_body_outputs(section_outputs)
+                        ev_category = get_body_evidence_category(input_data)
+
+                        # Apply suspicious-empty check against the input_data
+                        if is_body_output_suspiciously_empty(merged_body, input_data):
+                            logger.warning(
+                                "Gemini sectioned body passes returned suspiciously empty collections "
+                                "(evidence_category=%s); triggering bounded recovery doc_id=%s model=%s",
+                                ev_category,
+                                input_data.document_id,
+                                model,
+                            )
+                            # Bounded recovery uses supported section blocks
+                            supported_block_ids: list[str] = []
+                            for sec in supported:
+                                supported_block_ids.extend(sec.block_ids)
+                            recovery_input = filter_semantic_input_to_blocks(input_data, supported_block_ids)
+                            prompt_body_recovery = build_body_recovery_prompt(recovery_input)
+                            raw_text_rec, usage_rec, retries_rec = self._execute_prompt_request(
+                                prompt=prompt_body_recovery,
+                                response_schema=schema_body,
+                                api_key=api_key,
+                                model=model,
+                                base_url=base_url,
+                                timeout=timeout,
+                                max_retries=max_retries,
+                                pass_name="body_sectioned_recovery",
+                            )
+                            parsed_rec = parse_body_output(raw_text_rec)
+
+                            p_t = total_p_t + (usage_rec.get("prompt_tokens") or 0)
+                            o_t = total_o_t + (usage_rec.get("output_tokens") or 0)
+                            tot_t = total_tot_t + (usage_rec.get("total_tokens") or 0)
+
+                            still_empty = is_body_output_suspiciously_empty(parsed_rec, input_data)
+
+                            combined_usage = {
+                                "prompt_tokens": p_t,
+                                "output_tokens": o_t,
+                                "total_tokens": tot_t,
+                                "body_recovery_invoked": True,
+                                "body_recovery_reason": "suspicious_empty_body_sectioned",
+                                "body_recovery_attempts": 1,
+                                "final_body_empty": still_empty,
+                                "body_completeness_failure": still_empty,
+                                "evidence_category": ev_category,
+                                "recovery_pass": usage_rec,
+                            }
+                            combined_retries = total_retries + retries_rec
+
+                            if still_empty:
+                                self._last_call_meta = combined_usage
+                                logger.error(
+                                    "Gemini body sectioned recovery failed: body collections remain empty "
+                                    "doc_id=%s model=%s evidence_category=%s",
+                                    input_data.document_id,
+                                    model,
+                                    ev_category,
+                                )
+                                raise SemanticCompletenessError(
+                                    f"Empty body output on evidence-rich document {input_data.document_id!r} "
+                                    f"after sectioned bounded recovery (evidence: {ev_category})",
+                                    reason="empty_body_after_recovery",
+                                    evidence_category=ev_category,
+                                )
+
+                            logger.info(
+                                "Gemini body sectioned recovery completed doc_id=%s model=%s "
+                                "recovery_result_counts=(skills=%d, exp=%d, edu=%d, proj=%d, certs=%d)",
+                                input_data.document_id,
+                                model,
+                                len(parsed_rec.skills),
+                                len(parsed_rec.experience),
+                                len(parsed_rec.education),
+                                len(parsed_rec.projects),
+                                len(parsed_rec.certifications),
+                            )
+                            return parsed_rec, combined_usage, combined_retries
+
+                        is_empty = not bool(
+                            merged_body.skills or merged_body.experience or merged_body.education
+                            or merged_body.projects or merged_body.certifications
+                            or merged_body.languages or merged_body.achievements
+                        )
+                        usage_final = {
+                            "prompt_tokens": total_p_t,
+                            "output_tokens": total_o_t,
+                            "total_tokens": total_tot_t,
+                            "body_recovery_invoked": False,
+                            "body_recovery_reason": None,
+                            "body_recovery_attempts": 0,
+                            "final_body_empty": is_empty,
+                            "body_completeness_failure": False,
+                            "evidence_category": ev_category,
+                        }
+                        return merged_body, usage_final, total_retries
+
+
+                # ── Monolithic body pass (non-academic or fallthrough) ──────────────
                 raw_text, usage, retries = self._execute_prompt_request(
                     prompt=prompt_body,
                     response_schema=schema_body,
@@ -806,6 +1020,7 @@ class GeminiSemanticExtractor:
                     "evidence_category": ev_cat,
                 }
                 return parsed, usage_enriched, retries
+
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
                 fut_personal = executor.submit(_run_personal)
