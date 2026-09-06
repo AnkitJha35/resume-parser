@@ -70,7 +70,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--provider",
         type=str,
-        choices=["ollama", "gemini", "openrouter"],
+        choices=["ollama", "gemini", "openrouter", "nvidia"],
         default="gemini",
         help="Semantic LLM provider (default: gemini)",
     )
@@ -97,6 +97,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--base-url", type=str, default=None, help="Base URL for Ollama (default: http://localhost:11434)")
     parser.add_argument("--timeout", type=float, default=None, help="Request timeout in seconds")
+    parser.add_argument("--max-tokens", type=int, default=None, help="Maximum output tokens budget (default: provider default)")
     parser.add_argument("--threads", type=int, default=None, help="CPU threads for Ollama (default: 8)")
     parser.add_argument(
         "--think",
@@ -232,10 +233,53 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[LIVE BENCHMARK] Initiating external LLM calls to OpenRouter API using model '{model}' ({resolved_rep})...")
         print(f"[LIVE BENCHMARK] Request timeout: {timeout}s. Credentials: [REDACTED]")
 
+        max_tokens_env = os.environ.get("OPENROUTER_MAX_TOKENS")
+        max_tokens = args.max_tokens or (int(max_tokens_env) if max_tokens_env else None)
+
         extractor = OpenRouterSemanticExtractor(
             api_key=api_key,
             model=model,
             timeout=timeout,
+            max_tokens=max_tokens,
+            compact=compact,
+            two_pass=two_pass,
+        )
+    elif provider == "nvidia":
+        from app.extractors.providers.nvidia import NvidiaSemanticExtractor
+
+        api_key = os.environ.get("NVIDIA_API_KEY")
+        if not api_key:
+            try:
+                settings = Settings()
+                api_key = getattr(settings, "nvidia_api_key", None)
+            except Exception:
+                pass
+
+        if not api_key:
+            print(
+                "ERROR: NVIDIA_API_KEY is not configured.\n"
+                "Live NVIDIA benchmark requires setting NVIDIA_API_KEY environment variable.\n"
+                "Aborting without making any network calls.",
+                file=sys.stderr,
+            )
+            return 1
+
+        model = args.model or os.environ.get("NVIDIA_MODEL", "nvidia/nemotron-3.5-lightning-30b-a3b")
+        base_url = args.base_url or os.environ.get("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
+        timeout = args.timeout or float(os.environ.get("NVIDIA_TIMEOUT", "60.0"))
+
+        print(f"[LIVE BENCHMARK] Initiating external LLM calls to NVIDIA NIM API using model '{model}' ({resolved_rep})...")
+        print(f"[LIVE BENCHMARK] Base URL: {base_url}. Request timeout: {timeout}s. Credentials: [REDACTED]")
+
+        max_tokens_env = os.environ.get("NVIDIA_MAX_TOKENS")
+        max_tokens = args.max_tokens or (int(max_tokens_env) if max_tokens_env else None)
+
+        extractor = NvidiaSemanticExtractor(
+            api_key=api_key,
+            model=model,
+            base_url=base_url,
+            timeout=timeout,
+            max_tokens=max_tokens if max_tokens is not None else 16384,
             compact=compact,
             two_pass=two_pass,
         )

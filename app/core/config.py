@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     parser_mode: Literal["auto", "legacy", "layout"] = "auto"
 
     # Provider selection
-    semantic_provider: Literal["gemini", "openrouter", "ollama"] = "gemini"
+    semantic_provider: Literal["gemini", "openrouter", "ollama", "nvidia"] = "gemini"
 
     # Semantic LLM configuration (optional)
     gemini_api_key: str | None = None
@@ -42,7 +42,18 @@ class Settings(BaseSettings):
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     openrouter_timeout: float = 60.0
     openrouter_max_retries: int = 2
+    openrouter_max_tokens: int = 16384
     openrouter_two_pass: bool = False
+
+    # NVIDIA NIM configuration
+    nvidia_api_key: str | None = None
+    nvidia_model: str = "nvidia/nemotron-3.5-lightning-30b-a3b"
+    nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
+    nvidia_timeout: float = 60.0
+    nvidia_max_retries: int = 2
+    nvidia_max_tokens: int = 16384
+    nvidia_two_pass: bool = False
+    nvidia_response_format_type: Literal["json_object", "json_schema"] = "json_object"
 
     # Ollama LLM configuration
     ollama_base_url: str = "http://localhost:11434"

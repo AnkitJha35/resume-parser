@@ -155,3 +155,32 @@ def test_default_backward_compatibility():
     extractor = get_semantic_extractor(settings)
     assert isinstance(extractor, GeminiSemanticExtractor)
     assert not isinstance(extractor, FallbackSemanticExtractor)
+
+
+def test_factory_returns_nvidia_when_specified():
+    """Test 9: Factory returns NvidiaSemanticExtractor when provider='nvidia'."""
+    from app.extractors.providers.nvidia import NvidiaSemanticExtractor
+
+    settings = _make_test_settings(
+        nvidia_api_key="nvapi-key",
+        nvidia_model="nvidia/nemotron-3.5-lightning-30b-a3b",
+        nvidia_max_tokens=8192,
+    )
+    extractor = get_semantic_extractor(settings, provider="nvidia")
+    assert isinstance(extractor, NvidiaSemanticExtractor)
+    assert extractor._explicit_api_key == "nvapi-key"
+    assert extractor._explicit_model == "nvidia/nemotron-3.5-lightning-30b-a3b"
+    assert extractor._explicit_max_tokens == 8192
+
+
+def test_factory_returns_nvidia_from_semantic_provider_setting():
+    """Test 10: Factory returns NvidiaSemanticExtractor when settings.semantic_provider='nvidia'."""
+    from app.extractors.providers.nvidia import NvidiaSemanticExtractor
+
+    settings = _make_test_settings(
+        semantic_provider="nvidia",
+        nvidia_api_key="nvapi-key-2",
+    )
+    extractor = get_semantic_extractor(settings)
+    assert isinstance(extractor, NvidiaSemanticExtractor)
+    assert extractor._explicit_api_key == "nvapi-key-2"
