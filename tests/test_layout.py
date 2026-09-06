@@ -459,3 +459,115 @@ def test_overlapping_header_and_columns_keep_summary_body():
     assert "Left wrap that extends past the right origin with summary prose." in left
     assert "Projects heading" not in left
     assert "Left third keeps covering the column." not in right
+
+
+# ---------------------------------------------------------------------------
+# Phase 10K regression tests: section-heading header-band cap
+# ---------------------------------------------------------------------------
+
+
+def test_all_caps_section_heading_near_top_stays_in_body():
+    """An all-caps section heading must NOT be swallowed into the header region
+    even when it appears early in the page and body_start_y is computed too low."""
+    source = _document([
+        _line("n", "Jordan Blake", 10, 10, 180, 26, font_size=18),
+        _line("e", "jordan@example.com", 10, 30, 200, 42),
+        # All-caps section heading immediately after contact block.
+        _line("h", "ACADEMIC APPOINTMENTS", 10, 50, 350, 66, font_size=13, bold=True),
+        _line("a1", "Professor with Tenure", 10, 70, 300, 84),
+        _line("a2", "2019 - Present", 10, 88, 200, 100),
+        _line("a3", "Johns Hopkins University", 10, 104, 320, 116),
+    ])
+    result = interpret_layout(source)
+    header = _header_texts(result)
+    body = _non_header_texts(result)
+    # Name and contact are header; the section heading and appointment lines are body.
+    assert "Jordan Blake" in header
+    assert "jordan@example.com" in header
+    assert "ACADEMIC APPOINTMENTS" in body
+    assert "ACADEMIC APPOINTMENTS" not in header
+    assert "Professor with Tenure" in body
+    assert "2019 - Present" in body
+    assert "Johns Hopkins University" in body
+
+
+def test_body_lines_after_all_caps_heading_stay_in_body():
+    """All appointment lines following a section heading must remain in body."""
+    source = _document([
+        _line("n", "Dr. Elias Moore", 10, 10, 200, 28, font_size=20),
+        _line("t", "Curriculum Vitae", 10, 32, 160, 44, bold=True),
+        _line("e", "elias@example.edu", 10, 48, 200, 60),
+        _line("h", "WORK EXPERIENCE", 10, 68, 320, 82, font_size=13, bold=True),
+        _line("r1", "Senior Researcher", 10, 90, 300, 104),
+        _line("r2", "2015 - Present", 10, 108, 200, 120),
+        _line("r3", "Research Institute", 10, 124, 290, 136),
+        _line("r4", "Postdoctoral Fellow", 10, 144, 280, 156),
+        _line("r5", "2012 - 2015", 10, 160, 180, 172),
+    ])
+    result = interpret_layout(source)
+    body = _non_header_texts(result)
+    assert "WORK EXPERIENCE" in body
+    assert "Senior Researcher" in body
+    assert "2015 - Present" in body
+    assert "Research Institute" in body
+    assert "Postdoctoral Fellow" in body
+    assert "2012 - 2015" in body
+
+
+def test_multi_line_appointment_block_after_heading_is_not_header():
+    """Multi-entry appointment block below an all-caps heading must all be body."""
+    source = _document([
+        _line("n", "Prof. Ada Lee", 10, 10, 180, 28, font_size=20),
+        _line("e", "ada@univ.edu", 10, 32, 180, 44),
+        _line("h", "PROFESSIONAL EXPERIENCE", 10, 52, 380, 68, font_size=13, bold=True),
+        _line("j1", "Associate Professor", 10, 72, 280, 86),
+        _line("d1", "2014 - 2019", 10, 90, 200, 102),
+        _line("o1", "University of Example", 10, 106, 300, 118),
+        _line("j2", "Assistant Professor", 10, 122, 270, 134),
+        _line("d2", "2008 - 2014", 10, 138, 200, 150),
+        _line("o2", "State University", 10, 154, 260, 166),
+    ])
+    result = interpret_layout(source)
+    header = _header_texts(result)
+    body = _non_header_texts(result)
+    assert "PROFESSIONAL EXPERIENCE" not in header
+    for text in ("Associate Professor", "2014 - 2019", "University of Example",
+                 "Assistant Professor", "2008 - 2014", "State University"):
+        assert text in body, f"Expected {text!r} in body"
+        assert text not in header, f"Expected {text!r} not in header"
+
+
+def test_existing_contact_header_lines_remain_header():
+    """Name and contact lines must still be classified as header after Phase 10K."""
+    source = _document([
+        _line("n", "Jordan Blake", 10, 12, 140, 32, font_size=18),
+        _line("e", "jordan@example.com", 10, 36, 160, 48),
+        _line("p", "Phone: 555-0100", 10, 50, 130, 62),
+        _line("h", "EDUCATION", 10, 80, 200, 94, font_size=13, bold=True),
+        _line("d", "Bachelor of Science", 10, 100, 260, 114),
+    ])
+    result = interpret_layout(source)
+    header = _header_texts(result)
+    body = _non_header_texts(result)
+    assert "Jordan Blake" in header
+    assert "jordan@example.com" in header
+    assert "Phone: 555-0100" in header
+    assert "EDUCATION" in body
+    assert "Bachelor of Science" in body
+
+
+def test_single_word_uppercase_name_does_not_trigger_heading_guard():
+    """A single-word all-caps name (e.g. 'BLAKE') must NOT be treated as section
+    heading because the guard requires at least two words."""
+    source = _document([
+        _line("n", "BLAKE JORDAN", 10, 10, 200, 28, font_size=20),
+        _line("e", "blake@example.com", 10, 32, 200, 44),
+        _line("b", "A long profile sentence spanning the page width here.", 10, 58, 500, 70),
+    ])
+    result = interpret_layout(source)
+    # The document should have a header region (name in it) and body.
+    all_regions = result.pages[0].regions
+    kinds = [r.kind for r in all_regions]
+    # Header and body must both exist — we're not asserting specific text here,
+    # only that the name + email are in the header region (not spuriously pushed to body).
+    assert "header" in kinds

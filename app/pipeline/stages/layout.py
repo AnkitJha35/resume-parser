@@ -26,6 +26,9 @@ def _interpret_page(page: Page) -> Page:
 
     columns = _column_groups(source_lines)
     body_start = _body_start_y(source_lines, columns)
+    # A section heading must never be swallowed into the header band.
+    # Cap body_start at the first section heading found in the candidate header area.
+    body_start = _cap_body_start_at_section_heading(source_lines, body_start)
     page_width = max(line.bbox.x1 for line in source_lines) - min(line.bbox.x0 for line in source_lines)
     header_lines = [
         line
@@ -240,6 +243,62 @@ _CONTACT_LABEL = re.compile(
 _URL_OR_HANDLE = re.compile(r"https?://|www\.|linkedin\.com|github\.com|mailto:", re.IGNORECASE)
 _PHONE_DIGITS = re.compile(r"\d+")
 _YEAR_RANGE = re.compile(r"\b(?:19|20)\d{2}\s*[-–—/]\s*(?:19|20)\d{2}\b")
+
+
+# Matches all-caps section heading text: only uppercase letters, spaces, and a small set of
+# punctuation characters allowed in heading text such as '&', '/', '(', ')'.
+_ALL_CAPS_HEADING = re.compile(r"^[A-Z][A-Z\s&/()\-]+$")
+
+
+def _is_section_heading_line(line: Line, median_size: float) -> bool:
+    """Return True when *line* looks like a body section heading.
+
+    Conservatively detects section headings using typography and text shape
+    signals only — no fixture-specific strings.  Two independent signals:
+
+    1. **All-caps phrase**: text matches ``_ALL_CAPS_HEADING``, has 2–6 words,
+       contains at least two alphabetic characters, and is not a contact line.
+    2. **Bold oversized short phrase**: bold=True, font_size ≥ median * 1.15,
+       word count 2–6, and not a contact line.
+
+    Name-like lines (very large font ≥ median * 1.35, very short word count)
+    are excluded because they are letterhead, not section headings.
+    """
+    text = (line.text or "").strip()
+    if not text or _is_contact_line(line):
+        return False
+    words = text.split()
+    if len(words) < 2 or len(words) > 6:
+        return False
+    # Exclude name-sized lines: same threshold as _is_name_like_line.
+    size = line.style.font_size or 0.0
+    if size >= max(12.0, median_size * 1.35):
+        return False
+    # All-caps heading: letters, spaces, and limited punctuation only.
+    if _ALL_CAPS_HEADING.match(text) and sum(c.isalpha() for c in text) >= 4:
+        return True
+    # Bold oversized heading: bold formatting at a clearly larger font.
+    if line.style.bold and size >= max(10.0, median_size * 1.15):
+        return True
+    return False
+
+
+def _cap_body_start_at_section_heading(lines: list[Line], body_start: float) -> float:
+    """Cap *body_start* so that section headings are never swallowed into the header band.
+
+    Scans lines with ``y0 < body_start`` in top-to-bottom order and returns
+    the ``y0`` of the first line that satisfies :func:`_is_section_heading_line`.
+    If no such line exists, returns the original *body_start* unchanged.
+    """
+    candidate_header = [line for line in lines if line.bbox.y0 < body_start]
+    if not candidate_header:
+        return body_start
+    sizes = sorted(line.style.font_size or 10.0 for line in lines)
+    median_size = sizes[len(sizes) // 2]
+    for line in sorted(candidate_header, key=_line_position):
+        if _is_section_heading_line(line, median_size):
+            return line.bbox.y0
+    return body_start
 
 
 def _body_start_y(lines: list[Line], columns: list[list[Line]]) -> float:
