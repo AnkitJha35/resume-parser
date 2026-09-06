@@ -30,7 +30,7 @@ CRITICAL GROUNDING AND PROVENANCE RULES:
 5. DO NOT treat document headers, form titles (e.g., 'APPLICATION FORM', 'Curriculum Vitae', 'Surname'), or section labels as personal names.
 6. DO NOT treat table column headers (e.g., 'Ship Name', 'Period', 'S.No.', 'Documents Details') as actual company, designation, or degree values.
 7. DO NOT classify referee or reference contacts as employment experience. Mark referee and boilerplate blocks explicitly under block_classifications.
-8. Every boolean field (e.g., `current`) MUST reference the source block IDs providing evidence (e.g., blocks containing 'Present' or 'Current').
+8. Every boolean field (e.g., `current`) MUST reference the source block IDs providing explicit evidence (e.g., blocks explicitly containing 'Present', 'Current', 'Currently', 'Ongoing', 'Till Date', 'Now'). An end date or year alone (including future years, current calendar years, or date ranges without explicit current wording) DOES NOT establish `current=true`. When explicit current wording is absent, set `current: null` (or omit).
 9. If evidence for a field is absent or ambiguous, return null or empty list rather than guessing.
 10. Return a single valid JSON object adhering strictly to the SemanticOutput schema.
 
@@ -129,7 +129,7 @@ CRITICAL GROUNDING AND PROVENANCE RULES:
 4. Use exact verbatim text from source blocks in `raw_value` when available. In `value`, only safe canonical normalizations are permitted (e.g., ISO dates 'YYYY-MM-DD'/'YYYY-MM'/'YYYY', whitespace/case cleanup).
 5. DO NOT treat table column headers (e.g., 'Ship Name', 'Period', 'S.No.', 'Documents Details') as actual company, designation, or degree values.
 6. DO NOT classify referee or reference contacts as employment experience. Mark referee and boilerplate blocks explicitly under block_classifications.
-7. Every boolean field (e.g., `current`) MUST reference the source block IDs providing evidence (e.g., blocks containing 'Present' or 'Current').
+7. Every boolean field (e.g., `current`) MUST reference the source block IDs providing explicit evidence (e.g., blocks explicitly containing 'Present', 'Current', 'Currently', 'Ongoing', 'Till Date', 'Now'). An end date or year alone (including future years, current calendar years, or date ranges without explicit current wording like 'Present' or 'Current') DOES NOT establish `current=true`. When explicit current wording is absent, set `current: null`.
 8. If evidence for a field is absent or ambiguous, return null or empty list rather than guessing.
 9. Return a single valid JSON object adhering strictly to the BodySemanticOutput schema.
 
@@ -600,8 +600,9 @@ def build_body_recovery_prompt(semantic_input: SemanticInput) -> str:
         "2. DO NOT return only a summary or document archetype when body evidence exists.",
         "3. Every non-null extracted value MUST cite the exact `source_block_ids` from which it was extracted.",
         "4. DO NOT perform semantic renaming, title expansion, or ungrounded inference.",
-        "5. Use `[]` for collections where no source evidence exists and `null` for missing scalar/object fields.",
-        "6. Return a single valid JSON object adhering strictly to the BodySemanticOutput schema.",
+        "5. Set `current: true` ONLY when source blocks contain explicit wording such as 'Present', 'Current', 'Currently', 'Ongoing', 'Till Date', or 'Now'. An end date/year alone (e.g. '2021 - 2026') does NOT support `current=true`; use `current: null`.",
+        "6. Use `[]` for collections where no source evidence exists and `null` for missing scalar/object fields.",
+        "7. Return a single valid JSON object adhering strictly to the BodySemanticOutput schema.",
     ])
 
     return "\n".join(lines)

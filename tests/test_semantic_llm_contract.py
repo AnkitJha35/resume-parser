@@ -676,3 +676,128 @@ def test_multiblock_description_e2e_contract_validation():
     )
     violations_h = validate_semantic_output(output_hallucinated, sem_input)
     assert any("UNSUPPORTED_CANONICAL_VALUE in projects[0].description" in v for v in violations_h)
+
+
+def test_explicit_current_status_grounding_suite():
+    """Phase 10I: Comprehensive test suite verifying explicit evidence requirements for boolean current status."""
+    sem_input = SemanticInput(
+        document_id="current-status-test",
+        page_count=1,
+        blocks=[
+            SemanticBlockInput(
+                block_id="b_pres",
+                text="Acme Corp - Senior Software Engineer (2020 - Present)",
+                page=1,
+                bbox=[0, 0, 100, 20],
+                region_id="r1",
+                region_kind="column",
+                reading_order=1,
+            ),
+            SemanticBlockInput(
+                block_id="b_curr",
+                text="Beta Ltd - Currently working as Lead Architect (2022 - Now)",
+                page=1,
+                bbox=[0, 20, 100, 40],
+                region_id="r1",
+                region_kind="column",
+                reading_order=2,
+            ),
+            SemanticBlockInput(
+                block_id="b_ongoing",
+                text="NIH Grant R01: Neural Decoding (2021 - 2026, Ongoing research)",
+                page=1,
+                bbox=[0, 40, 100, 60],
+                region_id="r1",
+                region_kind="column",
+                reading_order=3,
+            ),
+            SemanticBlockInput(
+                block_id="b_future_dates_only",
+                text="NIH R01-EB028491: Real-Time Neural Signal Decoding ($2.4M, PI, 2021 - 2026)",
+                page=1,
+                bbox=[0, 60, 100, 80],
+                region_id="r1",
+                region_kind="column",
+                reading_order=4,
+            ),
+            SemanticBlockInput(
+                block_id="b_past_dates_only",
+                text="NSF Award #1548201: Cortical Interfaces ($1.1M, PI, 2016 - 2021)",
+                page=1,
+                bbox=[0, 80, 100, 100],
+                region_id="r1",
+                region_kind="column",
+                reading_order=5,
+            ),
+        ],
+    )
+
+    # 1. Explicit "Present" -> current=True allowed
+    out_pres = SemanticOutput(
+        experience=[
+            GroundedExperienceItem(
+                company=GroundedString(value="Acme Corp", source_block_ids=["b_pres"]),
+                current=GroundedBool(value=True, source_block_ids=["b_pres"]),
+            )
+        ]
+    )
+    assert validate_semantic_output(out_pres, sem_input) == []
+
+    # 2. Explicit "Current" / "Now" -> current=True allowed
+    out_curr = SemanticOutput(
+        experience=[
+            GroundedExperienceItem(
+                company=GroundedString(value="Beta Ltd", source_block_ids=["b_curr"]),
+                current=GroundedBool(value=True, source_block_ids=["b_curr"]),
+            )
+        ]
+    )
+    assert validate_semantic_output(out_curr, sem_input) == []
+
+    # 3. Explicit "Ongoing" -> current=True allowed
+    out_ongoing = SemanticOutput(
+        projects=[
+            GroundedProjectItem(
+                name=GroundedString(value="Neural Decoding", source_block_ids=["b_ongoing"]),
+                current=GroundedBool(value=True, source_block_ids=["b_ongoing"]),
+            )
+        ]
+    )
+    assert validate_semantic_output(out_ongoing, sem_input) == []
+
+    # 4. "2021 - 2026" without explicit current marker -> current=True REJECTED
+    out_future_true = SemanticOutput(
+        projects=[
+            GroundedProjectItem(
+                name=GroundedString(value="Real-Time Neural Signal Decoding", source_block_ids=["b_future_dates_only"]),
+                current=GroundedBool(value=True, source_block_ids=["b_future_dates_only"]),
+            )
+        ]
+    )
+    viol_future = validate_semantic_output(out_future_true, sem_input)
+    assert any("UNSUPPORTED_CURRENT_STATUS in projects[0].current" in v for v in viol_future)
+
+    # 5. "2021 - 2026" with current=None (or omitted) -> ACCEPTED
+    out_future_null = SemanticOutput(
+        projects=[
+            GroundedProjectItem(
+                name=GroundedString(value="Real-Time Neural Signal Decoding", source_block_ids=["b_future_dates_only"]),
+                startDate=GroundedString(value="2021", source_block_ids=["b_future_dates_only"]),
+                endDate=GroundedString(value="2026", source_block_ids=["b_future_dates_only"]),
+                current=None,
+            )
+        ]
+    )
+    assert validate_semantic_output(out_future_null, sem_input) == []
+
+    # 6. Historical date range without current marker -> current=True REJECTED
+    out_past_true = SemanticOutput(
+        projects=[
+            GroundedProjectItem(
+                name=GroundedString(value="Cortical Interfaces", source_block_ids=["b_past_dates_only"]),
+                current=GroundedBool(value=True, source_block_ids=["b_past_dates_only"]),
+            )
+        ]
+    )
+    viol_past = validate_semantic_output(out_past_true, sem_input)
+    assert any("UNSUPPORTED_CURRENT_STATUS in projects[0].current" in v for v in viol_past)
