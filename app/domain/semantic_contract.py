@@ -14,6 +14,7 @@ These models define:
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any, TypeVar
 from pydantic import BaseModel, ConfigDict, Field
@@ -1079,6 +1080,286 @@ def sanitize_grounded_skills(
 normalize_semantic_output_skills = sanitize_grounded_skills
 
 
+@dataclass(frozen=True)
+class DeterministicEntitySpan:
+    """Represents the bounded block scope of a single entity within an experience section."""
+
+    section_index: int
+    entity_index: int
+    block_ids: list[str]
+    title_block_id: str | None = None
+
+
+EXPERIENCE_ROLE_COMPATIBILITY: dict[str, frozenset[str]] = {
+    "designation": frozenset({"ENTRY_TITLE", "UNKNOWN"}),
+    "company": frozenset({"ORGANIZATION", "UNKNOWN"}),
+    "location": frozenset({"LOCATION", "UNKNOWN"}),
+    "startDate": frozenset({"DATE", "UNKNOWN"}),
+    "endDate": frozenset({"DATE", "UNKNOWN"}),
+    "description": frozenset({"DESCRIPTION", "BULLET", "UNKNOWN"}),
+}
+
+
+def build_deterministic_experience_spans(
+    semantic_input: SemanticInput,
+) -> list[DeterministicEntitySpan]:
+    """Deterministically partition experience sections in SemanticInput into discrete entity spans.
+
+    An ENTRY_TITLE or ORGANIZATION begins a new entity span within an experience section.
+    Trailing date/location/organization/description/bullet blocks are grouped with that entity
+    until the next entity boundary or section boundary.
+    """
+    sections = partition_semantic_input_into_sections(semantic_input)
+    blocks_by_id = {b.block_id: b for b in semantic_input.blocks}
+    spans: list[DeterministicEntitySpan] = []
+
+    global_entity_idx = 0
+    for sec_idx, sec in enumerate(sections):
+        if sec.canonical_target != "experience":
+            continue
+
+        child_blocks = [
+            blocks_by_id[bid]
+            for bid in sec.block_ids
+            if bid in blocks_by_id and bid != sec.heading_block_id
+        ]
+        if not child_blocks:
+            continue
+
+        # Ensure child blocks are in strict reading order
+        child_blocks.sort(key=lambda b: (b.page, b.reading_order, b.block_id))
+
+        current_span_blocks: list[str] = []
+        current_title_id: str | None = None
+        current_org_id: str | None = None
+        has_content = False
+
+        for b in child_blocks:
+            is_new_boundary = False
+            if b.suggested_role == "ENTRY_TITLE":
+                if current_title_id is not None or has_content:
+                    is_new_boundary = True
+            elif b.suggested_role == "ORGANIZATION":
+                if current_org_id is not None or has_content:
+                    is_new_boundary = True
+
+            if is_new_boundary:
+                if current_span_blocks:
+                    spans.append(
+                        DeterministicEntitySpan(
+                            section_index=sec_idx,
+                            entity_index=global_entity_idx,
+                            block_ids=list(current_span_blocks),
+                            title_block_id=current_title_id,
+                        )
+                    )
+                    global_entity_idx += 1
+                current_span_blocks = [b.block_id]
+                current_title_id = b.block_id if b.suggested_role == "ENTRY_TITLE" else None
+                current_org_id = b.block_id if b.suggested_role == "ORGANIZATION" else None
+                has_content = False
+            else:
+                current_span_blocks.append(b.block_id)
+                if current_title_id is None and b.suggested_role == "ENTRY_TITLE":
+                    current_title_id = b.block_id
+                if current_org_id is None and b.suggested_role == "ORGANIZATION":
+                    current_org_id = b.block_id
+                if b.suggested_role in ("DATE", "DESCRIPTION", "BULLET"):
+                    has_content = True
+
+        if current_span_blocks:
+            spans.append(
+                DeterministicEntitySpan(
+                    section_index=sec_idx,
+                    entity_index=global_entity_idx,
+                    block_ids=list(current_span_blocks),
+                    title_block_id=current_title_id,
+                )
+            )
+            global_entity_idx += 1
+
+    return spans
+
+
+def _assign_span_to_experience_item(
+    exp: GroundedExperienceItem,
+    spans: list[DeterministicEntitySpan],
+    exp_idx: int,
+    total_exp_count: int,
+) -> DeterministicEntitySpan | None:
+    """Deterministically map an extracted GroundedExperienceItem to its corresponding DeterministicEntitySpan."""
+    if not spans:
+        return None
+
+    exp_cited_bids: set[str] = set(exp.source_block_ids)
+    for f in (exp.company, exp.designation, exp.startDate, exp.endDate, exp.location, exp.description):
+        if f and f.source_block_ids:
+            exp_cited_bids.update(f.source_block_ids)
+    for tech in exp.technologies:
+        if tech.source_block_ids:
+            exp_cited_bids.update(tech.source_block_ids)
+
+    scored: list[tuple[int, DeterministicEntitySpan]] = []
+    for span in spans:
+        overlap = len(exp_cited_bids.intersection(span.block_ids))
+        scored.append((overlap, span))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    best_overlap, best_span = scored[0]
+
+    if best_overlap > 0:
+        if len(scored) > 1 and scored[1][0] == best_overlap:
+            if exp_idx < len(spans) and spans[exp_idx] in (best_span, scored[1][1]):
+                return spans[exp_idx]
+            return best_span
+        return best_span
+
+    if total_exp_count == len(spans) and exp_idx < len(spans):
+        return spans[exp_idx]
+
+    return None
+
+
+def repair_grounded_provenance(
+    output: TOutput,
+    semantic_input: SemanticInput,
+) -> tuple[TOutput, list[dict[str, Any]]]:
+    """Deterministically repair provenance for experience fields where an exact, unambiguous
+    compatible candidate block exists in the same entity span.
+
+    Repair ONLY occurs when:
+    1. The emitted value is already exactly grounded under _is_value_semantically_supported().
+    2. The declared source block is incompatible with the field OR belongs to a different entity.
+    3. A nearby candidate source block exists in the same deterministic entity span.
+    4. The candidate has a structurally compatible role for that field.
+    5. The candidate contains the exact emitted value under deterministic normalization rules.
+    6. There is no ambiguity between multiple compatible candidate blocks.
+    """
+    repairs: list[dict[str, Any]] = []
+    spans = build_deterministic_experience_spans(semantic_input)
+    blocks_by_id = {b.block_id: b for b in semantic_input.blocks}
+
+    # 1. Experience field provenance repair
+    experience_list = getattr(output, "experience", [])
+    total_exp = len(experience_list)
+
+    for exp_idx, exp in enumerate(experience_list):
+        assigned_span = _assign_span_to_experience_item(exp, spans, exp_idx, total_exp)
+        if assigned_span is None:
+            continue
+
+        span_block_ids_set = set(assigned_span.block_ids)
+
+        for field_name in ("designation", "company", "location", "startDate", "endDate"):
+            field_obj: GroundedString | None = getattr(exp, field_name, None)
+            if field_obj is None or not field_obj.value:
+                continue
+
+            val = field_obj.value.strip()
+            current_bids = field_obj.source_block_ids
+            compatible_roles = EXPERIENCE_ROLE_COMPATIBILITY.get(field_name, frozenset())
+
+            # Check if current citation is valid, compatible, and within span
+            current_text = " ".join(
+                blocks_by_id[bid].text for bid in current_bids if bid in blocks_by_id
+            )
+            current_supported = (
+                bool(current_bids)
+                and _is_value_semantically_supported(val, current_text)
+            )
+            current_roles_compatible = (
+                bool(current_bids)
+                and all(
+                    blocks_by_id.get(bid) is not None
+                    and blocks_by_id[bid].suggested_role in compatible_roles
+                    for bid in current_bids
+                )
+            )
+            current_in_span = (
+                bool(current_bids)
+                and all(bid in span_block_ids_set for bid in current_bids)
+            )
+
+            # If all conditions hold, current citation is already fully valid
+            if current_supported and current_roles_compatible and current_in_span:
+                continue
+
+            # Citation defect exists: search for a compatible candidate in assigned_span
+            matching_candidates: list[SemanticBlockInput] = []
+            for bid in assigned_span.block_ids:
+                b = blocks_by_id.get(bid)
+                if not b:
+                    continue
+                if b.table_id is not None:
+                    continue
+                if b.region_kind in ("header", "footer"):
+                    continue
+                if b.suggested_role in (
+                    "SECTION_HEADING", "HEADER", "FOOTER", "TABLE_HEADER", "BOILERPLATE", "REFERENCE"
+                ):
+                    continue
+                if b.suggested_role not in compatible_roles:
+                    continue
+                if _is_value_semantically_supported(val, b.text):
+                    matching_candidates.append(b)
+
+            # Repair ONLY if strictly unambiguous (exactly 1 candidate)
+            if len(matching_candidates) == 1:
+                cand = matching_candidates[0]
+                orig_bids = list(current_bids)
+                field_obj.source_block_ids = [cand.block_id]
+
+                # Synchronize exp.source_block_ids: replace any old bid that was not in span
+                new_exp_bids: list[str] = []
+                replaced = False
+                for eb in exp.source_block_ids:
+                    if eb in orig_bids and eb not in span_block_ids_set:
+                        if not replaced:
+                            new_exp_bids.append(cand.block_id)
+                            replaced = True
+                    else:
+                        new_exp_bids.append(eb)
+                if cand.block_id not in new_exp_bids:
+                    new_exp_bids.append(cand.block_id)
+                exp.source_block_ids = new_exp_bids
+
+                repairs.append({
+                    "field": f"experience[{exp_idx}].{field_name}",
+                    "value": val,
+                    "original_source_block_ids": orig_bids,
+                    "repaired_source_block_ids": [cand.block_id],
+                    "expected_structural_role": sorted(list(compatible_roles)),
+                    "reason": "incompatible_or_cross_entity_provenance",
+                })
+
+    # 2. Block classifications normalization guard for experience items mislabeled as TABLE_HEADER
+    exp_all_bids: set[str] = set()
+    for exp in experience_list:
+        exp_all_bids.update(exp.source_block_ids)
+        for f in (exp.company, exp.designation, exp.startDate, exp.endDate, exp.location, exp.description):
+            if f and f.source_block_ids:
+                exp_all_bids.update(f.source_block_ids)
+        for tech in exp.technologies:
+            if tech.source_block_ids:
+                exp_all_bids.update(tech.source_block_ids)
+
+    for bc in getattr(output, "block_classifications", []):
+        if bc.category == SemanticBlockCategory.TABLE_HEADER and bc.block_id in exp_all_bids:
+            b = blocks_by_id.get(bc.block_id)
+            if b and b.table_id is None and b.suggested_role in {
+                "ENTRY_TITLE", "ORGANIZATION", "LOCATION", "DATE", "DESCRIPTION", "BULLET"
+            }:
+                bc.category = SemanticBlockCategory.EXPERIENCE
+                repairs.append({
+                    "field": f"block_classifications[{bc.block_id}]",
+                    "original_category": "TABLE_HEADER",
+                    "repaired_category": "EXPERIENCE",
+                    "reason": "non_table_block_in_experience",
+                })
+
+    return output, repairs
+
+
 # 4. Builder and Validation Invariants
 # =====================================================================
 
@@ -1577,6 +1858,37 @@ def validate_semantic_output(output: SemanticOutput, input_data: SemanticInput) 
                 violations.append(f"REFERENCE_IN_EXPERIENCE: block {bid} is classified as REFERENCE but mapped to experience[{i}]")
             elif cat in (SemanticBlockCategory.BOILERPLATE, SemanticBlockCategory.TABLE_HEADER):
                 violations.append(f"EXCLUDED_CATEGORY_IN_EXPERIENCE: block {bid} is classified as {cat.value} but mapped to experience[{i}]")
+
+    # 4b. Deterministic Entity Span & Cross-Entity Validation for Experience
+    exp_spans = build_deterministic_experience_spans(input_data)
+    if exp_spans and output.experience:
+        total_exps = len(output.experience)
+        for i, exp in enumerate(output.experience):
+            assigned_span = _assign_span_to_experience_item(exp, exp_spans, i, total_exps)
+            if assigned_span is not None:
+                for fname, fval in [
+                    ("company", exp.company),
+                    ("designation", exp.designation),
+                    ("startDate", exp.startDate),
+                    ("endDate", exp.endDate),
+                    ("location", exp.location),
+                ]:
+                    if fval and fval.source_block_ids:
+                        for bid in fval.source_block_ids:
+                            for other_s in exp_spans:
+                                if other_s.entity_index != assigned_span.entity_index and bid in other_s.block_ids:
+                                    violations.append(
+                                        f"CROSS_ENTITY_PROVENANCE in experience[{i}].{fname}: "
+                                        f"block {bid!r} belongs to experience entity span {other_s.entity_index}"
+                                    )
+                for bid in exp.source_block_ids:
+                    for other_s in exp_spans:
+                        if other_s.entity_index != assigned_span.entity_index and bid in other_s.block_ids:
+                            if bid not in assigned_span.block_ids:
+                                violations.append(
+                                    f"CROSS_ENTITY_PROVENANCE in experience[{i}]: "
+                                    f"block {bid!r} belongs to experience entity span {other_s.entity_index}"
+                                )
 
     # 5. Table Header Exclusion Guard for Education
     for i, edu in enumerate(output.education):

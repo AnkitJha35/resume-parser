@@ -10,6 +10,7 @@ from app.domain.document import Document
 from app.domain.resume import Resume
 from app.domain.semantic_contract import (
     build_semantic_input,
+    repair_grounded_provenance,
     sanitize_grounded_current_status,
     sanitize_grounded_skills,
     semantic_output_to_resume,
@@ -144,6 +145,14 @@ def parse_document_semantically(
     meta = _extract_usage_metadata(extractor)
     output = sanitize_grounded_current_status(output, semantic_input)
     output = sanitize_grounded_skills(output, semantic_input)
+    output, repairs = repair_grounded_provenance(output, semantic_input)
+    if repairs:
+        logger.info(
+            "Deterministic provenance repair applied doc_id=%s repair_count=%d repairs=%s",
+            document_id,
+            len(repairs),
+            [r.get("field") for r in repairs],
+        )
     violations = validate_semantic_output(output, semantic_input)
     if violations:
         elapsed_ms = (time.monotonic() - start_time) * 1000.0

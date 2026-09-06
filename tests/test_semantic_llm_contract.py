@@ -24,9 +24,13 @@ from app.domain.semantic_contract import (
     SemanticPageMeta,
     _is_multiblock_text_semantically_supported,
     _is_value_semantically_supported,
+    DeterministicEntitySpan,
+    EXPERIENCE_ROLE_COMPATIBILITY,
+    build_deterministic_experience_spans,
     build_semantic_input,
     has_explicit_skills_evidence,
     normalize_semantic_output_skills,
+    repair_grounded_provenance,
     sanitize_grounded_skills,
     semantic_output_to_resume,
     validate_semantic_output,
@@ -1139,3 +1143,412 @@ def test_sanitize_grounded_skills_idempotence():
     assert [s.value for s in out_s3.skills] == ["Python", "SQL"]
 
 
+# =====================================================================
+# Phase 10R: Deterministic Provenance Compatibility & Entity-Boundary Tests
+# =====================================================================
+
+
+def test_repair_designation_cited_from_previous_bullet():
+    """1. Correct designation cited from previous bullet -> repaired to actual ENTRY_TITLE."""
+    blocks = [
+        _make_block("b_exp_h", "EXPERIENCE", 1, 0, suggested_role="SECTION_HEADING", is_bold=True),
+        # Entity 0 (Citadel)
+        _make_block("b_t0", "Software Engineering Intern", 1, 1, suggested_role="ENTRY_TITLE"),
+        _make_block("b_c0", "Citadel Securities | Chicago, IL", 1, 2, suggested_role="ORGANIZATION"),
+        _make_block("b_d0", "June 2023 - Aug 2023", 1, 3, suggested_role="DATE"),
+        _make_block("b_b0", "Developed market telemetry queues in C++.", 1, 4, suggested_role="DESCRIPTION"),
+        # Entity 1 (UIUC)
+        _make_block("b_t1", "Undergraduate Research Assistant", 1, 5, suggested_role="ENTRY_TITLE"),
+        _make_block("b_c1", "UIUC Systems Research Group | Urbana, IL", 1, 6, suggested_role="ORGANIZATION"),
+        _make_block("b_d1", "Jan 2022 - May 2023", 1, 7, suggested_role="DATE"),
+        _make_block("b_b1", "Assisted graduate researchers with cluster deployment.", 1, 8, suggested_role="DESCRIPTION"),
+    ]
+    sem_input = SemanticInput(
+        document_id="doc-fresher",
+        page_count=1,
+        archetype=DocumentArchetype.STANDARD_CV,
+        pages=[SemanticPageMeta(page_number=1, width=612.0, height=792.0)],
+        blocks=blocks,
+    )
+    raw_output = SemanticOutput(
+        document_archetype=DocumentArchetype.STANDARD_CV,
+        experience=[
+            GroundedExperienceItem(
+                designation=GroundedString(value="Software Engineering Intern", source_block_ids=["b_t0"]),
+                company=GroundedString(value="Citadel Securities", source_block_ids=["b_c0"]),
+                startDate=GroundedString(value="2023-06", source_block_ids=["b_d0"]),
+                endDate=GroundedString(value="2023-08", source_block_ids=["b_d0"]),
+                source_block_ids=["b_t0", "b_c0", "b_d0", "b_b0"],
+            ),
+            GroundedExperienceItem(
+                # Model incorrectly cited the last bullet of Citadel (b_b0) for UIUC designation
+                designation=GroundedString(value="Undergraduate Research Assistant", source_block_ids=["b_b0"]),
+                company=GroundedString(value="UIUC Systems Research Group", source_block_ids=["b_c1"]),
+                startDate=GroundedString(value="2022-01", source_block_ids=["b_d1"]),
+                endDate=GroundedString(value="2023-05", source_block_ids=["b_d1"]),
+                source_block_ids=["b_b0", "b_c1", "b_d1", "b_b1"],
+            ),
+        ],
+    )
+
+    repaired, repairs = repair_grounded_provenance(raw_output, sem_input)
+    assert len(repairs) >= 1
+    desig_repair = next(r for r in repairs if r["field"] == "experience[1].designation")
+    assert desig_repair["original_source_block_ids"] == ["b_b0"]
+    assert desig_repair["repaired_source_block_ids"] == ["b_t1"]
+    assert repaired.experience[1].designation.source_block_ids == ["b_t1"]
+    assert "b_b0" not in repaired.experience[1].source_block_ids
+
+    violations = validate_semantic_output(repaired, sem_input)
+    assert violations == []
+
+
+def test_repair_location_cited_from_designation():
+    """2. Correct location cited from designation block -> repaired to LOCATION."""
+    blocks = [
+        _make_block("b_exp_h", "PROFESSIONAL EXPERIENCE", 1, 0, suggested_role="SECTION_HEADING", is_bold=True),
+        _make_block("b_t0", "Senior Full-Stack Engineer", 1, 1, suggested_role="ENTRY_TITLE"),
+        _make_block("b_loc0", "Vortex Media Labs | San Francisco, CA", 1, 2, suggested_role="LOCATION"),
+        _make_block("b_d0", "2021 - Present", 1, 3, suggested_role="DATE"),
+        _make_block("b_desc0", "Architected video streaming dashboard.", 1, 4, suggested_role="DESCRIPTION"),
+    ]
+    sem_input = SemanticInput(
+        document_id="doc-fullstack",
+        page_count=1,
+        archetype=DocumentArchetype.STANDARD_CV,
+        pages=[SemanticPageMeta(page_number=1, width=612.0, height=792.0)],
+        blocks=blocks,
+    )
+    raw_output = SemanticOutput(
+        document_archetype=DocumentArchetype.STANDARD_CV,
+        experience=[
+            GroundedExperienceItem(
+                designation=GroundedString(value="Senior Full-Stack Engineer", source_block_ids=["b_t0"]),
+                company=GroundedString(value="Vortex Media Labs", source_block_ids=["b_loc0"]),
+                # Location cited b_t0 instead of b_loc0
+                location=GroundedString(value="San Francisco, CA", source_block_ids=["b_t0"]),
+                startDate=GroundedString(value="2021", source_block_ids=["b_d0"]),
+                source_block_ids=["b_t0", "b_loc0", "b_d0", "b_desc0"],
+            )
+        ],
+    )
+
+    repaired, repairs = repair_grounded_provenance(raw_output, sem_input)
+    loc_repair = next(r for r in repairs if r["field"] == "experience[0].location")
+    assert loc_repair["original_source_block_ids"] == ["b_t0"]
+    assert loc_repair["repaired_source_block_ids"] == ["b_loc0"]
+    assert repaired.experience[0].location.source_block_ids == ["b_loc0"]
+
+    violations = validate_semantic_output(repaired, sem_input)
+    assert violations == []
+
+
+def test_cross_entity_designation_repaired_or_rejected():
+    """3. Correct designation from next/previous entity -> repaired when unambiguous candidate in span, rejected otherwise."""
+    blocks = [
+        _make_block("b_exp_h", "EXPERIENCE", 1, 0, suggested_role="SECTION_HEADING", is_bold=True),
+        _make_block("b_t0", "Lead Architect", 1, 1, suggested_role="ENTRY_TITLE"),
+        _make_block("b_c0", "Apex Systems", 1, 2, suggested_role="ORGANIZATION"),
+        _make_block("b_d0", "2020 - 2024", 1, 3, suggested_role="DATE"),
+        _make_block("b_t1", "Junior Developer", 1, 4, suggested_role="ENTRY_TITLE"),
+        _make_block("b_c1", "Base Labs", 1, 5, suggested_role="ORGANIZATION"),
+        _make_block("b_d1", "2018 - 2020", 1, 6, suggested_role="DATE"),
+    ]
+    sem_input = SemanticInput(
+        document_id="doc-cross-entity",
+        page_count=1,
+        archetype=DocumentArchetype.STANDARD_CV,
+        pages=[SemanticPageMeta(page_number=1, width=612.0, height=792.0)],
+        blocks=blocks,
+    )
+
+    # Subcase A: Value matches candidate in Entity 0, but cited block b_t1 in Entity 1
+    raw_output_a = SemanticOutput(
+        document_archetype=DocumentArchetype.STANDARD_CV,
+        experience=[
+            GroundedExperienceItem(
+                designation=GroundedString(value="Lead Architect", source_block_ids=["b_t1"]),
+                company=GroundedString(value="Apex Systems", source_block_ids=["b_c0"]),
+                startDate=GroundedString(value="2020", source_block_ids=["b_d0"]),
+                source_block_ids=["b_c0", "b_d0"],
+            ),
+            GroundedExperienceItem(
+                designation=GroundedString(value="Junior Developer", source_block_ids=["b_t1"]),
+                company=GroundedString(value="Base Labs", source_block_ids=["b_c1"]),
+                startDate=GroundedString(value="2018", source_block_ids=["b_d1"]),
+                source_block_ids=["b_t1", "b_c1", "b_d1"],
+            ),
+        ],
+    )
+    repaired_a, repairs_a = repair_grounded_provenance(raw_output_a, sem_input)
+    assert repaired_a.experience[0].designation.source_block_ids == ["b_t0"]
+    assert validate_semantic_output(repaired_a, sem_input) == []
+
+    # Subcase B: Value "Principal Fellow" does not exist in Entity 0, but cited b_t1
+    raw_output_b = SemanticOutput(
+        document_archetype=DocumentArchetype.STANDARD_CV,
+        experience=[
+            GroundedExperienceItem(
+                designation=GroundedString(value="Principal Fellow", source_block_ids=["b_t1"]),
+                company=GroundedString(value="Apex Systems", source_block_ids=["b_c0"]),
+                startDate=GroundedString(value="2020", source_block_ids=["b_d0"]),
+                source_block_ids=["b_c0", "b_d0"],
+            ),
+            GroundedExperienceItem(
+                designation=GroundedString(value="Junior Developer", source_block_ids=["b_t1"]),
+                company=GroundedString(value="Base Labs", source_block_ids=["b_c1"]),
+                startDate=GroundedString(value="2018", source_block_ids=["b_d1"]),
+                source_block_ids=["b_t1", "b_c1", "b_d1"],
+            ),
+        ],
+    )
+    repaired_b, repairs_b = repair_grounded_provenance(raw_output_b, sem_input)
+    assert repaired_b.experience[0].designation.source_block_ids == ["b_t1"]
+    violations_b = validate_semantic_output(repaired_b, sem_input)
+    assert any("CROSS_ENTITY_PROVENANCE" in v or "UNSUPPORTED_CANONICAL_VALUE" in v for v in violations_b)
+
+
+def test_repair_company_cited_from_date():
+    """4. Company cited from DATE -> repaired only if an exact compatible ORGANIZATION exists in the same entity."""
+    blocks = [
+        _make_block("b_exp_h", "EXPERIENCE", 1, 0, suggested_role="SECTION_HEADING", is_bold=True),
+        _make_block("b_t0", "Director of Engineering", 1, 1, suggested_role="ENTRY_TITLE"),
+        _make_block("b_c0", "Beacon Software Labs", 1, 2, suggested_role="ORGANIZATION"),
+        _make_block("b_d0", "2012 - 2016", 1, 3, suggested_role="DATE"),
+    ]
+    sem_input = SemanticInput(
+        document_id="doc-company-date",
+        page_count=1,
+        archetype=DocumentArchetype.STANDARD_CV,
+        pages=[SemanticPageMeta(page_number=1, width=612.0, height=792.0)],
+        blocks=blocks,
+    )
+    raw_output = SemanticOutput(
+        document_archetype=DocumentArchetype.STANDARD_CV,
+        experience=[
+            GroundedExperienceItem(
+                designation=GroundedString(value="Director of Engineering", source_block_ids=["b_t0"]),
+                company=GroundedString(value="Beacon Software Labs", source_block_ids=["b_d0"]),
+                startDate=GroundedString(value="2012", source_block_ids=["b_d0"]),
+                endDate=GroundedString(value="2016", source_block_ids=["b_d0"]),
+                source_block_ids=["b_t0", "b_d0"],
+            )
+        ],
+    )
+
+    repaired, repairs = repair_grounded_provenance(raw_output, sem_input)
+    assert repaired.experience[0].company.source_block_ids == ["b_c0"]
+    violations = validate_semantic_output(repaired, sem_input)
+    assert violations == []
+
+
+def test_multiline_description_remains_valid():
+    """5. Multiline description with two legitimate source blocks remains valid without unwanted mutation."""
+    blocks = [
+        _make_block("b_exp_h", "EXPERIENCE", 1, 0, suggested_role="SECTION_HEADING", is_bold=True),
+        _make_block("b_t0", "Senior Engineer", 1, 1, suggested_role="ENTRY_TITLE"),
+        _make_block("b_c0", "Tech Corp", 1, 2, suggested_role="ORGANIZATION"),
+        _make_block("b_d0", "2020 - 2024", 1, 3, suggested_role="DATE"),
+        _make_block("b_desc1", "Architected global multi-region cloud platform hosting 1,200 microservices.", 1, 4, suggested_role="DESCRIPTION"),
+        _make_block("b_desc2", "Processed $800B annual payment volume with 99.999% uptime.", 1, 5, suggested_role="DESCRIPTION"),
+    ]
+    sem_input = SemanticInput(
+        document_id="doc-multiline-desc",
+        page_count=1,
+        archetype=DocumentArchetype.STANDARD_CV,
+        pages=[SemanticPageMeta(page_number=1, width=612.0, height=792.0)],
+        blocks=blocks,
+    )
+    raw_output = SemanticOutput(
+        document_archetype=DocumentArchetype.STANDARD_CV,
+        experience=[
+            GroundedExperienceItem(
+                designation=GroundedString(value="Senior Engineer", source_block_ids=["b_t0"]),
+                company=GroundedString(value="Tech Corp", source_block_ids=["b_c0"]),
+                startDate=GroundedString(value="2020", source_block_ids=["b_d0"]),
+                endDate=GroundedString(value="2024", source_block_ids=["b_d0"]),
+                description=GroundedString(
+                    value="Architected global multi-region cloud platform hosting 1,200 microservices. Processed $800B annual payment volume with 99.999% uptime.",
+                    source_block_ids=["b_desc1", "b_desc2"],
+                ),
+                source_block_ids=["b_t0", "b_c0", "b_d0", "b_desc1", "b_desc2"],
+            )
+        ],
+    )
+
+    repaired, repairs = repair_grounded_provenance(raw_output, sem_input)
+    assert repaired.experience[0].description.source_block_ids == ["b_desc1", "b_desc2"]
+    violations = validate_semantic_output(repaired, sem_input)
+    assert violations == []
+
+
+def test_exact_value_with_no_compatible_candidate_rejected():
+    """6. Exact value with no compatible candidate remains rejected by validation."""
+    blocks = [
+        _make_block("b_exp_h", "EXPERIENCE", 1, 0, suggested_role="SECTION_HEADING", is_bold=True),
+        _make_block("b_t0", "Software Engineer", 1, 1, suggested_role="ENTRY_TITLE"),
+        _make_block("b_c0", "Acme", 1, 2, suggested_role="ORGANIZATION"),
+        _make_block("b_d0", "2020 - 2024", 1, 3, suggested_role="DATE"),
+    ]
+    sem_input = SemanticInput(
+        document_id="doc-no-cand",
+        page_count=1,
+        archetype=DocumentArchetype.STANDARD_CV,
+        pages=[SemanticPageMeta(page_number=1, width=612.0, height=792.0)],
+        blocks=blocks,
+    )
+    raw_output = SemanticOutput(
+        document_archetype=DocumentArchetype.STANDARD_CV,
+        experience=[
+            GroundedExperienceItem(
+                designation=GroundedString(value="Chief Technology Officer", source_block_ids=["b_t0"]),
+                company=GroundedString(value="Acme", source_block_ids=["b_c0"]),
+                source_block_ids=["b_t0", "b_c0"],
+            )
+        ],
+    )
+
+    repaired, repairs = repair_grounded_provenance(raw_output, sem_input)
+    assert repaired.experience[0].designation.source_block_ids == ["b_t0"]
+    violations = validate_semantic_output(repaired, sem_input)
+    assert any("UNSUPPORTED_CANONICAL_VALUE" in v for v in violations)
+
+
+def test_ambiguous_compatible_candidates_not_repaired():
+    """7. Ambiguous compatible candidates are NOT auto-repaired."""
+    blocks = [
+        _make_block("b_exp_h", "EXPERIENCE", 1, 0, suggested_role="SECTION_HEADING", is_bold=True),
+        _make_block("b_t1a", "Staff Engineer", 1, 1, suggested_role="ENTRY_TITLE"),
+        _make_block("b_t1b", "Staff Engineer", 1, 2, suggested_role="UNKNOWN"),
+        _make_block("b_c0", "Acme Labs", 1, 3, suggested_role="ORGANIZATION"),
+        _make_block("b_d0", "2020 - 2024", 1, 4, suggested_role="DATE"),
+    ]
+    sem_input = SemanticInput(
+        document_id="doc-ambig",
+        page_count=1,
+        archetype=DocumentArchetype.STANDARD_CV,
+        pages=[SemanticPageMeta(page_number=1, width=612.0, height=792.0)],
+        blocks=blocks,
+    )
+    raw_output = SemanticOutput(
+        document_archetype=DocumentArchetype.STANDARD_CV,
+        experience=[
+            GroundedExperienceItem(
+                designation=GroundedString(value="Staff Engineer", source_block_ids=["b_d0"]),
+                company=GroundedString(value="Acme Labs", source_block_ids=["b_c0"]),
+                source_block_ids=["b_d0", "b_c0"],
+            )
+        ],
+    )
+
+    repaired, repairs = repair_grounded_provenance(raw_output, sem_input)
+    assert repaired.experience[0].designation.source_block_ids == ["b_d0"]
+    violations = validate_semantic_output(repaired, sem_input)
+    assert any("UNSUPPORTED_CANONICAL_VALUE" in v for v in violations)
+
+
+def test_table_header_blocks_cannot_become_provenance():
+    """8. Table/header blocks cannot become valid provenance merely because the text matches."""
+    blocks = [
+        _make_block("b_exp_h", "EXPERIENCE", 1, 0, suggested_role="SECTION_HEADING", is_bold=True),
+        _make_block("b_t0", "Lead Architect", 1, 1, suggested_role="ENTRY_TITLE"),
+        _make_block("b_c0", "Beta Industries", 1, 2, suggested_role="ORGANIZATION"),
+        _make_block("b_d0", "2020 - 2024", 1, 3, suggested_role="DATE"),
+        SemanticBlockInput(
+            block_id="b_th",
+            text="Acme Corporation",
+            page=1,
+            bbox=[50.0, 50.0, 300.0, 70.0],
+            region_id="page-1-table-0",
+            region_kind="table",
+            column_id=None,
+            reading_order=10,
+            is_bold=True,
+            font_size=11.0,
+            suggested_role="TABLE_HEADER",
+            spans=[],
+            table_id="table_0",
+        ),
+    ]
+    sem_input = SemanticInput(
+        document_id="doc-th",
+        page_count=1,
+        archetype=DocumentArchetype.STANDARD_CV,
+        pages=[SemanticPageMeta(page_number=1, width=612.0, height=792.0)],
+        blocks=blocks,
+    )
+    raw_output = SemanticOutput(
+        document_archetype=DocumentArchetype.STANDARD_CV,
+        experience=[
+            GroundedExperienceItem(
+                designation=GroundedString(value="Lead Architect", source_block_ids=["b_t0"]),
+                company=GroundedString(value="Acme Corporation", source_block_ids=["b_d0"]),
+                source_block_ids=["b_t0", "b_d0"],
+            )
+        ],
+    )
+
+    repaired, repairs = repair_grounded_provenance(raw_output, sem_input)
+    assert repaired.experience[0].company.source_block_ids == ["b_d0"]
+    violations = validate_semantic_output(repaired, sem_input)
+    assert any("UNSUPPORTED_CANONICAL_VALUE" in v for v in violations)
+
+
+def test_existing_phone_normalization_remains_unchanged():
+    """9. Existing phone normalization behavior remains unchanged."""
+    assert _is_value_semantically_supported("+16504981240", "(650) 498-1240") is True
+    assert _is_value_semantically_supported("+919829519017", "+91 98295 19017") is True
+    assert _is_value_semantically_supported("1415550188", "+1 (415) 555-0188") is False
+
+
+def test_existing_hallucination_and_unsupported_canonical_remain_rejected():
+    """10. Existing hallucination/unsupported canonical value tests remain unchanged."""
+    blocks = [
+        _make_block("b_p1_0", "John Doe", 1, 0, region_kind="header", suggested_role="HEADER"),
+        _make_block("b_p1_1", "john.doe@example.com", 1, 1, region_kind="header", suggested_role="CONTACT"),
+    ]
+    sem_input = SemanticInput(
+        document_id="doc-hallucination",
+        page_count=1,
+        archetype=DocumentArchetype.STANDARD_CV,
+        pages=[SemanticPageMeta(page_number=1, width=612.0, height=792.0)],
+        blocks=blocks,
+    )
+    output = SemanticOutput(
+        document_archetype=DocumentArchetype.STANDARD_CV,
+        personal=GroundedPersonal(
+            name=GroundedString(value="Johnathan Fake Doe", source_block_ids=["b_p1_0"]),
+            email=GroundedString(value="john.doe@example.com", source_block_ids=["b_p1_1"]),
+        ),
+    )
+    violations = validate_semantic_output(output, sem_input)
+    assert any("UNSUPPORTED_CANONICAL_VALUE in personal.name" in v for v in violations)
+
+
+def test_dense_technical_regression_valid():
+    """11. Dense technical infrastructure multi-block achievements and experience citations remain valid."""
+    blocks = [
+        _make_block("b_ach_h", "ACHIEVEMENTS", 1, 0, suggested_role="SECTION_HEADING", is_bold=True),
+        _make_block("b_ach_0a", "? Architected and led the global multi-region Kubernetes platform hosting 1,200+ microservices processing", 1, 1, suggested_role="DESCRIPTION"),
+        _make_block("b_ach_0b", "$800B+ annual payment volume with 99.999% uptime across 5 AWS regions.", 1, 2, suggested_role="DESCRIPTION"),
+    ]
+    sem_input = SemanticInput(
+        document_id="doc-dense",
+        page_count=1,
+        archetype=DocumentArchetype.STANDARD_CV,
+        pages=[SemanticPageMeta(page_number=1, width=612.0, height=792.0)],
+        blocks=blocks,
+    )
+    output = SemanticOutput(
+        document_archetype=DocumentArchetype.STANDARD_CV,
+        achievements=[
+            GroundedString(
+                value="Architected and led the global multi-region Kubernetes platform hosting 1,200+ microservices processing $800B+ annual payment volume with 99.999% uptime across 5 AWS regions.",
+                source_block_ids=["b_ach_0a", "b_ach_0b"],
+            )
+        ],
+    )
+    repaired, repairs = repair_grounded_provenance(output, sem_input)
+    assert repaired.achievements[0].source_block_ids == ["b_ach_0a", "b_ach_0b"]
+    violations = validate_semantic_output(repaired, sem_input)
+    assert violations == []
