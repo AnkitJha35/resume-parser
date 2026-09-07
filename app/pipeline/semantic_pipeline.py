@@ -12,6 +12,7 @@ from app.domain.semantic_contract import (
     build_semantic_input,
     repair_grounded_provenance,
     sanitize_grounded_current_status,
+    sanitize_grounded_personal_location,
     sanitize_grounded_skills,
     semantic_output_to_resume,
     validate_semantic_output,
@@ -145,6 +146,15 @@ def parse_document_semantically(
     meta = _extract_usage_metadata(extractor)
     output = sanitize_grounded_current_status(output, semantic_input)
     output = sanitize_grounded_skills(output, semantic_input)
+    output, loc_diagnostics = sanitize_grounded_personal_location(output, semantic_input)
+    if loc_diagnostics:
+        logger.info(
+            "Personal location sanitized doc_id=%s reason=%s value=%r source_blocks=%s",
+            document_id,
+            loc_diagnostics[0].get("reason"),
+            loc_diagnostics[0].get("value"),
+            loc_diagnostics[0].get("source_block_ids"),
+        )
     output, repairs = repair_grounded_provenance(output, semantic_input)
     if repairs:
         logger.info(

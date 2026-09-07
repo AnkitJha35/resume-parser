@@ -31,6 +31,7 @@ from app.domain.semantic_contract import (
     has_explicit_skills_evidence,
     normalize_semantic_output_skills,
     repair_grounded_provenance,
+    sanitize_grounded_personal_location,
     sanitize_grounded_skills,
     semantic_output_to_resume,
     validate_semantic_output,
@@ -1552,3 +1553,249 @@ def test_dense_technical_regression_valid():
     assert repaired.achievements[0].source_block_ids == ["b_ach_0a", "b_ach_0b"]
     violations = validate_semantic_output(repaired, sem_input)
     assert violations == []
+
+
+# =====================================================================
+# Phase 10T: Academic extraction hardening and contact grounding tests
+# =====================================================================
+
+
+def test_entry_title_date_organization_description_forms_one_span():
+    """1. ENTRY_TITLE + DATE + ORGANIZATION + DESCRIPTION forms one experience span."""
+    blocks = [
+        _make_block("b_exp_h", "EXPERIENCE", 1, 0, suggested_role="SECTION_HEADING", is_bold=True),
+        _make_block("b_t0", "Postdoctoral Research Fellow", 1, 1, suggested_role="ENTRY_TITLE"),
+        _make_block("b_d0", "2023 - Present", 1, 2, suggested_role="DATE"),
+        _make_block("b_o0", "Stanford University, Stanford, CA", 1, 3, suggested_role="ORGANIZATION"),
+        _make_block("b_desc0", "Investigating asynchronous replication protocols.", 1, 4, suggested_role="DESCRIPTION"),
+    ]
+    sem_input = SemanticInput(
+        document_id="doc-academic-span-1",
+        page_count=1,
+        archetype=DocumentArchetype.ACADEMIC_CV,
+        pages=[SemanticPageMeta(page_number=1, width=612.0, height=792.0)],
+        blocks=blocks,
+    )
+    spans = build_deterministic_experience_spans(sem_input)
+    assert len(spans) == 1
+    assert spans[0].block_ids == ["b_t0", "b_d0", "b_o0", "b_desc0"]
+    assert spans[0].title_block_id == "b_t0"
+
+
+def test_date_alone_does_not_split_experience_entity():
+    """2. DATE alone does not split an experience entity."""
+    blocks = [
+        _make_block("b_exp_h", "EXPERIENCE", 1, 0, suggested_role="SECTION_HEADING", is_bold=True),
+        _make_block("b_o0", "Stanford University", 1, 1, suggested_role="ORGANIZATION"),
+        _make_block("b_d0", "2023 - Present", 1, 2, suggested_role="DATE"),
+        _make_block("b_t0", "Postdoctoral Research Fellow", 1, 3, suggested_role="ENTRY_TITLE"),
+        _make_block("b_desc0", "Investigating distributed systems.", 1, 4, suggested_role="DESCRIPTION"),
+    ]
+    sem_input = SemanticInput(
+        document_id="doc-date-no-split",
+        page_count=1,
+        archetype=DocumentArchetype.STANDARD_CV,
+        pages=[SemanticPageMeta(page_number=1, width=612.0, height=792.0)],
+        blocks=blocks,
+    )
+    spans = build_deterministic_experience_spans(sem_input)
+    assert len(spans) == 1
+    assert spans[0].block_ids == ["b_o0", "b_d0", "b_t0", "b_desc0"]
+
+
+def test_new_entry_title_still_starts_new_entity():
+    """3. New ENTRY_TITLE still starts a new entity."""
+    blocks = [
+        _make_block("b_exp_h", "EXPERIENCE", 1, 0, suggested_role="SECTION_HEADING", is_bold=True),
+        _make_block("b_t0", "Postdoctoral Research Fellow", 1, 1, suggested_role="ENTRY_TITLE"),
+        _make_block("b_d0", "2023 - Present", 1, 2, suggested_role="DATE"),
+        _make_block("b_o0", "Stanford University", 1, 3, suggested_role="ORGANIZATION"),
+        _make_block("b_desc0", "Researching distributed consensus protocols.", 1, 4, suggested_role="DESCRIPTION"),
+        _make_block("b_t1", "Graduate Research Assistant", 1, 5, suggested_role="ENTRY_TITLE"),
+        _make_block("b_d1", "2018 - 2023", 1, 6, suggested_role="DATE"),
+        _make_block("b_o1", "MIT Computer Science Laboratory", 1, 7, suggested_role="ORGANIZATION"),
+        _make_block("b_desc1", "Benchmarking Byzantine fault-tolerant consensus.", 1, 8, suggested_role="DESCRIPTION"),
+    ]
+    sem_input = SemanticInput(
+        document_id="doc-two-titles",
+        page_count=1,
+        archetype=DocumentArchetype.ACADEMIC_CV,
+        pages=[SemanticPageMeta(page_number=1, width=612.0, height=792.0)],
+        blocks=blocks,
+    )
+    spans = build_deterministic_experience_spans(sem_input)
+    assert len(spans) == 2
+    assert spans[0].block_ids == ["b_t0", "b_d0", "b_o0", "b_desc0"]
+    assert spans[0].title_block_id == "b_t0"
+    assert spans[1].block_ids == ["b_t1", "b_d1", "b_o1", "b_desc1"]
+    assert spans[1].title_block_id == "b_t1"
+
+
+def test_multiple_academic_appointments_produce_distinct_spans():
+    """4. Multiple academic appointments produce distinct deterministic spans."""
+    blocks = [
+        _make_block("b_p1_12", "RESEARCH EXPERIENCE", 1, 12, suggested_role="SECTION_HEADING", is_bold=True),
+        _make_block("b_p1_13", "Postdoctoral Research Fellow", 1, 13, suggested_role="ENTRY_TITLE"),
+        _make_block("b_p1_14", "2023 - Present", 1, 14, suggested_role="DATE"),
+        _make_block("b_p1_15", "Stanford University, Stanford, CA", 1, 15, suggested_role="ORGANIZATION"),
+        _make_block("b_p1_16", "• Investigating asynchronous replication protocols for geo-distributed pipelines.", 1, 16, suggested_role="DESCRIPTION"),
+        _make_block("b_p1_17", "• Published 2 primary papers in top-tier conferences.", 1, 17, suggested_role="DESCRIPTION"),
+        _make_block("b_p1_18", "Graduate Research Assistant", 1, 18, suggested_role="ENTRY_TITLE"),
+        _make_block("b_p1_19", "2018 - 2023", 1, 19, suggested_role="DATE"),
+        _make_block("b_p1_20", "Computer Science and Artificial Intelligence Laboratory (CSAIL), MIT", 1, 20, suggested_role="UNKNOWN"),
+        _make_block("b_p1_21", "• Designed and benchmarked a novel Byzantine fault-tolerant consensus algorithm.", 1, 21, suggested_role="DESCRIPTION"),
+        _make_block("b_p1_22", "• Co-authored 4 peer-reviewed conference publications.", 1, 22, suggested_role="UNKNOWN"),
+    ]
+    sem_input = SemanticInput(
+        document_id="doc-postdoc-research",
+        page_count=1,
+        archetype=DocumentArchetype.ACADEMIC_CV,
+        pages=[SemanticPageMeta(page_number=1, width=612.0, height=792.0)],
+        blocks=blocks,
+    )
+    spans = build_deterministic_experience_spans(sem_input)
+    assert len(spans) == 2
+    assert spans[0].block_ids == ["b_p1_13", "b_p1_14", "b_p1_15", "b_p1_16", "b_p1_17"]
+    assert spans[0].title_block_id == "b_p1_13"
+    assert spans[1].block_ids == ["b_p1_18", "b_p1_19", "b_p1_20", "b_p1_21", "b_p1_22"]
+    assert spans[1].title_block_id == "b_p1_18"
+
+
+def test_academic_prompt_explicitly_requires_one_experience_item_per_appointment():
+    """5. Academic prompt explicitly requires one experience item per distinct appointment."""
+    from app.extractors.semantic_prompt import (
+        BODY_EXTRACTION_SYSTEM_PROMPT,
+        SEMANTIC_EXTRACTION_SYSTEM_PROMPT,
+        build_body_extraction_prompt,
+    )
+    doc = _make_test_document()
+    sem_input = build_semantic_input(doc)
+    prompt = build_body_extraction_prompt(sem_input)
+    for p in (prompt, BODY_EXTRACTION_SYSTEM_PROMPT, SEMANTIC_EXTRACTION_SYSTEM_PROMPT):
+        assert "Academic CV Experience & Appointment Sections:" in p
+        assert "each distinct position or appointment must be emitted as a separate experience item" in p
+        assert "Do NOT aggregate multiple appointments or roles under one section into a single experience object" in p
+
+
+def test_valid_header_derived_personal_location_preserved():
+    """6. Valid header-derived personal.location is preserved."""
+    blocks = [
+        _make_block("b_p1_0", "Benjamin Thorne", 1, 0, region_kind="header", suggested_role="HEADER"),
+        _make_block("b_p1_1", "Baltimore, MD | bthorne@jhu.edu", 1, 1, region_kind="header", suggested_role="CONTACT"),
+    ]
+    sem_input = SemanticInput(
+        document_id="doc-header-loc",
+        page_count=1,
+        archetype=DocumentArchetype.ACADEMIC_CV,
+        pages=[SemanticPageMeta(page_number=1, width=612.0, height=792.0)],
+        blocks=blocks,
+    )
+    output = SemanticOutput(
+        document_archetype=DocumentArchetype.ACADEMIC_CV,
+        personal=GroundedPersonal(
+            name=GroundedString(value="Benjamin Thorne", source_block_ids=["b_p1_0"]),
+            location=GroundedString(value="Baltimore, MD", source_block_ids=["b_p1_1"]),
+        ),
+    )
+    sanitized, diags = sanitize_grounded_personal_location(output, sem_input)
+    assert sanitized.personal.location is not None
+    assert sanitized.personal.location.value == "Baltimore, MD"
+    assert diags == []
+    violations = validate_semantic_output(sanitized, sem_input)
+    assert not violations
+
+
+def test_body_derived_personal_location_sanitized_to_none():
+    """7. Body-derived personal.location is sanitized to None."""
+    blocks = [
+        _make_block("b_p1_0", "Professor Benjamin Thorne, Ph.D.", 1, 0, region_kind="header", suggested_role="HEADER"),
+        _make_block("b_p1_2", "Email: bthorne@jhu.edu | Phone: +1 (410) 555-0199", 1, 1, region_kind="header", suggested_role="CONTACT"),
+        _make_block("b_p1_3", "ACADEMIC APPOINTMENTS", 1, 2, region_kind="physical_region", suggested_role="SECTION_HEADING", is_bold=True),
+        _make_block("b_p1_4", "Professor with Tenure", 1, 3, region_kind="physical_region", suggested_role="ENTRY_TITLE"),
+        _make_block("b_p1_6", "Department of Biomedical Engineering, Johns Hopkins University | Baltimore, MD", 1, 4, region_kind="physical_region", suggested_role="ORGANIZATION"),
+        _make_block("b_p1_5", "2019 - Present", 1, 5, region_kind="physical_region", suggested_role="DATE"),
+    ]
+    sem_input = SemanticInput(
+        document_id="doc-prof-cv",
+        page_count=1,
+        archetype=DocumentArchetype.ACADEMIC_CV,
+        pages=[SemanticPageMeta(page_number=1, width=612.0, height=792.0)],
+        blocks=blocks,
+    )
+    output = SemanticOutput(
+        document_archetype=DocumentArchetype.ACADEMIC_CV,
+        personal=GroundedPersonal(
+            name=GroundedString(value="Professor Benjamin Thorne, Ph.D.", source_block_ids=["b_p1_0"]),
+            email=GroundedString(value="bthorne@jhu.edu", source_block_ids=["b_p1_2"]),
+            location=GroundedString(value="Baltimore, MD", source_block_ids=["b_p1_6"]),
+        ),
+        experience=[
+            GroundedExperienceItem(
+                designation=GroundedString(value="Professor with Tenure", source_block_ids=["b_p1_4"]),
+                company=GroundedString(value="Department of Biomedical Engineering, Johns Hopkins University", source_block_ids=["b_p1_6"]),
+                location=GroundedString(value="Baltimore, MD", source_block_ids=["b_p1_6"]),
+                startDate=GroundedString(value="2019", source_block_ids=["b_p1_5"]),
+                source_block_ids=["b_p1_4", "b_p1_5", "b_p1_6"],
+            )
+        ],
+    )
+    sanitized, diags = sanitize_grounded_personal_location(output, sem_input)
+    assert sanitized.personal.location is None
+    assert len(diags) == 1
+    assert diags[0]["field"] == "personal.location"
+    assert diags[0]["value"] == "Baltimore, MD"
+    violations = validate_semantic_output(sanitized, sem_input)
+    assert violations == []
+
+
+def test_body_derived_employer_location_remains_available_in_experience():
+    """8. Body-derived employer location remains available in experience.location."""
+    blocks = [
+        _make_block("b_p1_0", "Benjamin Thorne", 1, 0, region_kind="header", suggested_role="HEADER"),
+        _make_block("b_p1_3", "ACADEMIC APPOINTMENTS", 1, 1, region_kind="physical_region", suggested_role="SECTION_HEADING", is_bold=True),
+        _make_block("b_p1_4", "Professor with Tenure", 1, 2, region_kind="physical_region", suggested_role="ENTRY_TITLE"),
+        _make_block("b_p1_6", "Department of Biomedical Engineering, Johns Hopkins University | Baltimore, MD", 1, 3, region_kind="physical_region", suggested_role="ORGANIZATION"),
+        _make_block("b_p1_5", "2019 - Present", 1, 4, region_kind="physical_region", suggested_role="DATE"),
+    ]
+    sem_input = SemanticInput(
+        document_id="doc-prof-cv-exp",
+        page_count=1,
+        archetype=DocumentArchetype.ACADEMIC_CV,
+        pages=[SemanticPageMeta(page_number=1, width=612.0, height=792.0)],
+        blocks=blocks,
+    )
+    output = SemanticOutput(
+        document_archetype=DocumentArchetype.ACADEMIC_CV,
+        personal=GroundedPersonal(
+            name=GroundedString(value="Benjamin Thorne", source_block_ids=["b_p1_0"]),
+            location=GroundedString(value="Baltimore, MD", source_block_ids=["b_p1_6"]),
+        ),
+        experience=[
+            GroundedExperienceItem(
+                designation=GroundedString(value="Professor with Tenure", source_block_ids=["b_p1_4"]),
+                company=GroundedString(value="Department of Biomedical Engineering, Johns Hopkins University", source_block_ids=["b_p1_6"]),
+                location=GroundedString(value="Baltimore, MD", source_block_ids=["b_p1_6"]),
+                startDate=GroundedString(value="2019", source_block_ids=["b_p1_5"]),
+                source_block_ids=["b_p1_4", "b_p1_5", "b_p1_6"],
+            )
+        ],
+    )
+    sanitized, _ = sanitize_grounded_personal_location(output, sem_input)
+    assert sanitized.personal.location is None
+    assert sanitized.experience[0].location is not None
+    assert sanitized.experience[0].location.value == "Baltimore, MD"
+    assert sanitized.experience[0].location.source_block_ids == ["b_p1_6"]
+
+
+def test_composite_contact_line_phone_grounding_deterministic():
+    """10. Composite contact line phone grounding remains deterministic."""
+    composite_text = "Email: maya.lin@devstack.io | Phone: +1 (415) 555-0188 | Location: San Francisco, CA | GitHub: github.com/mayalin-dev"
+    assert _is_value_semantically_supported("+1 (415) 555-0188", composite_text) is True
+    assert _is_value_semantically_supported("+14155550188", composite_text) is True
+    assert _is_value_semantically_supported("14155550188", composite_text) is True
+    assert _is_value_semantically_supported("(415) 555-0188", composite_text) is True
+    assert _is_value_semantically_supported("555-0188", composite_text) is True
+    # Dropped digit (555 -> 55) must be strictly rejected
+    assert _is_value_semantically_supported("1415550188", composite_text) is False
+    assert _is_value_semantically_supported("+1 (415) 55-0188", composite_text) is False
+

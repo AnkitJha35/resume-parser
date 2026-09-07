@@ -1080,6 +1080,111 @@ def sanitize_grounded_skills(
 normalize_semantic_output_skills = sanitize_grounded_skills
 
 
+def sanitize_grounded_personal_location(
+    output: TOutput,
+    semantic_input: SemanticInput,
+) -> tuple[TOutput, list[dict[str, Any]]]:
+    """Deterministically sanitize personal.location to prevent body/employment location leakage.
+
+    Requirements:
+    - personal.location is retained ONLY when its cited source block(s) belong to a header/contact context.
+    - If personal.location cites a body block that is also mapped to body collections
+      (experience, education, projects, etc.), or belongs to an experience/education/projects/skills section,
+      or has an excluded structural role (ORGANIZATION, ENTRY_TITLE, etc.), treat it as an employer/institution
+      location rather than a personal residence location and set personal.location = None.
+    - Preserve valid personal locations already grounded in header/contact blocks.
+    - Emits structured diagnostic records for each sanitized location.
+    """
+    diagnostics: list[dict[str, Any]] = []
+    personal = getattr(output, "personal", None)
+    if not personal or not getattr(personal, "location", None):
+        return output, diagnostics
+
+    loc: GroundedString | None = personal.location
+    if not loc or not loc.value or not loc.source_block_ids:
+        return output, diagnostics
+
+    blocks_by_id = {b.block_id: b for b in semantic_input.blocks}
+
+    # 1. Collect block IDs mapped to body collections to detect cross-collection leakage
+    body_mapped_bids: set[str] = set()
+    for exp in getattr(output, "experience", []):
+        body_mapped_bids.update(exp.source_block_ids)
+        for f in (exp.company, exp.designation, exp.startDate, exp.endDate, exp.location, exp.description):
+            if f and f.source_block_ids:
+                body_mapped_bids.update(f.source_block_ids)
+        for tech in getattr(exp, "technologies", []):
+            if tech.source_block_ids:
+                body_mapped_bids.update(tech.source_block_ids)
+
+    for edu in getattr(output, "education", []):
+        body_mapped_bids.update(edu.source_block_ids)
+        for f in (edu.institution, edu.degree, edu.fieldOfStudy, edu.startDate, edu.endDate, edu.grade):
+            if f and f.source_block_ids:
+                body_mapped_bids.update(f.source_block_ids)
+
+    for prj in getattr(output, "projects", []):
+        body_mapped_bids.update(prj.source_block_ids)
+        for f in (prj.name, prj.description, prj.startDate, prj.endDate):
+            if f and f.source_block_ids:
+                body_mapped_bids.update(f.source_block_ids)
+        for tech in getattr(prj, "technologies", []):
+            if tech.source_block_ids:
+                body_mapped_bids.update(tech.source_block_ids)
+
+    # 2. Collect block IDs belonging to explicit body sections
+    sections = partition_semantic_input_into_sections(semantic_input)
+    body_section_bids: set[str] = set()
+    for sec in sections:
+        if sec.canonical_target in ("experience", "education", "projects", "certifications", "skills"):
+            body_section_bids.update(sec.block_ids)
+
+    # 3. Check for any condition that disqualifies the personal location
+    should_sanitize = False
+    sanitize_reason = ""
+
+    for bid in loc.source_block_ids:
+        b = blocks_by_id.get(bid)
+        if not b:
+            should_sanitize = True
+            sanitize_reason = f"unknown_block_{bid}"
+            break
+        if b.page != 1:
+            should_sanitize = True
+            sanitize_reason = f"page_{b.page}_outside_header"
+            break
+        if b.region_kind == "footer":
+            should_sanitize = True
+            sanitize_reason = "footer_region"
+            break
+        if bid in body_mapped_bids:
+            should_sanitize = True
+            sanitize_reason = f"mapped_to_body_collection_{bid}"
+            break
+        if bid in body_section_bids:
+            should_sanitize = True
+            sanitize_reason = f"in_body_section_{bid}"
+            break
+        if b.suggested_role in EXCLUDED_LOCATION_ROLES:
+            should_sanitize = True
+            sanitize_reason = f"excluded_role_{b.suggested_role}"
+            break
+
+    if should_sanitize:
+        diagnostics.append({
+            "field": "personal.location",
+            "value": loc.value,
+            "source_block_ids": list(loc.source_block_ids),
+            "reason": sanitize_reason,
+        })
+        personal.location = None
+
+    return output, diagnostics
+
+
+normalize_semantic_output_location = sanitize_grounded_personal_location
+
+
 @dataclass(frozen=True)
 class DeterministicEntitySpan:
     """Represents the bounded block scope of a single entity within an experience section."""
@@ -1164,7 +1269,7 @@ def build_deterministic_experience_spans(
                     current_title_id = b.block_id
                 if current_org_id is None and b.suggested_role == "ORGANIZATION":
                     current_org_id = b.block_id
-                if b.suggested_role in ("DATE", "DESCRIPTION", "BULLET"):
+                if b.suggested_role in ("DESCRIPTION", "BULLET"):
                     has_content = True
 
         if current_span_blocks:

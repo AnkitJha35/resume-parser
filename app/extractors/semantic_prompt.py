@@ -67,7 +67,7 @@ SPECIFIC SECTION EXTRACTION MAPPINGS:
 1. Personal Labeled Fields & Contact Information:
    * Inspect labeled form fields and contact blocks to populate `personal`.
    * `Email: user@example.com` populates `personal.email` with `user@example.com`, grounded to the source block.
-   * `Phone: ...` populates `personal.phone` with normalized phone digits grounded to the source blocks.
+   * `Phone: ...` populates `personal.phone`. Copy the phone text exactly as written in the source block (e.g. `+1 (415) 555-0188`). Do NOT manually retype, reconstruct, infer, or normalize phone digits in your head. Preserve country code, area code, exchange, subscriber digits, and punctuation exactly as present in the source. Downstream deterministic validation/normalization handles canonical phone representation. If uncertain, return null rather than inventing or reconstructing digits.
    * Assemble personal name tokens from explicit name fields (e.g., Surname, First Name, Middle Name) while discarding descriptor labels.
 
 2. Education Tables:
@@ -106,6 +106,47 @@ SPECIFIC SECTION EXTRACTION MAPPINGS:
    * Every extracted skill must be grounded in the source block(s) containing that skill.
    * Do not convert concepts mentioned in prose into skills merely because they are plausible resume skills.
 
+6. Academic CV Experience & Appointment Sections:
+   * In academic experience sections (e.g., research experience, teaching experience, academic appointments), each distinct position or appointment must be emitted as a separate experience item.
+   * Do NOT aggregate multiple appointments or roles under one section into a single experience object.
+   * For example, a Postdoctoral Fellow role, Graduate Research Assistant role, and Teaching Assistant roles within academic sections are distinct positions and must each populate a separate `GroundedExperienceItem`.
+   * Each experience item's `source_block_ids` must cover only that appointment's blocks.
+   * A new `ENTRY_TITLE` represents a new position when it occurs within an experience-target section.
+   * Preserve all existing provenance and grounding rules.
+
+PROVENANCE PRECISION AND ENTITY LINKING GUIDELINES:
+1. Structural Roles as Authoritative Provenance Hints:
+   * ENTRY_TITLE contains the job/role title and should be cited for experience.designation.
+   * ORGANIZATION contains employer/company information and should be cited for experience.company.
+   * LOCATION contains location information and should be cited for experience.location.
+   * DATE contains employment/education date information and should be cited for the corresponding date fields.
+   * DESCRIPTION/BULLET contains narrative description or achievement text.
+
+2. Precise Field-to-Block Grounding:
+   * For every grounded field, source_block_ids MUST identify the block(s) that actually contain the emitted value.
+   * Never cite an adjacent block merely because it belongs to the same experience/education/project entity.
+   * Do not reuse another field's block ID as a convenient citation.
+
+3. Entity Headers with Adjacent Header Blocks:
+   * For an entity header containing adjacent title/company/location/date blocks, map each field to the block that actually contains that field.
+   * designation must not cite DATE.
+   * location must not cite ENTRY_TITLE.
+   * company must not cite DATE.
+   * dates must not cite ENTRY_TITLE.
+
+4. Multi-Block Text:
+   * If the emitted value combines text from multiple source blocks, include ALL contributing block IDs in reading order.
+   * Do not cite only the first block when continuation blocks contribute text.
+
+5. Entity Boundaries:
+   * Do not assign the final description/bullet of one entry to the following entry.
+   * When a new ENTRY_TITLE begins, subsequent fields belong to that new entity unless structural evidence clearly indicates otherwise.
+
+6. Block Classifications Integrity:
+   * TABLE_HEADER is only valid for an actual table/grid header represented by table metadata or unmistakable table-header structure.
+   * Do not classify ENTRY_TITLE blocks as TABLE_HEADER merely because surrounding content is multi-column.
+   * Preserve the existing structural role information as the primary interpretation.
+
 IMPORTANT VALIDATION REMINDER:
 These guidelines are extraction mappings grounded in explicit source relationships, not new domain facts. Every resulting value must strictly satisfy deterministic provenance and grounding validators."""
 
@@ -117,7 +158,7 @@ CRITICAL GROUNDING AND PROVENANCE RULES:
 1. Every non-null grounded value MUST reference the exact `source_block_ids` from which it was extracted.
 2. EXTRACT ONLY supported information. DO NOT invent, hallucinate, or infer missing values.
 3. DO NOT perform semantic renaming or enrichment.
-4. Use exact verbatim text from source blocks in `raw_value` when available. In `value`, only safe canonical normalizations are permitted (e.g., phone digits, whitespace/case cleanup).
+4. Use exact verbatim text from source blocks in `raw_value` when available. In `value`, only safe canonical normalizations are permitted (e.g., whitespace/case cleanup). For phone numbers, copy the text verbatim as written in the source block.
 5. DO NOT treat document headers, form titles (e.g., 'APPLICATION FORM', 'Curriculum Vitae', 'Surname'), or section labels as personal names.
 6. Return a single valid JSON object adhering strictly to the PersonalSemanticOutput schema.
 
@@ -125,7 +166,8 @@ PERSONAL CONTACT & IDENTITY EXTRACTION GUIDELINES:
 1. Personal Labeled Fields & Contact Information:
    * Inspect labeled form fields and contact blocks across the document to populate `personal`.
    * `Email: user@example.com` populates `personal.email` with `user@example.com`, grounded to the source block.
-   * `Phone: ...` populates `personal.phone` with normalized phone digits grounded to the source blocks.
+   * `Phone: ...` populates `personal.phone`. Copy the phone text exactly as written in the source block (e.g. `+1 (415) 555-0188`). Do NOT manually retype, reconstruct, infer, or normalize phone digits in your head. Preserve country code, area code, exchange, subscriber digits, and punctuation exactly as present in the source. Downstream deterministic validation/normalization handles canonical phone representation. If uncertain, return null rather than inventing or reconstructing digits.
+   * `Location: ...` populates `personal.location` strictly from header or contact blocks on page 1. Do NOT extract personal location from body employment, academic appointment, or education entries.
    * Assemble personal name tokens from explicit name fields (e.g., Surname, First Name, Middle Name) while discarding descriptor labels.
    * Classify personal identity and contact blocks explicitly under `block_classifications` with category `PERSONAL`.
 
@@ -215,6 +257,47 @@ SPECIFIC SECTION EXTRACTION MAPPINGS:
    * If the resume contains no explicit skills inventory/list, return `skills: []`.
    * Every extracted skill must be grounded in the source block(s) containing that skill.
    * Do not convert concepts mentioned in prose into skills merely because they are plausible resume skills.
+
+5. Academic CV Experience & Appointment Sections:
+   * In academic experience sections (e.g., research experience, teaching experience, academic appointments), each distinct position or appointment must be emitted as a separate experience item.
+   * Do NOT aggregate multiple appointments or roles under one section into a single experience object.
+   * For example, a Postdoctoral Fellow role, Graduate Research Assistant role, and Teaching Assistant roles within academic sections are distinct positions and must each populate a separate `GroundedExperienceItem`.
+   * Each experience item's `source_block_ids` must cover only that appointment's blocks.
+   * A new `ENTRY_TITLE` represents a new position when it occurs within an experience-target section.
+   * Preserve all existing provenance and grounding rules.
+
+PROVENANCE PRECISION AND ENTITY LINKING GUIDELINES:
+1. Structural Roles as Authoritative Provenance Hints:
+   * ENTRY_TITLE contains the job/role title and should be cited for experience.designation.
+   * ORGANIZATION contains employer/company information and should be cited for experience.company.
+   * LOCATION contains location information and should be cited for experience.location.
+   * DATE contains employment/education date information and should be cited for the corresponding date fields.
+   * DESCRIPTION/BULLET contains narrative description or achievement text.
+
+2. Precise Field-to-Block Grounding:
+   * For every grounded field, source_block_ids MUST identify the block(s) that actually contain the emitted value.
+   * Never cite an adjacent block merely because it belongs to the same experience/education/project entity.
+   * Do not reuse another field's block ID as a convenient citation.
+
+3. Entity Headers with Adjacent Header Blocks:
+   * For an entity header containing adjacent title/company/location/date blocks, map each field to the block that actually contains that field.
+   * designation must not cite DATE.
+   * location must not cite ENTRY_TITLE.
+   * company must not cite DATE.
+   * dates must not cite ENTRY_TITLE.
+
+4. Multi-Block Text:
+   * If the emitted value combines text from multiple source blocks, include ALL contributing block IDs in reading order.
+   * Do not cite only the first block when continuation blocks contribute text.
+
+5. Entity Boundaries:
+   * Do not assign the final description/bullet of one entry to the following entry.
+   * When a new ENTRY_TITLE begins, subsequent fields belong to that new entity unless structural evidence clearly indicates otherwise.
+
+6. Block Classifications Integrity:
+   * TABLE_HEADER is only valid for an actual table/grid header represented by table metadata or unmistakable table-header structure.
+   * Do not classify ENTRY_TITLE blocks as TABLE_HEADER merely because surrounding content is multi-column.
+   * Preserve the existing structural role information as the primary interpretation.
 
 IMPORTANT VALIDATION REMINDER:
 These guidelines are extraction mappings grounded in explicit source relationships, not new domain facts. Every resulting value must strictly satisfy deterministic provenance and grounding validators."""

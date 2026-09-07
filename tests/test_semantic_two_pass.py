@@ -201,6 +201,7 @@ def test_personal_and_body_prompt_builders():
     assert "Maritime Sea-Service & Employment Tables:" in body_prompt
     assert "Certification, Course, & Endorsement Tables:" in body_prompt
     assert "Skills Sections & Explicit Inventories:" in body_prompt
+    assert "Academic CV Experience & Appointment Sections:" in body_prompt
     assert "DOCUMENT BLOCKS (JSON):" in body_prompt
 
     personal_schema = get_personal_schema()
@@ -233,6 +234,47 @@ def test_body_prompt_contains_skills_extraction_boundary():
     assert "If the resume contains no explicit skills inventory/list, return `skills: []`" in prompt
     assert "Every extracted skill must be grounded in the source block(s)" in prompt
     assert "Do not convert concepts mentioned in prose into skills" in prompt
+
+
+def test_body_prompt_contains_provenance_precision_guidance():
+    """Verify body extraction prompt contains explicit provenance precision and entity linking rules."""
+    sem_input = _sample_semantic_input()
+    prompt = build_body_extraction_prompt(sem_input)
+
+    # 1. Heading
+    assert "PROVENANCE PRECISION AND ENTITY LINKING GUIDELINES:" in prompt
+
+    # 2. Structural roles as authoritative hints
+    assert "ENTRY_TITLE contains the job/role title and should be cited for experience.designation." in prompt
+    assert "ORGANIZATION contains employer/company information and should be cited for experience.company." in prompt
+    assert "LOCATION contains location information and should be cited for experience.location." in prompt
+    assert "DATE contains employment/education date information and should be cited for the corresponding date fields." in prompt
+    assert "DESCRIPTION/BULLET contains narrative description or achievement text." in prompt
+
+    # 3. Precise field-to-block grounding
+    assert "source_block_ids MUST identify the block(s) that actually contain the emitted value." in prompt
+    assert "Never cite an adjacent block merely because it belongs to the same experience/education/project entity." in prompt
+    assert "Do not reuse another field's block ID as a convenient citation." in prompt
+
+    # 4. Entity headers with adjacent header blocks
+    assert "designation must not cite DATE." in prompt
+    assert "location must not cite ENTRY_TITLE." in prompt
+    assert "company must not cite DATE." in prompt
+    assert "dates must not cite ENTRY_TITLE." in prompt
+
+    # 5. Multi-block text
+    assert "If the emitted value combines text from multiple source blocks, include ALL contributing block IDs in reading order." in prompt
+    assert "Do not cite only the first block when continuation blocks contribute text." in prompt
+
+    # 6. Entity boundaries
+    assert "Do not assign the final description/bullet of one entry to the following entry." in prompt
+    assert "When a new ENTRY_TITLE begins, subsequent fields belong to that new entity" in prompt
+
+    # 7. Block classifications integrity
+    assert "TABLE_HEADER is only valid for an actual table/grid header represented by table metadata or unmistakable table-header structure." in prompt
+    assert "Do not classify ENTRY_TITLE blocks as TABLE_HEADER merely because surrounding content is multi-column." in prompt
+    assert "Preserve the existing structural role information as the primary interpretation." in prompt
+
 
 
 
