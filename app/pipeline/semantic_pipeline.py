@@ -15,6 +15,7 @@ from app.domain.semantic_contract import (
     sanitize_grounded_personal_location,
     sanitize_grounded_skills,
     semantic_output_to_resume,
+    supplement_high_confidence_semantic_fields,
     validate_semantic_output,
 )
 from app.extractors.semantic_extractor import (
@@ -154,6 +155,14 @@ def parse_document_semantically(
             loc_diagnostics[0].get("reason"),
             loc_diagnostics[0].get("value"),
             loc_diagnostics[0].get("source_block_ids"),
+        )
+    output, supplemented = supplement_high_confidence_semantic_fields(output, semantic_input)
+    if supplemented:
+        logger.info(
+            "Deterministic supplementation applied doc_id=%s count=%d fields=%s",
+            document_id,
+            len(supplemented),
+            [s.get("field") for s in supplemented],
         )
     output, repairs = repair_grounded_provenance(output, semantic_input)
     if repairs:

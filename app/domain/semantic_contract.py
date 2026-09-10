@@ -14,7 +14,7 @@ These models define:
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, TypeVar
 from pydantic import BaseModel, ConfigDict, Field
@@ -29,7 +29,7 @@ from app.domain.resume import (
     Resume,
 )
 from app.domain.structural import StructuralBlock
-from app.pipeline.stages.structural_roles import build_structural_blocks
+from app.pipeline.stages.structural_roles import _GENERIC_DEGREE_RE, build_structural_blocks
 
 # Known document headers/labels that must never be accepted as personal names
 INVALID_NAME_PATTERNS = [
@@ -595,6 +595,8 @@ def _is_section_boundary_block(block: SemanticBlockInput) -> bool:
         return False
     if block.suggested_role == "SECTION_HEADING":
         return True
+    if block.suggested_role in ("SKILL", "BULLET"):
+        return False
 
     text = (block.text or "").strip()
     if len(text) < 3 or len(text) > 70:
@@ -606,6 +608,14 @@ def _is_section_boundary_block(block: SemanticBlockInput) -> bool:
     if len(alphas) >= 4 and all(c.isupper() for c in alphas):
         return True
 
+    return False
+
+
+def _is_qualifying_education_entry_title(block: SemanticBlockInput) -> bool:
+    """Predicate determining if a block serves as an education entry title."""
+    if block.suggested_role in ("ENTRY_TITLE", "DEGREE", "EDUCATION"):
+        text = block.text or ""
+        return bool(_GENERIC_DEGREE_RE.search(text) or _DEGREE_PATTERN.search(text))
     return False
 
 
@@ -667,6 +677,10 @@ def _infer_section_target(
     if any(r == "LANGUAGE" for r in child_roles):
         return "languages"
 
+    # 7. Summary / Profile: unheaded text block composed of description/unknown prose
+    if not clean_h and child_roles and all(r in ("DESCRIPTION", "UNKNOWN") for r in child_roles):
+        return "summary"
+
     return "unsupported"
 
 
@@ -726,6 +740,47 @@ def partition_semantic_input_into_sections(
             if bid != current_heading_id and bid in block_by_id
         ]
         target = _infer_section_target(current_heading_text, child_blocks)
+
+        # Implicit education refinement: an unheaded preamble section targeting education
+        # may start with introductory summary prose before the first degree title.
+        # Split at the first qualifying education entry title to keep summary and education clean.
+        if current_heading_id is None and target == "education":
+            first_edu_idx: int | None = None
+            for idx, bid in enumerate(current_block_ids):
+                b = block_by_id.get(bid)
+                if b and _is_qualifying_education_entry_title(b):
+                    first_edu_idx = idx
+                    break
+            if first_edu_idx is not None and first_edu_idx > 0:
+                pre_bids = current_block_ids[:first_edu_idx]
+                edu_bids = current_block_ids[first_edu_idx:]
+                pre_children = [block_by_id[bid] for bid in pre_bids if bid in block_by_id]
+                pre_target = _infer_section_target("", pre_children)
+                if pre_target == "unsupported":
+                    pre_roles = [b.suggested_role for b in pre_children if b.suggested_role]
+                    if pre_roles and all(r in ("DESCRIPTION", "UNKNOWN") for r in pre_roles):
+                        pre_target = "summary"
+                sections.append(SemanticSection(
+                    heading_block_id=None,
+                    heading_text="",
+                    block_ids=list(pre_bids),
+                    canonical_target=pre_target,
+                    page_start=current_page_start,
+                ))
+                sections.append(SemanticSection(
+                    heading_block_id=None,
+                    heading_text="",
+                    block_ids=list(edu_bids),
+                    canonical_target="education",
+                    page_start=block_by_id[edu_bids[0]].page if edu_bids[0] in block_by_id else current_page_start,
+                ))
+                # Reset
+                current_heading_id = None
+                current_heading_text = ""
+                current_heading_role = ""
+                current_block_ids = []
+                current_page_start = next_page if next_page is not None else (body_blocks[-1].page if body_blocks else 1)
+                return
 
         sections.append(SemanticSection(
             heading_block_id=current_heading_id,
@@ -1169,6 +1224,10 @@ def sanitize_grounded_personal_location(
             should_sanitize = True
             sanitize_reason = f"excluded_role_{b.suggested_role}"
             break
+        if not _is_value_semantically_supported(loc.value, b.text):
+            should_sanitize = True
+            sanitize_reason = f"unsupported_value_in_source_{bid}"
+            break
 
     if should_sanitize:
         diagnostics.append({
@@ -1185,6 +1244,127 @@ def sanitize_grounded_personal_location(
 normalize_semantic_output_location = sanitize_grounded_personal_location
 
 
+_EXCLUDED_HEADER_EMAIL_ROLES = frozenset({
+    "DESCRIPTION",
+    "ENTRY_TITLE",
+    "ORGANIZATION",
+    "SKILL",
+    "BULLET",
+    "FOOTER",
+    "SECTION_HEADING",
+})
+
+_EMAIL_REGEX = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+
+
+def supplement_high_confidence_semantic_fields(
+    output: TOutput,
+    semantic_input: SemanticInput,
+) -> tuple[TOutput, list[dict[str, Any]]]:
+    """Deterministically supplement high-confidence semantic fields omitted by LLM extraction.
+
+    Safety invariants:
+    1. EMAIL:
+       - Only supplements if personal.email is null or empty.
+       - Searches ONLY page-1 header/contact blocks (region_kind in ("header", "contact") or
+         suggested_role in ("HEADER", "CONTACT")).
+       - Excludes footer and non-contact body roles (DESCRIPTION, ENTRY_TITLE, etc.).
+       - Extracts only an explicit, syntactically valid email address.
+       - Grounds to the exact source block ID.
+       - Preserves existing non-null personal.email unchanged.
+    2. SKILLS:
+       - Only supplements if output.skills is completely empty.
+       - Only supplements if has_explicit_skills_evidence(semantic_input) is True.
+       - Only collects blocks with suggested_role == "SKILL" in sections whose canonical target is "skills".
+       - Excludes BULLET, DESCRIPTION, ENTRY_TITLE, and other non-SKILL roles.
+       - Preserves original reading order and grounds each skill to its exact source block ID.
+       - Deterministically deduplicates skills by normalized text (case/whitespace insensitive).
+       - Preserves existing non-empty output.skills unchanged.
+    """
+    diagnostics: list[dict[str, Any]] = []
+
+    # 1. EMAIL SUPPLEMENTATION
+    if hasattr(output, "personal"):
+        personal = getattr(output, "personal", None)
+        if personal is None:
+            personal = GroundedPersonal()
+            output.personal = personal
+
+        existing_email = getattr(personal, "email", None)
+        if not existing_email or not getattr(existing_email, "value", None) or not str(existing_email.value).strip():
+            # Inspect page-1 candidate blocks in reading order
+            page1_candidate_blocks = [
+                b for b in semantic_input.blocks
+                if b.page == 1
+                and b.region_kind != "footer"
+                and (b.region_kind in ("header", "contact") or b.suggested_role in ("HEADER", "CONTACT"))
+                and b.suggested_role not in _EXCLUDED_HEADER_EMAIL_ROLES
+                and b.text.strip()
+            ]
+            page1_candidate_blocks.sort(key=lambda b: (b.reading_order, b.block_id))
+
+            for block in page1_candidate_blocks:
+                match = _EMAIL_REGEX.search(block.text)
+                if match:
+                    email_val = match.group(0).strip()
+                    personal.email = GroundedString(
+                        value=email_val,
+                        source_block_ids=[block.block_id],
+                    )
+                    diagnostics.append({
+                        "field": "personal.email",
+                        "value": email_val,
+                        "source_block_ids": [block.block_id],
+                        "reason": "supplemented_from_header_contact_block",
+                    })
+                    break
+
+    # 2. SKILLS SUPPLEMENTATION
+    if hasattr(output, "skills"):
+        current_skills = getattr(output, "skills", None)
+        if not current_skills and has_explicit_skills_evidence(semantic_input):
+            blocks_by_id = {b.block_id: b for b in semantic_input.blocks}
+            sections = partition_semantic_input_into_sections(semantic_input)
+
+            supplemented_skills: list[GroundedString] = []
+            seen_keys: set[str] = set()
+
+            for sec in sections:
+                if sec.canonical_target != "skills":
+                    continue
+                for bid in sec.block_ids:
+                    if bid == sec.heading_block_id:
+                        continue
+                    b = blocks_by_id.get(bid)
+                    if not b or b.suggested_role != "SKILL":
+                        continue
+                    raw_text = b.text.strip()
+                    clean_text = re.sub(r"^[\u2022\u2023\u25E6\-\*\u00B7●\uf0b7]\s*", "", raw_text).strip()
+                    if not clean_text or clean_text in ("•", "●", "-", "*", "—"):
+                        continue
+                    norm_key = re.sub(r"\s+", " ", clean_text).strip().lower()
+                    if norm_key in seen_keys:
+                        continue
+                    seen_keys.add(norm_key)
+                    supplemented_skills.append(
+                        GroundedString(
+                            value=clean_text,
+                            source_block_ids=[b.block_id],
+                        )
+                    )
+
+            if supplemented_skills:
+                output.skills = supplemented_skills
+                diagnostics.append({
+                    "field": "skills",
+                    "count": len(supplemented_skills),
+                    "values": [s.value for s in supplemented_skills],
+                    "reason": "supplemented_from_explicit_skill_blocks",
+                })
+
+    return output, diagnostics
+
+
 @dataclass(frozen=True)
 class DeterministicEntitySpan:
     """Represents the bounded block scope of a single entity within an experience section."""
@@ -1193,6 +1373,342 @@ class DeterministicEntitySpan:
     entity_index: int
     block_ids: list[str]
     title_block_id: str | None = None
+
+
+@dataclass
+class DeterministicAppointmentGroup:
+    """A deterministic appointment group within an academic experience section.
+
+    Attributes:
+        section_heading_text: Heading text of the enclosing section (or merged heading).
+        section_heading_block_id: Heading block ID if present.
+        canonical_target: Canonical target of the section (typically 'experience').
+        title_block_id: Block ID of the starting ENTRY_TITLE (or leading boundary block).
+        block_ids: Ordered list of block IDs comprising this appointment.
+        blocks: List of SemanticBlockInput objects in reading order.
+    """
+
+    section_heading_text: str = ""
+    section_heading_block_id: str | None = None
+    canonical_target: str = "experience"
+    title_block_id: str | None = None
+    block_ids: list[str] = field(default_factory=list)
+    blocks: list[SemanticBlockInput] = field(default_factory=list)
+
+
+def build_deterministic_appointment_groups(
+    section: SemanticSection,
+    semantic_input: SemanticInput,
+) -> list[DeterministicAppointmentGroup]:
+    """Deterministically partition an experience section into discrete appointment groups.
+
+    A group begins at suggested_role == 'ENTRY_TITLE' and contains subsequent blocks
+    until the next 'ENTRY_TITLE', preserving original SemanticBlockInput objects,
+    block IDs, and section metadata. Also supports organization-before-title layouts
+    where an ORGANIZATION block immediately precedes an ENTRY_TITLE.
+    """
+    if section.canonical_target != "experience":
+        return []
+
+    blocks_by_id = {b.block_id: b for b in semantic_input.blocks}
+    child_blocks = [
+        blocks_by_id[bid]
+        for bid in section.block_ids
+        if bid in blocks_by_id
+        and bid != section.heading_block_id
+        and blocks_by_id[bid].region_kind not in ("header", "footer")
+        and blocks_by_id[bid].text.strip()
+    ]
+    if not child_blocks:
+        return []
+
+    # Ensure child blocks are in strict reading order
+    child_blocks.sort(key=lambda b: (b.page, b.reading_order, b.block_id))
+
+    groups: list[list[SemanticBlockInput]] = []
+    current_group: list[SemanticBlockInput] = []
+    current_has_title = False
+    current_has_org = False
+
+    for idx, b in enumerate(child_blocks):
+        role = b.suggested_role
+        next_block = child_blocks[idx + 1] if idx + 1 < len(child_blocks) else None
+
+        is_boundary = False
+        if role == "ENTRY_TITLE":
+            if current_has_title:
+                is_boundary = True
+        elif role == "ORGANIZATION":
+            if (
+                next_block is not None
+                and next_block.suggested_role == "ENTRY_TITLE"
+                and current_has_org
+                and current_has_title
+            ):
+                is_boundary = True
+
+        if is_boundary:
+            if current_group:
+                groups.append(current_group)
+            current_group = [b]
+            current_has_title = (role == "ENTRY_TITLE")
+            current_has_org = (role == "ORGANIZATION")
+        else:
+            current_group.append(b)
+            if role == "ENTRY_TITLE":
+                current_has_title = True
+            if role == "ORGANIZATION":
+                current_has_org = True
+
+    if current_group:
+        groups.append(current_group)
+
+    result: list[DeterministicAppointmentGroup] = []
+    for grp in groups:
+        title_id = next((b.block_id for b in grp if b.suggested_role == "ENTRY_TITLE"), None)
+        if title_id is None and grp:
+            title_id = grp[0].block_id
+        result.append(
+            DeterministicAppointmentGroup(
+                section_heading_text=section.heading_text,
+                section_heading_block_id=section.heading_block_id,
+                canonical_target=section.canonical_target,
+                title_block_id=title_id,
+                block_ids=[b.block_id for b in grp],
+                blocks=grp,
+            )
+        )
+
+    return result
+
+
+@dataclass
+class SectionAwareExtractionUnit:
+    """Represents an isolated extraction unit for section-aware body extraction."""
+
+    pass_name: str
+    section_input: SemanticInput
+    section_heading: str
+    canonical_target: str
+    title_block_id: str | None = None
+    is_appointment: bool = False
+    appt_index: int = 0
+    total_appts: int = 0
+    appointment_block_ids: list[str] | None = None
+
+
+def enforce_single_experience_entity(
+    body_output: BodySemanticOutput,
+    title_block_id: str | None,
+) -> BodySemanticOutput:
+    """Enforce that an appointment-scoped body output contains at most one experience entity.
+
+    If multiple experience entities are returned, selects the entity citing
+    the appointment's title_block_id (preferring designation citations), and discards the others.
+    """
+    if len(body_output.experience) > 1:
+        chosen = body_output.experience[0]
+        for it in body_output.experience:
+            if (
+                title_block_id
+                and it.designation
+                and title_block_id in it.designation.source_block_ids
+            ):
+                chosen = it
+                break
+            elif title_block_id and title_block_id in it.source_block_ids:
+                chosen = it
+                break
+        body_output.experience = [chosen]
+    return body_output
+
+
+def constrain_appointment_experience_provenance(
+    body_output: BodySemanticOutput,
+    allowed_block_ids: list[str],
+) -> BodySemanticOutput:
+    """Constrain top-level source_block_ids of experience items in an appointment unit
+    to the authoritative deterministic appointment block IDs.
+
+    Preserves individual field values and field source_block_ids unmodified.
+    Preserves ordering and deduplicates top-level source_block_ids.
+    """
+    if not allowed_block_ids or not body_output.experience:
+        return body_output
+
+    allowed_set = set(allowed_block_ids)
+    for exp in body_output.experience:
+        if exp.source_block_ids:
+            exp.source_block_ids = list(
+                dict.fromkeys(bid for bid in exp.source_block_ids if bid in allowed_set)
+            )
+
+    return body_output
+
+
+def isolate_unit_target_collections(
+    body_output: BodySemanticOutput,
+    canonical_target: str,
+) -> BodySemanticOutput:
+    """Retain only the collection corresponding to canonical_target, clearing all others.
+
+    Mapping:
+    - education -> education
+    - experience -> experience
+    - skills -> skills
+    - achievements -> achievements
+    - certifications -> certifications
+    - languages -> languages
+    - projects -> projects
+    - summary -> summary
+    - overview -> summary, skills, certifications, languages, achievements
+    - entities -> experience, education, projects
+
+    Metadata fields (document_archetype, block_classifications) are preserved.
+    Summary is preserved if canonical_target in {"summary", "overview"}.
+    If canonical_target is unknown/unrecognized, body_output is returned unchanged.
+    """
+    if canonical_target == "overview":
+        return BodySemanticOutput(
+            document_archetype=body_output.document_archetype,
+            block_classifications=body_output.block_classifications,
+            summary=body_output.summary,
+            skills=body_output.skills,
+            experience=[],
+            education=[],
+            projects=[],
+            certifications=body_output.certifications,
+            languages=body_output.languages,
+            achievements=body_output.achievements,
+        )
+    if canonical_target == "entities":
+        return BodySemanticOutput(
+            document_archetype=body_output.document_archetype,
+            block_classifications=body_output.block_classifications,
+            summary=None,
+            skills=[],
+            experience=body_output.experience,
+            education=body_output.education,
+            projects=body_output.projects,
+            certifications=[],
+            languages=[],
+            achievements=[],
+        )
+
+    recognized_single_targets = {
+        "education",
+        "experience",
+        "skills",
+        "achievements",
+        "certifications",
+        "languages",
+        "projects",
+        "summary",
+    }
+    if canonical_target not in recognized_single_targets:
+        return body_output
+
+    return BodySemanticOutput(
+        document_archetype=body_output.document_archetype,
+        block_classifications=body_output.block_classifications,
+        summary=body_output.summary if canonical_target == "summary" else None,
+        skills=body_output.skills if canonical_target == "skills" else [],
+        experience=body_output.experience if canonical_target == "experience" else [],
+        education=body_output.education if canonical_target == "education" else [],
+        projects=body_output.projects if canonical_target == "projects" else [],
+        certifications=body_output.certifications if canonical_target == "certifications" else [],
+        languages=body_output.languages if canonical_target == "languages" else [],
+        achievements=body_output.achievements if canonical_target == "achievements" else [],
+    )
+
+
+
+def plan_section_aware_body_passes(
+    input_data: SemanticInput,
+) -> list[SectionAwareExtractionUnit]:
+    """Plan isolated extraction units for section-aware body extraction.
+
+    For ACADEMIC_CV:
+    - Multiple physical experience sections (such as RESEARCH EXPERIENCE and TEACHING EXPERIENCE)
+      are preserved as separate sections and NEVER collapsed by group_sections_by_target()
+      prior to appointment segmentation.
+    - Each physical experience section is partitioned into deterministic appointment groups.
+    - Each appointment group forms an isolated extraction unit requesting exactly one entity.
+    - Non-experience supported sections (e.g. education, achievements) are grouped by canonical
+      target to avoid duplicate requests.
+
+    For other archetypes:
+    - All supported sections are grouped by canonical target.
+    """
+    sections = partition_semantic_input_into_sections(input_data)
+    supported = [s for s in sections if s.canonical_target != "unsupported"]
+    if not supported:
+        return []
+
+    units: list[SectionAwareExtractionUnit] = []
+
+    if input_data.archetype == DocumentArchetype.ACADEMIC_CV:
+        # Group non-experience sections by canonical target, preserving first appearance
+        non_exp_grouped: dict[str, SemanticSection] = {}
+        for s in group_sections_by_target([sec for sec in supported if sec.canonical_target != "experience"]):
+            non_exp_grouped[s.canonical_target] = s
+
+        handled_targets: set[str] = set()
+        for sec in supported:
+            if sec.canonical_target == "experience":
+                appt_groups = build_deterministic_appointment_groups(sec, input_data)
+                if appt_groups:
+                    for idx, grp in enumerate(appt_groups):
+                        grp_input = filter_semantic_input_to_blocks(input_data, grp.block_ids, include_headers=False)
+                        units.append(
+                            SectionAwareExtractionUnit(
+                                pass_name="body_appt_experience",
+                                section_input=grp_input,
+                                section_heading=sec.heading_text,
+                                canonical_target="experience",
+                                title_block_id=grp.title_block_id,
+                                is_appointment=True,
+                                appt_index=idx + 1,
+                                total_appts=len(appt_groups),
+                                appointment_block_ids=list(grp.block_ids),
+                            )
+                        )
+                else:
+                    sec_input = filter_semantic_input_to_blocks(input_data, sec.block_ids, include_headers=False)
+                    units.append(
+                        SectionAwareExtractionUnit(
+                            pass_name="body_sec_experience",
+                            section_input=sec_input,
+                            section_heading=sec.heading_text,
+                            canonical_target="experience",
+                        )
+                    )
+            elif sec.canonical_target not in handled_targets:
+                handled_targets.add(sec.canonical_target)
+                target_sec = non_exp_grouped[sec.canonical_target]
+                sec_input = filter_semantic_input_to_blocks(input_data, target_sec.block_ids, include_headers=False)
+                units.append(
+                    SectionAwareExtractionUnit(
+                        pass_name=f"body_sec_{target_sec.canonical_target}",
+                        section_input=sec_input,
+                        section_heading=target_sec.heading_text,
+                        canonical_target=target_sec.canonical_target,
+                    )
+                )
+    else:
+        grouped_supported = group_sections_by_target(supported)
+        for sec in grouped_supported:
+            sec_input = filter_semantic_input_to_blocks(input_data, sec.block_ids, include_headers=False)
+            units.append(
+                SectionAwareExtractionUnit(
+                    pass_name=f"body_sec_{sec.canonical_target}",
+                    section_input=sec_input,
+                    section_heading=sec.heading_text,
+                    canonical_target=sec.canonical_target,
+                )
+            )
+
+    return units
 
 
 EXPERIENCE_ROLE_COMPATIBILITY: dict[str, frozenset[str]] = {
@@ -1222,6 +1738,22 @@ def build_deterministic_experience_spans(
     for sec_idx, sec in enumerate(sections):
         if sec.canonical_target != "experience":
             continue
+
+        # For ACADEMIC_CV, use authoritative appointment groups directly
+        if semantic_input.archetype == DocumentArchetype.ACADEMIC_CV:
+            appt_groups = build_deterministic_appointment_groups(sec, semantic_input)
+            if appt_groups:
+                for grp in appt_groups:
+                    spans.append(
+                        DeterministicEntitySpan(
+                            section_index=sec_idx,
+                            entity_index=global_entity_idx,
+                            block_ids=list(grp.block_ids),
+                            title_block_id=grp.title_block_id,
+                        )
+                    )
+                    global_entity_idx += 1
+                continue
 
         child_blocks = [
             blocks_by_id[bid]
