@@ -388,6 +388,22 @@ class GeometricTableBinder:
 
         return _group_fragments_to_cells(fragments, b, table_id, r_idx, role)
 
+    def detect_document_tables(
+        self,
+        blocks: list[SemanticBlockInput],
+    ) -> list[GeometricTable]:
+        """Detect all geometric tables across all pages of a document."""
+        by_page: dict[int, list[SemanticBlockInput]] = {}
+        for b in blocks:
+            by_page.setdefault(b.page, []).append(b)
+
+        all_tables: list[GeometricTable] = []
+        for page_num in sorted(by_page.keys()):
+            p_blocks = by_page[page_num]
+            tables = self.detect_page_tables(p_blocks, page_num)
+            all_tables.extend(tables)
+        return all_tables
+
     def bind_document_tables(
         self,
         blocks: list[SemanticBlockInput],
@@ -398,6 +414,7 @@ class GeometricTableBinder:
             by_page.setdefault(b.page, []).append(b)
 
         bound_blocks: list[SemanticBlockInput] = []
+        self.last_detected_tables: list[GeometricTable] = []
 
         for page_num in sorted(by_page.keys()):
             p_blocks = by_page[page_num]
@@ -406,6 +423,7 @@ class GeometricTableBinder:
                 bound_blocks.extend(p_blocks)
                 continue
 
+            self.last_detected_tables.extend(tables)
             binding_map: dict[str, list[GeometricCell]] = {}
             for t in tables:
                 for cell in t.cells:

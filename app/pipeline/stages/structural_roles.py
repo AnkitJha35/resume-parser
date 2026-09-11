@@ -128,6 +128,7 @@ _STRUCTURAL_DATE_RE = re.compile(
 )
 
 _section_alias_normalized: set[str] | None = None
+_skills_section_aliases_cache: set[str] | None = None
 
 
 def _normalized_section_aliases() -> set[str]:
@@ -141,6 +142,182 @@ def _normalized_section_aliases() -> set[str]:
                 normalized.add(re.sub(r"[^a-z0-9]+", "", alias.lower()))
         _section_alias_normalized = normalized
     return _section_alias_normalized
+
+
+def _skills_section_aliases() -> set[str]:
+    global _skills_section_aliases_cache
+    if _skills_section_aliases_cache is None:
+        try:
+            with SECTION_ALIASES_PATH.open("r", encoding="utf-8") as handle:
+                aliases = json.load(handle)
+            normalized: set[str] = set()
+            for alias in aliases.get("SKILLS", []):
+                normalized.add(re.sub(r"[^a-z0-9]+", "", alias.lower()))
+            _skills_section_aliases_cache = normalized
+        except Exception:
+            _skills_section_aliases_cache = set()
+    return _skills_section_aliases_cache
+
+
+_SKILL_HEADING_KEYWORDS: frozenset[str] = frozenset({
+    "skills",
+    "skill",
+    "competencies",
+    "competency",
+    "expertise",
+    "proficiencies",
+    "proficiency",
+    "tools",
+    "tooling",
+})
+
+_NON_SKILLS_HEADING_KEYWORDS: frozenset[str] = frozenset({
+    "experience",
+    "employment",
+    "work",
+    "history",
+    "career",
+    "education",
+    "academic",
+    "academics",
+    "training",
+    "project",
+    "projects",
+    "certification",
+    "certifications",
+    "credential",
+    "credentials",
+    "license",
+    "licenses",
+    "award",
+    "awards",
+    "honor",
+    "honors",
+    "achievement",
+    "achievements",
+    "publication",
+    "publications",
+    "presentation",
+    "presentations",
+    "language",
+    "languages",
+    "reference",
+    "references",
+    "volunteer",
+    "summary",
+    "profile",
+    "overview",
+    "objective",
+})
+
+
+def _is_skills_section_heading(text: str) -> bool:
+    value = (text or "").strip()
+    if not value:
+        return False
+    words = {re.sub(r"[^A-Za-z0-9]", "", w).lower() for w in value.split()}
+    words.discard("")
+    if not words:
+        return False
+
+    if words & _NON_SKILLS_HEADING_KEYWORDS:
+        return False
+
+    normalized = re.sub(r"[^a-z0-9]+", "", value.lower())
+    if normalized in _skills_section_aliases():
+        return True
+
+    return bool(words & _SKILL_HEADING_KEYWORDS)
+
+
+_INSTITUTION_KEYWORDS: frozenset[str] = frozenset(
+    set(_INSTITUTIONAL_NOUNS) | {"polytechnic", "campus", "faculty", "seminary", "conservatory"}
+)
+
+_GENERIC_DEGREE_RE = re.compile(
+    r"\b(?:"
+    r"bachelor(?:'?s)?(?:\s+of\s+[A-Za-z]+)?|"
+    r"master(?:'?s)?(?:\s+of\s+[A-Za-z]+)?|"
+    r"doctor(?:ate)?(?:\s+of\s+[A-Za-z]+)?|"
+    r"ph\.?d\.?|m\.?b\.?a\.?|pgdm|"
+    r"b\.?tech\.?|m\.?tech\.?|b\.?e\.?|m\.?e\.?|"
+    r"b\.?sc\.?|m\.?sc\.?|b\.?s\.?|m\.?s\.?|"
+    r"b\.?a\.?|m\.?a\.?|b\.?com\.?|m\.?com\.?|"
+    r"b\.?b\.?a\.?|bca|mca|ll\.?b\.?|ll\.?m\.?|"
+    r"diploma|associate(?:'?s)?(?:\s+degree)?"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _has_nearby_date_evidence(
+    previous_text: str | None,
+    next_text: str | None,
+    following: tuple[str, ...],
+) -> bool:
+    candidates = [
+        t.strip()
+        for t in (
+            ((previous_text,) if previous_text else ())
+            + ((next_text,) if next_text else ())
+            + following[:2]
+        )
+        if t and t.strip()
+    ]
+    for cand in candidates:
+        if (
+            DateRangeParser.parse(cand) is not None
+            or _STRUCTURAL_DATE_RE.match(cand)
+            or _parenthesized_date(cand)
+            or re.search(r"\b(?:19|20)\d{2}\s*[-–—]\s*(?:(?:19|20)\d{2}|present|current|now)\b", cand, re.IGNORECASE)
+            or re.search(r"\b(?:19|20)\d{2}\b", cand)
+        ):
+            return True
+    return False
+
+
+def _looks_like_composite_education_entry(
+    text: str,
+    *,
+    previous_text: str | None = None,
+    next_text: str | None = None,
+    following: tuple[str, ...] = (),
+) -> bool:
+    value = text.strip()
+    if "|" not in value:
+        return False
+    if len(value) < 10 or len(value) > 160:
+        return False
+
+    # Check for corporate suffix across the line (must not be an ordinary corporate employer)
+    words = [re.sub(r"[^A-Za-z0-9]", "", w).lower() for w in value.split()]
+    if any(w in {"inc", "llc", "ltd", "corp", "corporation", "pvt"} for w in words):
+        return False
+
+    # Require contextual support from an adjacent/nearby date block
+    if not _has_nearby_date_evidence(previous_text, next_text, following):
+        return False
+
+    parts = [p.strip() for p in value.split("|") if p.strip()]
+    if len(parts) < 2:
+        return False
+
+    def is_degree_like(part: str) -> bool:
+        if not _GENERIC_DEGREE_RE.search(part):
+            return False
+        if _contains_role_word(part):
+            return False
+        return True
+
+    def is_institution_like(part: str) -> bool:
+        part_words = {re.sub(r"[^A-Za-z0-9]", "", w).lower() for w in part.split()}
+        return bool(part_words & _INSTITUTION_KEYWORDS)
+
+    has_degree_first = is_degree_like(parts[0]) and any(is_institution_like(p) for p in parts[1:])
+    has_inst_first = is_institution_like(parts[0]) and any(is_degree_like(p) for p in parts[1:])
+
+    return has_degree_first or has_inst_first
+
 
 
 _CANONICAL_SECTION_KEYWORDS: set[str] = {
@@ -269,6 +446,14 @@ def classify_structural_role(
     if _looks_like_entry_title(value, font_size=font_size, bold=bold, following=follow):
         return StructuralRole.ENTRY_TITLE, 0.8, ("entry_title_structure",)
 
+    if _looks_like_composite_education_entry(
+        value,
+        previous_text=previous_text,
+        next_text=next_text,
+        following=follow,
+    ):
+        return StructuralRole.ENTRY_TITLE, 0.9, ("education_composite_entry",)
+
     if _CREDENTIAL_RE.search(value):
         return StructuralRole.CREDENTIAL, 0.85, ("credential_pattern",)
 
@@ -283,12 +468,63 @@ def classify_structural_role(
 
     if len(value) > 80:
         return StructuralRole.DESCRIPTION, 0.7, ("long_text",)
-        return StructuralRole.ENTRY_TITLE, 0.8, ("entry_title_structure",)
 
     if _looks_like_technology(value, following=follow, previous_text=previous_text):
         return StructuralRole.TECHNOLOGY, 0.55, ("short_list_technology_candidate",)
 
     return StructuralRole.UNKNOWN, 0.0, ("no_strong_signal",)
+
+
+def _refine_path_roles(blocks: list[StructuralBlock]) -> list[StructuralBlock]:
+    refined: list[StructuralBlock] = []
+    in_skill_section = False
+    for block in blocks:
+        if block.role == StructuralRole.SECTION_HEADING:
+            in_skill_section = _is_skills_section_heading(block.text)
+            refined.append(block)
+            continue
+
+        if in_skill_section:
+            # Preserve bullet markers as BULLET
+            if block.role == StructuralRole.BULLET or _BULLET_ONLY_RE.match(block.text.strip()):
+                refined.append(block)
+                continue
+
+            # Preserve layout headers, footers, sidebars, contact, dates
+            if block.role in {
+                StructuralRole.HEADER,
+                StructuralRole.FOOTER,
+                StructuralRole.SIDEBAR,
+                StructuralRole.CONTACT,
+                StructuralRole.DATE,
+            }:
+                refined.append(block)
+                continue
+
+            # Within explicit skills-oriented section, refine child content blocks to SKILL
+            refined.append(
+                StructuralBlock(
+                    block_id=block.block_id,
+                    text=block.text,
+                    line_ids=block.line_ids,
+                    source_span_ids=block.source_span_ids,
+                    page_number=block.page_number,
+                    region_id=block.region_id,
+                    region_kind=block.region_kind,
+                    path_id=block.path_id,
+                    bbox=block.bbox,
+                    style=block.style,
+                    reading_order=block.reading_order,
+                    reconstruction_method=block.reconstruction_method,
+                    role=StructuralRole.SKILL,
+                    role_score=0.9,
+                    role_reasons=("skill_section_context",),
+                )
+            )
+        else:
+            refined.append(block)
+
+    return refined
 
 
 def _assign_roles_for_path(blocks: list[StructuralBlock]) -> list[StructuralBlock]:
@@ -326,7 +562,8 @@ def _assign_roles_for_path(blocks: list[StructuralBlock]) -> list[StructuralBloc
                 role_reasons=reasons,
             )
         )
-    return assigned
+    return _refine_path_roles(assigned)
+
 
 
 def _link_neighbors(blocks: list[StructuralBlock]) -> list[StructuralBlock]:
@@ -552,9 +789,7 @@ def _looks_like_entry_title(
 ) -> bool:
     value = text.strip()
     words = value.split()
-    if not value or len(words) > 6 or len(value) > 60:
-        return False
-    if any(ch.isdigit() for ch in value):
+    if not value or len(value) > 70:
         return False
     if _is_known_section_alias(value):
         return False
@@ -566,6 +801,30 @@ def _looks_like_entry_title(
         return False
     if not has_role and _looks_like_organization(value):
         return False
+
+    # Check for compound/delimited role titles e.g. "Teaching Assistant · CS 244B: Distributed Systems"
+    delims = re.split(r"\s*[·|–—]\s*|\s+-\s+", value)
+    if len(delims) > 1:
+        head = delims[0].strip()
+        head_words = head.split()
+        if (
+            head_words
+            and len(head_words) <= 4
+            and not any(ch.isdigit() for ch in head)
+            and _contains_role_word(head)
+            and all(w[:1].isupper() for w in head_words if w and w[0].isalpha())
+            and not _looks_like_organization(head)
+        ):
+            title_case_or_upper = value.upper() == value or all(w[:1].isupper() for w in words if w and w[0].isalpha())
+            typography = _has_typography_emphasis(font_size, bold) or title_case_or_upper
+            if _following_looks_like_entry_metadata(following) or typography:
+                return True
+
+    if len(words) > 6 or len(value) > 60:
+        return False
+    if any(ch.isdigit() for ch in value):
+        return False
+
     title_case_or_upper = value.upper() == value or all(w[:1].isupper() for w in words if w and w[0].isalpha())
     typography = _has_typography_emphasis(font_size, bold) or title_case_or_upper
     if not typography and not has_role:
@@ -651,6 +910,21 @@ def _is_wrapped_description(
     return True
 
 
+_EXCLUDED_TECHNOLOGY_TERMS = frozenset({
+    "rank", "vessel", "vessel name", "ship", "ship name", "flag", "sign on", "sign off",
+    "dwt", "grt", "nrt", "engine", "engine type", "bhp", "kw", "duration",
+    "passport", "cdc", "seaman book", "seaman's book", "indos", "sid", "visa", "license", "licence",
+    "nationality", "marital status", "blood group", "height", "weight", "gender", "sex",
+    "place of birth", "date of birth", "dob", "pob", "next of kin", "religion",
+    "blank pages", "ecnr", "place of issue", "date of issue", "date of expiry",
+    "stcw", "course", "course name", "grade", "endorsement", "remarks", "remark",
+    "degree", "qualification", "institute", "institution", "college", "university",
+    "passing year", "year of passing", "marks", "percentage",
+    "address", "permanent address", "present address", "airport", "nearest airport",
+    "s. no.", "sr. no.", "number", "no.", "doc number", "certificate no", "cert no",
+})
+
+
 def _looks_like_technology(
     text: str,
     *,
@@ -664,6 +938,9 @@ def _looks_like_technology(
     if any(ch.isdigit() for ch in value):
         return False
     if _contains_role_word(value) or _is_known_section_alias(value):
+        return False
+    clean_val = re.sub(r"[^A-Za-z0-9\s/.-]", "", value).strip().lower()
+    if clean_val in _EXCLUDED_TECHNOLOGY_TERMS:
         return False
     # Only in list-like neighborhoods to avoid labeling arbitrary short nouns.
     neighbors = [item for item in ((previous_text,) if previous_text else ()) + following if item]

@@ -170,6 +170,8 @@ class SemanticBlockInput(BaseModel):
     row_index: int | None = None
     column_index: int | None = None
     cell_role: str | None = None  # e.g. "HEADER", "DATA"
+    table_purpose: str | None = None
+    column_semantic: str | None = None
 
     # Underlying span geometry if available from reconstruction/IR
     spans: list[dict[str, Any]] = Field(default_factory=list)
@@ -191,6 +193,7 @@ class SemanticInput(BaseModel):
     archetype: DocumentArchetype = DocumentArchetype.STANDARD_CV
     pages: list[SemanticPageMeta] = Field(default_factory=list)
     blocks: list[SemanticBlockInput] = Field(default_factory=list)
+    tables: list[Any] = Field(default_factory=list)
 
 
 # =====================================================================
@@ -2136,15 +2139,24 @@ def build_semantic_input(
             )
         )
 
+    semantic_tables: list[Any] = []
     if archetype in (
         DocumentArchetype.MARITIME_CV,
         DocumentArchetype.MARITIME_TABULAR,
         DocumentArchetype.STRUCTURED_FORM,
     ):
         from app.pipeline.stages.table_binding import GeometricTableBinder
+        from app.pipeline.stages.table_semantic_context import (
+            apply_table_semantics_to_blocks,
+            build_table_semantic_contexts,
+        )
 
         binder = GeometricTableBinder()
+        tables = binder.detect_document_tables(all_blocks)
         all_blocks = binder.bind_document_tables(all_blocks)
+        if tables:
+            semantic_tables = build_table_semantic_contexts(tables, all_blocks)
+            all_blocks = apply_table_semantics_to_blocks(semantic_tables, all_blocks)
 
     return SemanticInput(
         document_id=document_id,
@@ -2152,6 +2164,7 @@ def build_semantic_input(
         archetype=archetype,
         pages=pages,
         blocks=all_blocks,
+        tables=semantic_tables,
     )
 
 

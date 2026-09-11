@@ -531,12 +531,20 @@ def serialize_compact_semantic_input(semantic_input: SemanticInput) -> str:
                     block_dict["col"] = b.column_index
                 if b.cell_role and b.cell_role != "DATA":
                     block_dict["cell_role"] = b.cell_role
+                if b.table_purpose is not None:
+                    block_dict["tbl_purpose"] = b.table_purpose
+                if b.column_semantic is not None:
+                    block_dict["col_semantic"] = b.column_semantic
             compact_blocks.append(block_dict)
 
         payload: dict[str, Any] = {
             "doc_id": semantic_input.document_id,
             "blocks": compact_blocks,
         }
+        if semantic_input.tables:
+            payload["tables"] = [
+                t.to_dict() if hasattr(t, "to_dict") else t for t in semantic_input.tables
+            ]
         return json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
 
     # Complex archetypes (MARITIME_CV, MARITIME_TABULAR, STRUCTURED_FORM, ACADEMIC_CV, etc.)
@@ -604,12 +612,95 @@ def serialize_compact_semantic_input(semantic_input: SemanticInput) -> str:
                 block_dict["col"] = b.column_index
             if b.cell_role and b.cell_role != "DATA":
                 block_dict["cell_role"] = b.cell_role
+            if b.table_purpose is not None:
+                block_dict["tbl_purpose"] = b.table_purpose
+            if b.column_semantic is not None:
+                block_dict["col_semantic"] = b.column_semantic
         compact_blocks.append(block_dict)
 
     payload = {
         "doc_id": semantic_input.document_id,
         "archetype": semantic_input.archetype.value,
         "blocks": compact_blocks,
+    }
+    if semantic_input.tables:
+        payload["tables"] = [
+            t.to_dict() if hasattr(t, "to_dict") else t for t in semantic_input.tables
+        ]
+    return json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+
+
+def serialize_structured_table_semantic_input(semantic_input: SemanticInput) -> str:
+    """Serialize SemanticInput with explicit structured tables and compact non-table blocks.
+
+    Provides a highly compressed representation of tabular/form resumes where tabular data
+    is serialized as structured tables (with columns, row records, and cell source IDs)
+    rather than repeated flat block dictionaries.
+    """
+    table_block_ids: set[str] = set()
+    for t in semantic_input.tables:
+        if hasattr(t, "source_block_ids"):
+            table_block_ids.update(t.source_block_ids)
+
+    non_table_blocks: list[dict[str, Any]] = []
+    for b in semantic_input.blocks:
+        if b.block_id in table_block_ids:
+            continue
+        b_dict: dict[str, Any] = {
+            "id": b.block_id,
+            "text": b.text,
+        }
+        if b.suggested_role and b.suggested_role != "UNKNOWN":
+            b_dict["role"] = b.suggested_role
+        if b.page > 1 or semantic_input.page_count > 1:
+            b_dict["page"] = b.page
+        if b.region_id:
+            b_dict["region"] = b.region_id
+        if b.is_bold is True:
+            b_dict["bold"] = True
+        non_table_blocks.append(b_dict)
+
+    structured_tables: list[dict[str, Any]] = []
+    for t in semantic_input.tables:
+        if hasattr(t, "columns") and hasattr(t, "rows"):
+            structured_tables.append({
+                "table_id": t.table_id,
+                "page": t.page,
+                "purpose": t.purpose.value if hasattr(t.purpose, "value") else str(t.purpose),
+                "confidence": round(t.confidence, 2),
+                "is_form_table": t.is_form_table,
+                "columns": [
+                    {
+                        "col_idx": c.column_index,
+                        "header": c.header_text,
+                        "semantic_role": c.semantic_role,
+                        "source_block_ids": c.source_block_ids,
+                    }
+                    for c in t.columns
+                ],
+                "rows": [
+                    [
+                        {
+                            "col_idx": cell.column_index,
+                            "text": cell.text,
+                            "role": cell.semantic_role,
+                            "source_block_ids": cell.source_block_ids,
+                        }
+                        for cell in row
+                        if cell.text.strip()
+                    ]
+                    for r_idx, row in enumerate(t.rows)
+                    if r_idx > 0 or t.is_form_table
+                ],
+            })
+        elif hasattr(t, "to_dict"):
+            structured_tables.append(t.to_dict())
+
+    payload = {
+        "doc_id": semantic_input.document_id,
+        "archetype": semantic_input.archetype.value,
+        "blocks": non_table_blocks,
+        "tables": structured_tables,
     }
     return json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
 
