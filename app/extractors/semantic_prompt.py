@@ -810,6 +810,44 @@ def build_body_recovery_prompt(semantic_input: SemanticInput) -> str:
     return "\n".join(lines)
 
 
+def build_structured_table_extraction_prompt(semantic_input: SemanticInput) -> str:
+    """Construct single-pass extraction prompt using structured-table serialization.
+
+    Uses serialize_structured_table_semantic_input() which renders tabular/form data as
+    structured JSON table objects rather than a flat block list, reducing payload size
+    significantly for MARITIME_CV, MARITIME_TABULAR, and STRUCTURED_FORM documents.
+    """
+    serialized_input = serialize_structured_table_semantic_input(semantic_input)
+    return (
+        f"{SEMANTIC_EXTRACTION_SYSTEM_PROMPT}\n\n"
+        f"DOCUMENT BLOCKS (JSON):\n"
+        f"```json\n{serialized_input}\n```\n\n"
+        f"Extract the resume data as a JSON object adhering strictly to the SemanticOutput schema."
+    )
+
+
+def build_structured_table_personal_prompt(semantic_input: SemanticInput) -> str:
+    """Construct Pass 1 personal extraction prompt using structured-table serialization."""
+    serialized_input = serialize_structured_table_semantic_input(semantic_input)
+    return (
+        f"{PERSONAL_EXTRACTION_SYSTEM_PROMPT}\n\n"
+        f"DOCUMENT BLOCKS (JSON):\n"
+        f"```json\n{serialized_input}\n```\n\n"
+        f"Extract the personal data as a JSON object adhering strictly to the PersonalSemanticOutput schema."
+    )
+
+
+def build_structured_table_body_prompt(semantic_input: SemanticInput) -> str:
+    """Construct Pass 2 body extraction prompt using structured-table serialization."""
+    serialized_input = serialize_structured_table_semantic_input(semantic_input)
+    return (
+        f"{BODY_EXTRACTION_SYSTEM_PROMPT}\n\n"
+        f"DOCUMENT BLOCKS (JSON):\n"
+        f"```json\n{serialized_input}\n```\n\n"
+        f"Extract the resume body data as a JSON object adhering strictly to the BodySemanticOutput schema."
+    )
+
+
 def get_personal_schema() -> dict[str, Any]:
     """Return inlined JSON schema for PersonalSemanticOutput."""
     return get_compact_schema(PersonalSemanticOutput)

@@ -86,6 +86,7 @@ def main(argv: list[str] | None = None) -> int:
             "candidate_b_two_pass",
             "candidate_b_single_pass",
             "full",
+            "structured_table_two_pass",
         ],
         help="Payload representation and execution mode (default: two_pass_candidate_b)",
     )
@@ -137,8 +138,12 @@ def main(argv: list[str] | None = None) -> int:
 
     provider = args.provider.lower()
 
-    # Determine two_pass and compact flags
+    # Determine two_pass, compact, and structured_table flags
     rep = args.representation.lower()
+
+    # structured_table_two_pass is an explicit structured-table serializer representation
+    structured_table = (rep == "structured_table_two_pass")
+
     if args.two_pass is not None:
         two_pass = args.two_pass
     elif "two_pass" in rep:
@@ -147,7 +152,14 @@ def main(argv: list[str] | None = None) -> int:
         two_pass = False
 
     compact = (rep != "full")
-    resolved_rep = "two_pass_candidate_b" if two_pass else ("full" if not compact else "single_pass_candidate_b")
+    if structured_table:
+        resolved_rep = "structured_table_two_pass"
+    elif two_pass:
+        resolved_rep = "two_pass_candidate_b"
+    elif not compact:
+        resolved_rep = "full"
+    else:
+        resolved_rep = "single_pass_candidate_b"
 
     if provider == "ollama":
         from app.extractors.providers.ollama import OllamaSemanticExtractor
@@ -206,6 +218,7 @@ def main(argv: list[str] | None = None) -> int:
             timeout=timeout,
             compact=compact,
             two_pass=two_pass,
+            structured_table=structured_table,
         )
     elif provider == "openrouter":
         from app.extractors.providers.openrouter import OpenRouterSemanticExtractor

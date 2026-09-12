@@ -49,6 +49,9 @@ from app.extractors.semantic_prompt import (
     build_extraction_prompt,
     build_full_extraction_prompt,
     build_personal_extraction_prompt,
+    build_structured_table_body_prompt,
+    build_structured_table_extraction_prompt,
+    build_structured_table_personal_prompt,
     get_body_schema,
     get_compact_schema,
     get_personal_schema,
@@ -194,6 +197,7 @@ class GeminiSemanticExtractor:
         client: httpx.Client | None = None,
         compact: bool = True,
         two_pass: bool | None = None,
+        structured_table: bool = False,
     ) -> None:
         self._explicit_api_key = api_key
         self._explicit_model = model
@@ -208,7 +212,16 @@ class GeminiSemanticExtractor:
         self._time_fn = time_fn
         self._client = client
         self._compact = compact
+        self._structured_table = structured_table
         self.last_usage_metadata: dict[str, Any] | None = None
+
+    def _resolve_representation(self, two_pass: bool) -> str:
+        """Return the representation label for usage metadata."""
+        if self._structured_table:
+            return "structured_table_two_pass" if two_pass else "structured_table_single_pass"
+        if self._compact:
+            return "candidate_b_compact"
+        return "full"
 
     def _resolve_two_pass(self) -> bool:
         """Resolve two-pass mode configuration."""
@@ -587,7 +600,7 @@ class GeminiSemanticExtractor:
             self.last_usage_metadata = {
                 "provider": "gemini",
                 "model": model_for_metadata,
-                "representation": "candidate_b_compact" if self._compact else "full",
+                "representation": self._resolve_representation(False),
                 "prompt_tokens": None,
                 "output_tokens": None,
                 "total_tokens": None,
@@ -608,7 +621,9 @@ class GeminiSemanticExtractor:
         if not two_pass:
             # Single-pass execution
             try:
-                if self._compact:
+                if self._structured_table:
+                    prompt = build_structured_table_extraction_prompt(input_data)
+                elif self._compact:
                     prompt = build_compact_extraction_prompt(input_data)
                 else:
                     prompt = build_full_extraction_prompt(input_data)
@@ -642,7 +657,7 @@ class GeminiSemanticExtractor:
                 self.last_usage_metadata = {
                     "provider": "gemini",
                     "model": model,
-                    "representation": "candidate_b_compact" if self._compact else "full",
+                    "representation": self._resolve_representation(False),
                     "prompt_tokens": usage_dict.get("prompt_tokens"),
                     "output_tokens": usage_dict.get("output_tokens"),
                     "total_tokens": usage_dict.get("total_tokens"),
@@ -673,7 +688,7 @@ class GeminiSemanticExtractor:
                 self.last_usage_metadata = {
                     "provider": "gemini",
                     "model": model,
-                    "representation": "candidate_b_compact" if self._compact else "full",
+                    "representation": self._resolve_representation(False),
                     "prompt_tokens": last_meta.get("prompt_tokens"),
                     "output_tokens": last_meta.get("output_tokens"),
                     "total_tokens": last_meta.get("total_tokens"),
@@ -693,10 +708,11 @@ class GeminiSemanticExtractor:
 
         # Two-pass concurrent execution
         try:
-            prompt_personal = build_personal_extraction_prompt(input_data)
+            if self._structured_table:
+                prompt_personal = build_structured_table_personal_prompt(input_data)
+            else:
+                prompt_personal = build_personal_extraction_prompt(input_data)
             schema_personal = pydantic_to_gemini_schema(PersonalSemanticOutput)
-
-            prompt_body = build_body_extraction_prompt(input_data)
             schema_body = pydantic_to_gemini_schema(BodySemanticOutput)
 
             def _run_personal() -> tuple[PersonalSemanticOutput, dict[str, Any], int]:
@@ -726,6 +742,8 @@ class GeminiSemanticExtractor:
                 """
                 if is_recovery:
                     prompt = build_body_recovery_prompt(section_input)
+                elif self._structured_table:
+                    prompt = build_structured_table_body_prompt(section_input)
                 else:
                     prompt = build_body_extraction_prompt(section_input)
                 raw_text, usage, retries = self._execute_prompt_request(
@@ -945,7 +963,10 @@ class GeminiSemanticExtractor:
                 else:
                     normal_body_input = input_data
 
-                prompt_body_req = build_body_extraction_prompt(normal_body_input)
+                if self._structured_table:
+                    prompt_body_req = build_structured_table_body_prompt(normal_body_input)
+                else:
+                    prompt_body_req = build_body_extraction_prompt(normal_body_input)
                 raw_text, usage, retries = self._execute_prompt_request(
                     prompt=prompt_body_req,
                     response_schema=schema_body,
@@ -1101,7 +1122,7 @@ class GeminiSemanticExtractor:
             self.last_usage_metadata = {
                 "provider": "gemini",
                 "model": model,
-                "representation": "candidate_b_compact" if self._compact else "full",
+                "representation": self._resolve_representation(True),
                 "prompt_tokens": prompt_tokens,
                 "output_tokens": output_tokens,
                 "total_tokens": total_tokens,
@@ -1139,7 +1160,7 @@ class GeminiSemanticExtractor:
             self.last_usage_metadata = {
                 "provider": "gemini",
                 "model": model,
-                "representation": "candidate_b_compact" if self._compact else "full",
+                "representation": self._resolve_representation(True),
                 "prompt_tokens": last_meta.get("prompt_tokens"),
                 "output_tokens": last_meta.get("output_tokens"),
                 "total_tokens": last_meta.get("total_tokens"),
