@@ -55,6 +55,8 @@ from app.pipeline.stages.table_semantic_context import (
     detect_is_form_table,
     infer_column_semantics,
     infer_table_purpose,
+    is_logical_row_continuation,
+    merge_logical_table_rows,
 )
 from app.pipeline.stages.text_extraction import PDFExtractor
 
@@ -538,3 +540,298 @@ def test_surrounding_section_heading_reinforcement():
     purpose, conf, ev = infer_table_purpose(table, [heading])
     assert purpose == TablePurpose.SEA_SERVICE
     assert any("heading:sea service" in e for e in ev)
+
+
+# =============================================================================
+# Phase 10W.1: Logical Row Continuation Tests (Cases A through L)
+# =============================================================================
+
+def _make_descriptor_row(row_idx: int, cells: list[tuple[str, str, str]], col_count: int) -> list[CellSemanticDescriptor]:
+    """Helper to create a row of CellSemanticDescriptors.
+    cells: list of (col_idx_or_role, text, block_id)
+    """
+    row = []
+    for c_idx in range(col_count):
+        match = next((item for item in cells if item[0] == c_idx), None)
+        if match:
+            _, txt, bid, role = match
+            source_ids = [bid] if bid else []
+            row.append(CellSemanticDescriptor(
+                row_index=row_idx,
+                column_index=c_idx,
+                text=txt,
+                cell_role="HEADER" if row_idx == 0 else "DATA",
+                semantic_role=role,
+                source_block_ids=source_ids,
+            ))
+        else:
+            row.append(CellSemanticDescriptor(
+                row_index=row_idx,
+                column_index=c_idx,
+                text="",
+                cell_role="HEADER" if row_idx == 0 else "DATA",
+                semantic_role="unknown",
+                source_block_ids=[],
+            ))
+    return row
+
+
+def test_case_a_certification_wrapped_course_name():
+    """Case A: Logical row merges wrapped course name (e.g. 'Rescue' + 'Boat')."""
+    cols = [
+        ColumnSemanticDescriptor(column_index=0, header_text="Course", semantic_role="course_name"),
+        ColumnSemanticDescriptor(column_index=1, header_text="Cert No", semantic_role="certificate_number"),
+        ColumnSemanticDescriptor(column_index=2, header_text="Date", semantic_role="issue_date"),
+    ]
+    r0 = _make_descriptor_row(0, [(0, "Course", "b_h0", "course_name"), (1, "Cert No", "b_h1", "certificate_number"), (2, "Date", "b_h2", "issue_date")], 3)
+    r1 = _make_descriptor_row(1, [(0, "Proficiency in Survival Craft / Rescue", "b1", "course_name"), (1, "043.232820", "b2", "certificate_number"), (2, "22-02-2026", "b3", "issue_date")], 3)
+    r2 = _make_descriptor_row(2, [(0, "Boat", "b4", "course_name")], 3)
+
+    merged = merge_logical_table_rows([r0, r1, r2], cols, TablePurpose.COURSES_CERTIFICATIONS)
+    assert len(merged) == 2  # header + 1 logical row
+    log_row = merged[1]
+    assert log_row[0].text == "Proficiency in Survival Craft / Rescue Boat"
+    assert log_row[0].source_block_ids == ["b1", "b4"]
+    assert log_row[1].text == "043.232820"
+    assert log_row[1].source_block_ids == ["b2"]
+
+
+def test_case_b_certification_wrapped_issuing_authority():
+    """Case B: Logical row merges wrapped issuing authority (e.g. 'Department' + 'of shipping, Bangladesh')."""
+    cols = [
+        ColumnSemanticDescriptor(column_index=0, header_text="Course", semantic_role="course_name"),
+        ColumnSemanticDescriptor(column_index=1, header_text="Cert No", semantic_role="certificate_number"),
+        ColumnSemanticDescriptor(column_index=2, header_text="Issued by", semantic_role="issuing_authority"),
+    ]
+    r0 = _make_descriptor_row(0, [(0, "Course", "b_h0", "course_name"), (1, "Cert No", "b_h1", "certificate_number"), (2, "Issued by", "b_h2", "issuing_authority")], 3)
+    r1 = _make_descriptor_row(1, [(0, "Medical First Aid", "b1", "course_name"), (1, "046.232821", "b2", "certificate_number"), (2, "Department", "b3", "issuing_authority")], 3)
+    r2 = _make_descriptor_row(2, [(2, "of shipping, Bangladesh", "b4", "issuing_authority")], 3)
+
+    merged = merge_logical_table_rows([r0, r1, r2], cols, TablePurpose.COURSES_CERTIFICATIONS)
+    assert len(merged) == 2
+    log_row = merged[1]
+    assert log_row[0].text == "Medical First Aid"
+    assert log_row[2].text == "Department of shipping, Bangladesh"
+    assert log_row[2].source_block_ids == ["b3", "b4"]
+
+
+def test_case_c_both_course_and_authority_continuation():
+    """Case C: Both course name and issuing authority wrap in the same row pair."""
+    cols = [
+        ColumnSemanticDescriptor(column_index=0, header_text="Course", semantic_role="course_name"),
+        ColumnSemanticDescriptor(column_index=1, header_text="Cert No", semantic_role="certificate_number"),
+        ColumnSemanticDescriptor(column_index=2, header_text="Issued by", semantic_role="issuing_authority"),
+    ]
+    r0 = _make_descriptor_row(0, [(0, "Course", "b_h0", "course_name"), (1, "Cert No", "b_h1", "certificate_number"), (2, "Issued by", "b_h2", "issuing_authority")], 3)
+    r1 = _make_descriptor_row(1, [(0, "Personal Survival & Social", "b1", "course_name"), (1, "042.153009", "b2", "certificate_number"), (2, "Department", "b3", "issuing_authority")], 3)
+    r2 = _make_descriptor_row(2, [(0, "Responsibility (PSSR)", "b4", "course_name"), (2, "of shipping, Bangladesh", "b5", "issuing_authority")], 3)
+
+    merged = merge_logical_table_rows([r0, r1, r2], cols, TablePurpose.COURSES_CERTIFICATIONS)
+    assert len(merged) == 2
+    log_row = merged[1]
+    assert log_row[0].text == "Personal Survival & Social Responsibility (PSSR)"
+    assert log_row[0].source_block_ids == ["b1", "b4"]
+    assert log_row[1].text == "042.153009"
+    assert log_row[2].text == "Department of shipping, Bangladesh"
+    assert log_row[2].source_block_ids == ["b3", "b5"]
+
+
+def test_case_d_multiple_consecutive_continuation_rows():
+    """Case D: Multiple consecutive physical continuation rows merge into a single logical record."""
+    cols = [
+        ColumnSemanticDescriptor(column_index=0, header_text="Degree", semantic_role="degree"),
+        ColumnSemanticDescriptor(column_index=1, header_text="Institute", semantic_role="institution"),
+    ]
+    r0 = _make_descriptor_row(0, [(0, "Degree", "b_h0", "degree"), (1, "Institute", "b_h1", "institution")], 2)
+    r1 = _make_descriptor_row(1, [(0, "Bachelor of Science in", "b1", "degree"), (1, "Stanford", "b2", "institution")], 2)
+    r2 = _make_descriptor_row(2, [(0, "Computer Science and", "b3", "degree")], 2)
+    r3 = _make_descriptor_row(3, [(0, "Software Engineering", "b4", "degree")], 2)
+
+    merged = merge_logical_table_rows([r0, r1, r2, r3], cols, TablePurpose.EDUCATION)
+    assert len(merged) == 2
+    log_row = merged[1]
+    assert log_row[0].text == "Bachelor of Science in Computer Science and Software Engineering"
+    assert log_row[0].source_block_ids == ["b1", "b3", "b4"]
+    assert log_row[1].text == "Stanford"
+
+
+def test_case_e_continuation_does_not_merge_genuine_new_record():
+    """Case E: Two genuine distinct records with different identifiers or dates are NOT merged."""
+    cols = [
+        ColumnSemanticDescriptor(column_index=0, header_text="Course", semantic_role="course_name"),
+        ColumnSemanticDescriptor(column_index=1, header_text="Cert No", semantic_role="certificate_number"),
+        ColumnSemanticDescriptor(column_index=2, header_text="Issue Date", semantic_role="issue_date"),
+    ]
+    r0 = _make_descriptor_row(0, [(0, "Course", "b_h0", "course_name"), (1, "Cert No", "b_h1", "certificate_number"), (2, "Date", "b_h2", "issue_date")], 3)
+    r1 = _make_descriptor_row(1, [(0, "Advanced Fire Fighting", "b1", "course_name"), (1, "045.232822", "b2", "certificate_number"), (2, "22-02-2026", "b3", "issue_date")], 3)
+    r2 = _make_descriptor_row(2, [(0, "Medical First Aid", "b4", "course_name"), (1, "046.232821", "b5", "certificate_number"), (2, "22-02-2026", "b6", "issue_date")], 3)
+
+    merged = merge_logical_table_rows([r0, r1, r2], cols, TablePurpose.COURSES_CERTIFICATIONS)
+    assert len(merged) == 3  # header + 2 separate logical records
+    assert merged[1][0].text == "Advanced Fire Fighting"
+    assert merged[2][0].text == "Medical First Aid"
+
+
+def test_case_f_variable_column_counts():
+    """Case F: Continuation works across tables with variable column counts (e.g. 7-column sea service)."""
+    cols = [
+        ColumnSemanticDescriptor(column_index=0, header_text="Sr No", semantic_role="serial_no"),
+        ColumnSemanticDescriptor(column_index=1, header_text="Ship Name", semantic_role="vessel_name"),
+        ColumnSemanticDescriptor(column_index=2, header_text="Company", semantic_role="company"),
+        ColumnSemanticDescriptor(column_index=3, header_text="Type/GT", semantic_role="grt"),
+        ColumnSemanticDescriptor(column_index=4, header_text="Rank", semantic_role="rank"),
+        ColumnSemanticDescriptor(column_index=5, header_text="Sign On", semantic_role="sign_on"),
+        ColumnSemanticDescriptor(column_index=6, header_text="Sign Off", semantic_role="sign_off"),
+    ]
+    r0 = _make_descriptor_row(0, [(i, f"H{i}", f"bh{i}", cols[i].semantic_role) for i in range(7)], 7)
+    r1 = _make_descriptor_row(1, [
+        (0, "2.", "b1", "serial_no"),
+        (1, "SCI CHENNAI", "b2", "vessel_name"),
+        (2, "9418298 SCI", "b3", "company"),
+        (3, "Container Ship /", "b4", "grt"),
+        (4, "DECK CADET", "b5", "rank"),
+        (5, "16.10.2023", "b6", "sign_on"),
+        (6, "27.03.2024", "b7", "sign_off"),
+    ], 7)
+    r2 = _make_descriptor_row(2, [(3, "43679", "b8", "grt")], 7)
+
+    merged = merge_logical_table_rows([r0, r1, r2], cols, TablePurpose.SEA_SERVICE)
+    assert len(merged) == 2
+    assert merged[1][3].text == "Container Ship / 43679"
+    assert merged[1][3].source_block_ids == ["b4", "b8"]
+
+
+def test_case_g_source_block_ids_preserved_exactly():
+    """Case G: Source block IDs are combined in order without fabrication or duplicates."""
+    cols = [
+        ColumnSemanticDescriptor(column_index=0, header_text="Doc", semantic_role="document_name"),
+        ColumnSemanticDescriptor(column_index=1, header_text="DOE", semantic_role="expiry_date"),
+    ]
+    r0 = _make_descriptor_row(0, [(0, "Doc", "b_h0", "document_name"), (1, "DOE", "b_h1", "expiry_date")], 2)
+    r1 = _make_descriptor_row(1, [(0, "Oil Endorsement", "b10", "document_name"), (1, "27-04-", "b11", "expiry_date")], 2)
+    r2 = _make_descriptor_row(2, [(1, "2030", "b12", "expiry_date")], 2)
+
+    merged = merge_logical_table_rows([r0, r1, r2], cols, TablePurpose.DOCUMENTS)
+    assert len(merged) == 2
+    assert merged[1][1].text == "27-04-2030"
+    assert merged[1][1].source_block_ids == ["b11", "b12"]
+
+
+def test_case_h_column_semantics_remain_unchanged():
+    """Case H: Semantic roles of columns and cells are strictly maintained across merged rows."""
+    cols = [
+        ColumnSemanticDescriptor(column_index=0, header_text="Course", semantic_role="course_name"),
+        ColumnSemanticDescriptor(column_index=1, header_text="Issued by", semantic_role="issuing_authority"),
+    ]
+    r0 = _make_descriptor_row(0, [(0, "Course", "b_h0", "course_name"), (1, "Issued by", "b_h1", "issuing_authority")], 2)
+    r1 = _make_descriptor_row(1, [(0, "Survival Craft /", "b1", "course_name"), (1, "Department", "b2", "issuing_authority")], 2)
+    r2 = _make_descriptor_row(2, [(0, "Rescue Boat", "b3", "course_name"), (1, "of Shipping", "b4", "issuing_authority")], 2)
+
+    merged = merge_logical_table_rows([r0, r1, r2], cols, TablePurpose.COURSES_CERTIFICATIONS)
+    assert merged[1][0].semantic_role == "course_name"
+    assert merged[1][1].semantic_role == "issuing_authority"
+    assert merged[1][0].text == "Survival Craft / Rescue Boat"
+    assert merged[1][1].text == "Department of Shipping"
+
+
+def test_case_i_text_order_preserved():
+    """Case I: Merged cell text order is preserved strictly in reading order with single space separator."""
+    cols = [ColumnSemanticDescriptor(column_index=0, header_text="Course", semantic_role="course_name")]
+    r0 = _make_descriptor_row(0, [(0, "Course", "b_h0", "course_name")], 1)
+    r1 = _make_descriptor_row(1, [(0, "Advance Oil Tanker Training", "b1", "course_name")], 1)
+    r2 = _make_descriptor_row(2, [(0, "(OCTO)", "b2", "course_name")], 1)
+
+    merged = merge_logical_table_rows([r0, r1, r2], cols, TablePurpose.COURSES_CERTIFICATIONS)
+    assert merged[1][0].text == "Advance Oil Tanker Training (OCTO)"
+
+
+def test_case_j_ambiguous_case_conservatively_remains_separate():
+    """Case J: Ambiguous standalone courses without continuation signals conservatively remain separate."""
+    cols = [
+        ColumnSemanticDescriptor(column_index=0, header_text="Course", semantic_role="course_name"),
+        ColumnSemanticDescriptor(column_index=1, header_text="Cert No", semantic_role="certificate_number"),
+    ]
+    r0 = _make_descriptor_row(0, [(0, "Course", "b_h0", "course_name"), (1, "Cert No", "b_h1", "certificate_number")], 2)
+    r1 = _make_descriptor_row(1, [(0, "Radar Simulator (RANSCO)", "b1", "course_name"), (1, "051.232336", "b2", "certificate_number")], 2)
+    r2 = _make_descriptor_row(2, [(0, "LCHS", "b3", "course_name")], 2)
+
+    merged = merge_logical_table_rows([r0, r1, r2], cols, TablePurpose.COURSES_CERTIFICATIONS)
+    assert len(merged) == 3  # Not merged!
+    assert merged[1][0].text == "Radar Simulator (RANSCO)"
+    assert merged[2][0].text == "LCHS"
+
+
+def test_case_k_akibul_fixture_logical_certification_rows():
+    """Case K: Real AKIBUL ALAM CV fixture produces logical certification rows with exact text and IDs."""
+    fixture_path = Path("tests/fixtures/AKIBUL ALAM CV(JO).pdf")
+    if not fixture_path.exists():
+        pytest.skip(f"Fixture {fixture_path} not found")
+
+    raw = fixture_path.read_bytes()
+    extracted = PDFExtractor.extract(raw)
+    doc = document_from_text_blocks(extracted)
+    reconstructed = reconstruct_document(doc)
+    layout = interpret_layout(reconstructed)
+    si = build_semantic_input(layout, document_id=fixture_path.name)
+
+    t_cert = next(t for t in si.tables if t.table_id == "table_p2_1")
+    assert t_cert.purpose == TablePurpose.COURSES_CERTIFICATIONS
+
+    # Find the logical row for Survival Craft / Rescue Boat
+    rescue_row = next((r for r in t_cert.rows if any("Survival Craft" in c.text for c in r)), None)
+    assert rescue_row is not None
+
+    course_cell = next(c for c in rescue_row if c.semantic_role == "course_name")
+    auth_cell = next(c for c in rescue_row if c.semantic_role == "issuing_authority")
+
+    assert course_cell.text == "Proficiency in Survival Craft / Rescue Boat"
+    assert "b_p2_110" in course_cell.source_block_ids
+    assert "b_p2_112" in course_cell.source_block_ids
+
+    assert auth_cell.text == "Department of shipping, Bangladesh"
+    assert "b_p2_167" in auth_cell.source_block_ids
+    assert "b_p2_168" in auth_cell.source_block_ids
+    assert "b_p2_169" in auth_cell.source_block_ids
+
+    # Structured table serialization should contain the logical record and not separate continuation rows
+    serialized = serialize_structured_table_semantic_input(si)
+    payload = json.loads(serialized)
+    ser_t_cert = next(t for t in payload["tables"] if t["table_id"] == "table_p2_1")
+
+    # Verify 'Boat' does not appear as an isolated course in its own row
+    boat_only_rows = [
+        row for row in ser_t_cert["rows"]
+        if any(cell["text"] == "Boat" for cell in row)
+    ]
+    assert len(boat_only_rows) == 0
+
+    # Verify full merged title appears
+    full_course_cells = [
+        cell for row in ser_t_cert["rows"]
+        for cell in row
+        if cell["text"] == "Proficiency in Survival Craft / Rescue Boat"
+    ]
+    assert len(full_course_cells) == 1
+    assert "b_p2_110" in full_course_cells[0]["source_block_ids"]
+    assert "b_p2_112" in full_course_cells[0]["source_block_ids"]
+
+
+def test_case_l_rishabh_and_aashish_fixtures_unaffected():
+    """Case L: Existing Rishabh Dixit and AASHISH DG tables remain healthy and preserve logical rows."""
+    # 1. Rishabh Dixit sea service table merges wrapped GRT
+    rishabh_path = Path("tests/fixtures/CV Rishabh Dixit.pdf")
+    if rishabh_path.exists():
+        raw_r = rishabh_path.read_bytes()
+        si_r = build_semantic_input(interpret_layout(reconstruct_document(document_from_text_blocks(PDFExtractor.extract(raw_r)))))
+        t_sea = next(t for t in si_r.tables if t.table_id == "table_p1_0")
+        grt_cells = [c for r in t_sea.rows for c in r if c.semantic_role == "grt"]
+        assert any("Container Ship / 43679" in c.text for c in grt_cells)
+
+    # 2. AASHISH DG form tables remain healthy
+    aashish_path = Path("tests/fixtures/AASHISH DG.pdf")
+    if aashish_path.exists():
+        raw_a = aashish_path.read_bytes()
+        si_a = build_semantic_input(interpret_layout(reconstruct_document(document_from_text_blocks(PDFExtractor.extract(raw_a)))))
+        assert len(si_a.tables) >= 5
+        for t in si_a.tables:
+            assert len(t.rows) > 0

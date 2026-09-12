@@ -70,7 +70,13 @@ class TableSemanticContext(BaseModel):
     is_form_table: bool = False
     columns: list[ColumnSemanticDescriptor] = Field(default_factory=list)
     rows: list[list[CellSemanticDescriptor]] = Field(default_factory=list)
+    physical_rows: list[list[CellSemanticDescriptor]] = Field(default_factory=list)
     source_block_ids: list[str] = Field(default_factory=list)
+
+    @property
+    def logical_rows(self) -> list[list[CellSemanticDescriptor]]:
+        """Convenience alias for the table's logical rows."""
+        return self.rows
 
     def to_dict(self) -> dict[str, Any]:
         """Compact dictionary representation for prompt serialization."""
@@ -523,6 +529,167 @@ def infer_column_semantics(
     return descriptors
 
 
+_CONTINUATION_LEADING_PATTERNS = re.compile(
+    r"^\s*(?:[a-z]|(?:of|and|or|for|in|to|with|by|at|on|de)\b|\([A-Za-z0-9\s/+\-–—.]+\)|[&/+\-–—,])"
+)
+
+_CONTINUATION_TRAILING_PATTERNS = re.compile(
+    r"(?:[-/&,:]$|\b(?:and|or|of|in|for|with|by|at|to)\s*$|\b(?:Department|Ministry|Directorate|Board|University|College|Institute|Authority|Academy|Association|Corporation|Limited|Ltd)\s*$)",
+    re.IGNORECASE,
+)
+
+_SERIAL_NO_PATTERN = re.compile(r"^\s*(?:\d+|[ivxIVX]+|[A-Za-z])[\.\)]\s*$|^\s*#?\d+\s*$")
+_TRAILING_PUNCT_WORD = re.compile(r"[/&,\-]\s*\w+\s*$")
+_STANDALONE_ACRONYM = re.compile(r"^[A-Z]{2,}(?:\s*/\s*[A-Z]{2,})*$")
+
+
+def is_logical_row_continuation(
+    prev_row: list[CellSemanticDescriptor],
+    curr_row: list[CellSemanticDescriptor],
+    columns: list[ColumnSemanticDescriptor],
+    purpose: TablePurpose,
+    is_form_table: bool = False,
+) -> bool:
+    """Determine whether curr_row is a continuation of prev_row based on multiple deterministic signals."""
+    if is_form_table:
+        return False
+
+    prev_pop = [c for c in prev_row if c.text.strip()]
+    curr_pop = [c for c in curr_row if c.text.strip()]
+    if not prev_pop or not curr_pop:
+        return False
+
+    # Negative Guard 1: Serial number present
+    for c in curr_pop:
+        if c.semantic_role == "serial_no":
+            return False
+        if c.column_index == 0 and _SERIAL_NO_PATTERN.match(c.text):
+            return False
+
+    # Negative Guard 2: Full date interval in curr_row (both start/issue and end/expiry dates)
+    has_issue = any(c.semantic_role in ("issue_date", "sign_on", "start_date") and c.text.strip() for c in curr_pop)
+    has_expiry = any(c.semantic_role in ("expiry_date", "sign_off", "end_date") and c.text.strip() for c in curr_pop)
+    if has_issue and has_expiry:
+        return False
+
+    # Negative Guard 3: Conflicting distinct certificate/document numbers
+    prev_cert = next(
+        (c.text.strip() for c in prev_row if c.semantic_role in ("certificate_number", "document_number") and c.text.strip()),
+        None,
+    )
+    curr_cert = next(
+        (c.text.strip() for c in curr_row if c.semantic_role in ("certificate_number", "document_number") and c.text.strip()),
+        None,
+    )
+    if prev_cert and curr_cert and prev_cert != curr_cert:
+        return False
+
+    # Positive Signal Check
+    for c in curr_pop:
+        k = c.column_index
+        p_c = prev_row[k]
+        p_text = p_c.text.strip()
+        c_text = c.text.strip()
+
+        # 1. Leading continuation markers in current cell (lowercase, preposition, parenthesized acronym)
+        if _CONTINUATION_LEADING_PATTERNS.match(c_text):
+            return True
+
+        # 2. Trailing continuation markers in previous cell (punctuation, preposition, organization word)
+        if p_text and _CONTINUATION_TRAILING_PATTERNS.search(p_text):
+            return True
+
+        # 3. Numeric continuation after trailing dash or slash (e.g. '27-04-' + '2030', 'Ship /' + '43679')
+        if p_text and (p_text.endswith("-") or p_text.endswith("/")) and re.match(r"^\d+$", c_text):
+            return True
+
+        # 4. Preceding cell has conjunction/slash-word and current cell is a continuation fragment
+        # (e.g. 'Survival Craft / Rescue' + 'Boat', 'Personal Survival & Social' + 'Responsibility (PSSR)')
+        if (
+            p_text
+            and _TRAILING_PUNCT_WORD.search(p_text)
+            and not _STANDALONE_ACRONYM.match(c_text)
+            and len(c_text.split()) <= 3
+        ):
+            return True
+
+    return False
+
+
+def merge_logical_table_rows(
+    rows: list[list[CellSemanticDescriptor]],
+    columns: list[ColumnSemanticDescriptor],
+    purpose: TablePurpose,
+    is_form_table: bool = False,
+) -> list[list[CellSemanticDescriptor]]:
+    """Merge physical continuation rows into logical records while preserving all source_block_ids."""
+    if is_form_table or len(rows) <= 1:
+        return rows
+
+    # Row 0 is the table header (when not a form table)
+    merged: list[list[CellSemanticDescriptor]] = [rows[0]]
+
+    for r in rows[1:]:
+        if len(merged) == 1:
+            # First data row cannot continue the header row (row 0)
+            merged.append(r)
+            continue
+
+        prev_r = merged[-1]
+        if is_logical_row_continuation(prev_r, r, columns, purpose, is_form_table=is_form_table):
+            new_r: list[CellSemanticDescriptor] = []
+            for k in range(len(columns)):
+                p_c = prev_r[k]
+                c_c = r[k]
+                p_txt = p_c.text.strip()
+                c_txt = c_c.text.strip()
+
+                if p_txt and c_txt:
+                    if p_txt.endswith("-") and not p_txt.endswith("--"):
+                        combined_text = p_txt + c_txt
+                    else:
+                        combined_text = f"{p_txt} {c_txt}"
+                elif p_txt:
+                    combined_text = p_txt
+                else:
+                    combined_text = c_txt
+
+                combined_ids = list(dict.fromkeys(p_c.source_block_ids + c_c.source_block_ids))
+                sem_role = p_c.semantic_role if p_c.semantic_role != "unknown" else c_c.semantic_role
+
+                new_r.append(
+                    CellSemanticDescriptor(
+                        row_index=p_c.row_index,
+                        column_index=k,
+                        text=combined_text,
+                        cell_role=p_c.cell_role,
+                        semantic_role=sem_role,
+                        source_block_ids=combined_ids,
+                    )
+                )
+            merged[-1] = new_r
+        else:
+            merged.append(r)
+
+    # Re-index logical row indices deterministically
+    reindexed: list[list[CellSemanticDescriptor]] = []
+    for l_idx, r in enumerate(merged):
+        reindexed_row = [
+            CellSemanticDescriptor(
+                row_index=l_idx,
+                column_index=c.column_index,
+                text=c.text,
+                cell_role=c.cell_role,
+                semantic_role=c.semantic_role,
+                source_block_ids=c.source_block_ids,
+            )
+            for c in r
+        ]
+        reindexed.append(reindexed_row)
+
+    return reindexed
+
+
 def build_table_semantic_contexts(
     tables: list[GeometricTable],
     blocks: list[SemanticBlockInput],
@@ -576,6 +743,13 @@ def build_table_semantic_contexts(
 
         all_table_block_ids = sorted({c.block_id for c in table.cells})
 
+        logical_rows = merge_logical_table_rows(
+            rows,
+            columns,
+            purpose,
+            is_form_table=is_form,
+        )
+
         contexts.append(
             TableSemanticContext(
                 table_id=table.table_id,
@@ -585,7 +759,8 @@ def build_table_semantic_contexts(
                 evidence=evidence,
                 is_form_table=is_form,
                 columns=columns,
-                rows=rows,
+                rows=logical_rows,
+                physical_rows=rows,
                 source_block_ids=all_table_block_ids,
             )
         )
