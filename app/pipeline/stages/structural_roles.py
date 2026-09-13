@@ -53,18 +53,38 @@ _ROLE_WORDS = {
     "resident",
     "architect",
     "designer",
+    "trainee",
+    "accountant",
 }
 
 _ORG_SUFFIXES: tuple[str, ...] = (
     "inc",
     "llc",
     "ltd",
+    "limited",
     "corp",
     "corporation",
     "company",
     "co",
     "pvt",
     "private",
+    "shipping",
+    "maritime",
+    "lines",
+)
+
+_COMPOUND_ORG_SUFFIXES: tuple[str, ...] = (
+    "ship management",
+    "shipmanagement",
+    "shipping management",
+    "marine management",
+    "fleet management",
+    "vessel management",
+    "crew management",
+    "marine services",
+    "ship services",
+    "marine solutions",
+    "offshore services",
 )
 
 _INSTITUTIONAL_NOUNS: tuple[str, ...] = (
@@ -672,9 +692,19 @@ def _looks_like_organization(text: str) -> bool:
         if not (value.endswith(".") and last_word_clean in _ABBREVIATED_ORG_SUFFIXES):
             return False
 
-    has_corp_suffix = last_word_clean in _ORG_SUFFIXES or any(
-        re.sub(r"[^A-Za-z0-9]", "", w).lower() in {"inc", "llc", "ltd", "corp", "corporation"}
-        for w in words
+    lower_val = value.lower()
+    has_compound_org = any(
+        re.search(rf"\b{re.escape(sfx)}\b", lower_val)
+        for sfx in _COMPOUND_ORG_SUFFIXES
+    )
+
+    has_corp_suffix = (
+        last_word_clean in _ORG_SUFFIXES
+        or has_compound_org
+        or any(
+            re.sub(r"[^A-Za-z0-9]", "", w).lower() in {"inc", "llc", "ltd", "corp", "corporation"}
+            for w in words
+        )
     )
 
     has_institutional_noun = last_word_clean in _INSTITUTIONAL_NOUNS

@@ -785,7 +785,7 @@ def test_case_k_akibul_fixture_logical_certification_rows():
     auth_cell = next(c for c in rescue_row if c.semantic_role == "issuing_authority")
 
     assert course_cell.text == "Proficiency in Survival Craft / Rescue Boat"
-    assert "b_p2_110" in course_cell.source_block_ids
+    assert "b_p2_110_c0" in course_cell.source_block_ids
     assert "b_p2_112" in course_cell.source_block_ids
 
     assert auth_cell.text == "Department of shipping, Bangladesh"
@@ -812,7 +812,7 @@ def test_case_k_akibul_fixture_logical_certification_rows():
         if cell["text"] == "Proficiency in Survival Craft / Rescue Boat"
     ]
     assert len(full_course_cells) == 1
-    assert "b_p2_110" in full_course_cells[0]["source_block_ids"]
+    assert "b_p2_110_c0" in full_course_cells[0]["source_block_ids"]
     assert "b_p2_112" in full_course_cells[0]["source_block_ids"]
 
 

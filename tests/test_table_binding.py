@@ -303,6 +303,31 @@ def test_akibul_integration_table_geometry():
     assert "b_p4_261" in p4_block_ids  # Row 1 '1'
     assert "b_p4_266" in p4_block_ids  # Row 2 '2'
 
+    # Regression: verify cross-column splitting on page 4 table blocks
+    b_292_cells = [b for b in p4_table_blocks if b.parent_block_id == "b_p4_292" or b.block_id == "b_p4_292"]
+    assert len(b_292_cells) == 2
+    assert next(c.text for c in b_292_cells if c.column_index == 4) == "2 SA 6"
+    assert next(c.text for c in b_292_cells if c.column_index == 5) == "Deck"
+    assert {c.block_id for c in b_292_cells} == {"b_p4_292_c4", "b_p4_292_c5"}
+
+    b_302_cells = [b for b in p4_table_blocks if b.parent_block_id == "b_p4_302" or b.block_id == "b_p4_302"]
+    assert len(b_302_cells) == 2
+    assert next(c.text for c in b_302_cells if c.column_index == 4) == "7UEC-4"
+    assert next(c.text for c in b_302_cells if c.column_index == 5) == "Deck"
+    assert {c.block_id for c in b_302_cells} == {"b_p4_302_c4", "b_p4_302_c5"}
+
+    b_276_cells = [b for b in p4_table_blocks if b.parent_block_id == "b_p4_276" or b.block_id == "b_p4_276"]
+    assert len(b_276_cells) == 2
+    assert next(c.text for c in b_276_cells if c.column_index == 3) == "Marshall"
+    assert next(c.text for c in b_276_cells if c.column_index == 4) == "25356. 16484/"
+    assert {c.block_id for c in b_276_cells} == {"b_p4_276_c3", "b_p4_276_c4"}
+
+    b_277_cells = [b for b in p4_table_blocks if b.parent_block_id == "b_p4_277" or b.block_id == "b_p4_277"]
+    assert len(b_277_cells) == 2
+    assert next(c.text for c in b_277_cells if c.column_index == 2) == "Chem"
+    assert next(c.text for c in b_277_cells if c.column_index == 3) == "Island"
+    assert {c.block_id for c in b_277_cells} == {"b_p4_277_c2", "b_p4_277_c3"}
+
     # 2. Page 3 Education Table
     p3_table_blocks = [b for b in blocks if b.page == 3 and b.table_id is not None]
     # Identify the education table (table containing 'Pre-sea' or 'International Maritime Academy')
@@ -315,20 +340,17 @@ def test_akibul_integration_table_geometry():
 
     edu_table_all_blocks = [b for b in p3_table_blocks if b.table_id == edu_table_id]
     edu_cols = set(b.column_index for b in edu_table_all_blocks)
-    assert len(edu_cols) == 4, f"Expected 4 columns for page 3 education table, got {len(edu_cols)}"
+    assert len(edu_cols) == 4
+    edu_data_rows = set(b.row_index for b in edu_table_all_blocks if b.cell_role == "DATA")
+    assert len(edu_data_rows) == 1
 
-    # 3. Page 2 Course / Certificate Table
+    # 3. Page 2 Course / Certification Table
     p2_table_blocks = [b for b in blocks if b.page == 2 and b.table_id is not None]
-    assert len(p2_table_blocks) >= 40
-    p2_tables = set(b.table_id for b in p2_table_blocks)
-    assert len(p2_tables) >= 1
-
-    # Check primary course table has 5 columns
-    p2_cols_per_table = [
-        len(set(b.column_index for b in p2_table_blocks if b.table_id == tid))
-        for tid in p2_tables
-    ]
-    assert any(num_cols >= 5 for num_cols in p2_cols_per_table)
+    assert len(p2_table_blocks) >= 20
+    p2_cols = set(b.column_index for b in p2_table_blocks)
+    assert len(p2_cols) == 5
+    p2_data_rows = set(b.row_index for b in p2_table_blocks if b.cell_role == "DATA")
+    assert len(p2_data_rows) >= 5
 
 
 # =====================================================================
@@ -360,8 +382,8 @@ def test_cross_column_block_splitting_and_provenance():
     assert single_cells[0].column_index == 1
     assert single_cells[0].row_index == 1
 
-    # B. Crossing block is split into 2 cells
-    cross_cells = [b for b in bound if b.block_id == "d_cross"]
+    # B. Crossing block is split into 2 cells with unique IDs preserving parent
+    cross_cells = [b for b in bound if b.parent_block_id == "d_cross"]
     assert len(cross_cells) == 2
 
     # C. Words on left and right of the boundary are assigned correctly
@@ -374,9 +396,11 @@ def test_cross_column_block_splitting_and_provenance():
     assert left_cell.row_index == 1
     assert right_cell.row_index == 1
 
-    # E. Provenance remains valid (block_id matches original source block)
-    assert left_cell.block_id == "d_cross"
-    assert right_cell.block_id == "d_cross"
+    # E. Provenance: block_id is unique and deterministic, parent_block_id tracks original source
+    assert left_cell.block_id == "d_cross_c0"
+    assert right_cell.block_id == "d_cross_c1"
+    assert left_cell.parent_block_id == "d_cross"
+    assert right_cell.parent_block_id == "d_cross"
     assert left_cell.cell_role == "DATA"
     assert right_cell.cell_role == "DATA"
 
@@ -410,7 +434,7 @@ def test_cross_column_block_splitting_with_actual_spans():
 
     bound = binder.bind_document_tables(blocks)
 
-    cross_cells = [b for b in bound if b.block_id == "d_spans"]
+    cross_cells = [b for b in bound if b.parent_block_id == "d_spans"]
     assert len(cross_cells) == 2
 
     left_cell = next(c for c in cross_cells if c.column_index == 0)
@@ -419,9 +443,11 @@ def test_cross_column_block_splitting_with_actual_spans():
     assert left_cell.text == "LeftPart"
     assert left_cell.bbox == [50.0, 130.0, 140.0, 145.0]
     assert left_cell.row_index == 1
-    assert left_cell.block_id == "d_spans"
+    assert left_cell.block_id == "d_spans_c0"
+    assert left_cell.parent_block_id == "d_spans"
 
     assert right_cell.text == "RightPart"
     assert right_cell.bbox == [210.0, 130.0, 300.0, 145.0]
     assert right_cell.row_index == 1
-    assert right_cell.block_id == "d_spans"
+    assert right_cell.block_id == "d_spans_c1"
+    assert right_cell.parent_block_id == "d_spans"

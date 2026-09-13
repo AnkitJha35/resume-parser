@@ -91,6 +91,21 @@ _MONTH_NAMES = {
     "12": "dec",
 }
 
+_FULL_MONTH_NAMES = {
+    "01": "january",
+    "02": "february",
+    "03": "march",
+    "04": "april",
+    "05": "may",
+    "06": "june",
+    "07": "july",
+    "08": "august",
+    "09": "september",
+    "10": "october",
+    "11": "november",
+    "12": "december",
+}
+
 
 # =====================================================================
 # 1. Enums and Categories
@@ -172,6 +187,9 @@ class SemanticBlockInput(BaseModel):
     cell_role: str | None = None  # e.g. "HEADER", "DATA"
     table_purpose: str | None = None
     column_semantic: str | None = None
+
+    # Traceable parent/original source block relationship for split table fragments
+    parent_block_id: str | None = None
 
     # Underlying span geometry if available from reconstruction/IR
     spans: list[dict[str, Any]] = Field(default_factory=list)
@@ -1772,6 +1790,8 @@ def build_deterministic_experience_spans(
         current_span_blocks: list[str] = []
         current_title_id: str | None = None
         current_org_id: str | None = None
+        current_date_id: str | None = None
+        last_role: str | None = None
         has_content = False
 
         for b in child_blocks:
@@ -1781,6 +1801,13 @@ def build_deterministic_experience_spans(
                     is_new_boundary = True
             elif b.suggested_role == "ORGANIZATION":
                 if current_org_id is not None or has_content:
+                    is_new_boundary = True
+            elif b.suggested_role == "DATE":
+                if (
+                    current_date_id is not None
+                    and last_role != "DATE"
+                    and (current_title_id is not None or current_org_id is not None or has_content)
+                ):
                     is_new_boundary = True
 
             if is_new_boundary:
@@ -1797,6 +1824,7 @@ def build_deterministic_experience_spans(
                 current_span_blocks = [b.block_id]
                 current_title_id = b.block_id if b.suggested_role == "ENTRY_TITLE" else None
                 current_org_id = b.block_id if b.suggested_role == "ORGANIZATION" else None
+                current_date_id = b.block_id if b.suggested_role == "DATE" else None
                 has_content = False
             else:
                 current_span_blocks.append(b.block_id)
@@ -1804,8 +1832,12 @@ def build_deterministic_experience_spans(
                     current_title_id = b.block_id
                 if current_org_id is None and b.suggested_role == "ORGANIZATION":
                     current_org_id = b.block_id
+                if current_date_id is None and b.suggested_role == "DATE":
+                    current_date_id = b.block_id
                 if b.suggested_role in ("DESCRIPTION", "BULLET"):
                     has_content = True
+
+            last_role = b.suggested_role
 
         if current_span_blocks:
             spans.append(
@@ -2168,13 +2200,58 @@ def build_semantic_input(
     )
 
 
+def _is_two_digit_date_supported(year: str, month: str | None, day: str | None, s_text: str) -> bool:
+    """Conservative validation checking if a 4-digit canonical year is supported by an explicit 2-digit date in source.
+
+    Permits only explicit date patterns (e.g. '28/Mar/21', '01/11/21', '28-03-21', 'Mar 21', '21-03-28').
+    Strictly forbids treating arbitrary 2-digit numbers as years.
+    """
+    if len(year) != 4 or not year.isdigit():
+        return False
+    yy = year[2:]
+
+    if month is not None:
+        m_int = str(int(month))
+        m_abbr = _MONTH_NAMES.get(month, "")
+        m_full = _FULL_MONTH_NAMES.get(month, "")
+        month_tokens = [re.escape(tok) for tok in [month, m_int, m_abbr, m_full] if tok]
+        m_pat = "(?:" + "|".join(month_tokens) + ")"
+
+        if day is not None:
+            d_int = str(int(day))
+            day_tokens = [re.escape(tok) for tok in [day, d_int] if tok]
+            d_pat = "(?:" + "|".join(day_tokens) + ")"
+
+            # Day-Month-Year (e.g. 28/Mar/21, 28-03-21, 28.Mar.21, 28 Mar 21, 28 Mar '21)
+            p1 = rf"(?<!\d){d_pat}[/.\-\s]+{m_pat}[/.\-\s]+'?{yy}(?!\d)"
+            # Month-Day-Year (e.g. Mar/28/21, March 28, 21, 03/28/21)
+            p2 = rf"\b{m_pat}[/.\-\s]+{d_pat}[/.\-,\s]+'?{yy}(?!\d)"
+            # Year-Month-Day (e.g. 21-03-28, 21/Mar/28)
+            p3 = rf"(?<!\d){yy}[/.\-\s]+{m_pat}[/.\-\s]+{d_pat}(?!\d)"
+
+            combined = rf"(?:{p1}|{p2}|{p3})"
+            if re.search(combined, s_text, re.IGNORECASE):
+                return True
+        else:
+            # Month-Year (e.g. Mar/21, Mar-21, Mar '21, 03/21)
+            p1 = rf"\b{m_pat}[/.\-\s]+'?{yy}(?!\d)"
+            # Year-Month (e.g. 21-03, 21/Mar)
+            p2 = rf"(?<!\d){yy}[/.\-\s]+{m_pat}\b"
+            combined = rf"(?:{p1}|{p2})"
+            if re.search(combined, s_text, re.IGNORECASE):
+                return True
+
+    return False
+
+
 def _is_value_semantically_supported(canonical_val: str, source_text: str) -> bool:
     """Deterministic validation boundary checking if canonical value is supported by source evidence.
 
     Permits ONLY:
     1. Whitespace, case, and punctuation normalization (exact alphanumeric substring match).
     2. Phone digit normalization (canonical digits sequence is exact substring of source digits).
-    3. ISO date normalization (year digits and month name/number explicitly present in source text).
+    3. ISO date normalization (year digits and month name/number explicitly present in source text,
+       including explicit 2-digit dates matching the 4-digit canonical year).
 
     Strictly forbids:
     - Token subset combinations
@@ -2211,6 +2288,8 @@ def _is_value_semantically_supported(canonical_val: str, source_text: str) -> bo
             if day is not None:
                 day_stripped = str(int(day))
                 return day in s_text or day_stripped in s_text
+            return True
+        elif _is_two_digit_date_supported(year, month, day, s_text):
             return True
 
     # 3. Phone digit normalization (e.g. "+919829519017" from "+91 98295 19017", "+16504981240" from "(650) 498-1240")
@@ -2310,6 +2389,25 @@ def validate_semantic_output(output: SemanticOutput, input_data: SemanticInput) 
     """
     violations: list[str] = []
     known_blocks = {b.block_id: b for b in input_data.blocks}
+    blocks_by_parent: dict[str, list[SemanticBlockInput]] = {}
+    for b in input_data.blocks:
+        if b.parent_block_id:
+            blocks_by_parent.setdefault(b.parent_block_id, []).append(b)
+
+    def _resolve_block_id(bid: str) -> bool:
+        return bid in known_blocks or bid in blocks_by_parent
+
+    def _get_block_text(bid: str) -> str:
+        if bid in known_blocks:
+            return known_blocks[bid].text
+        if bid in blocks_by_parent:
+            return " ".join(b.text for b in blocks_by_parent[bid])
+        return ""
+
+    def _get_blocks(bid: str) -> list[SemanticBlockInput]:
+        if bid in known_blocks:
+            return [known_blocks[bid]]
+        return blocks_by_parent.get(bid, [])
 
     # Index explicit block classifications
     category_by_block_id: dict[str, SemanticBlockCategory] = {
@@ -2322,7 +2420,7 @@ def validate_semantic_output(output: SemanticOutput, input_data: SemanticInput) 
             violations.append(f"MISSING_PROVENANCE in {context}: no source_block_ids provided")
             return
         for bid in block_ids:
-            if bid not in known_blocks:
+            if not _resolve_block_id(bid):
                 violations.append(f"UNKNOWN_BLOCK_ID in {context}: {bid!r}")
 
     # Helper for generic deterministic support boundary validation
@@ -2331,7 +2429,7 @@ def validate_semantic_output(output: SemanticOutput, input_data: SemanticInput) 
             return
         _verify_block_ids(gs.source_block_ids, context)
         if gs.source_block_ids:
-            source_text = " ".join(known_blocks[bid].text for bid in gs.source_block_ids if bid in known_blocks)
+            source_text = " ".join(_get_block_text(bid) for bid in gs.source_block_ids if _resolve_block_id(bid))
             if not _is_value_semantically_supported(gs.value, source_text):
                 violations.append(f"UNSUPPORTED_CANONICAL_VALUE in {context}: {gs.value!r} not supported by {source_text!r}")
 
@@ -2341,7 +2439,7 @@ def validate_semantic_output(output: SemanticOutput, input_data: SemanticInput) 
             return
         _verify_block_ids(gs.source_block_ids, context)
         if gs.source_block_ids:
-            source_text = " ".join(known_blocks[bid].text for bid in gs.source_block_ids if bid in known_blocks)
+            source_text = " ".join(_get_block_text(bid) for bid in gs.source_block_ids if _resolve_block_id(bid))
             if not _is_value_semantically_supported(gs.value, source_text):
                 # Narrowly scoped fallback only for long-text fields with multiple source_block_ids
                 if len(gs.source_block_ids) > 1 and _is_multiblock_text_semantically_supported(gs.value, source_text):
@@ -2354,7 +2452,7 @@ def validate_semantic_output(output: SemanticOutput, input_data: SemanticInput) 
             return
         _verify_block_ids(gs.source_block_ids, context)
         if gs.source_block_ids:
-            source_text = " ".join(known_blocks[bid].text for bid in gs.source_block_ids if bid in known_blocks)
+            source_text = " ".join(_get_block_text(bid) for bid in gs.source_block_ids if _resolve_block_id(bid))
             if not _is_name_semantically_supported(gs.value, source_text):
                 violations.append(f"UNSUPPORTED_CANONICAL_VALUE in {context}: {gs.value!r} not supported by {source_text!r}")
 
@@ -2364,7 +2462,7 @@ def validate_semantic_output(output: SemanticOutput, input_data: SemanticInput) 
             return
         _verify_block_ids(gb.source_block_ids, context)
         if gb.source_block_ids:
-            source_text = " ".join(known_blocks[bid].text for bid in gb.source_block_ids if bid in known_blocks)
+            source_text = " ".join(_get_block_text(bid) for bid in gb.source_block_ids if _resolve_block_id(bid))
             if gb.value is True:
                 if not any(pat.search(source_text) for pat in ACCEPTED_CURRENT_MARKERS):
                     violations.append(
@@ -2435,18 +2533,17 @@ def validate_semantic_output(output: SemanticOutput, input_data: SemanticInput) 
                 body_mapped_block_ids.update(tech.source_block_ids)
 
         for bid in output.personal.location.source_block_ids:
-            b = known_blocks.get(bid)
-            if b:
+            for b in _get_blocks(bid):
                 if b.page != 1:
                     violations.append(f"LOCATION_OUTSIDE_HEADER_REGION: block {bid} is on page {b.page}")
                 elif b.region_kind == "footer":
                     violations.append(f"LOCATION_OUTSIDE_HEADER_REGION: block {bid} belongs to footer region")
-                elif bid in body_mapped_block_ids:
+                elif bid in body_mapped_block_ids or (b.parent_block_id and b.parent_block_id in body_mapped_block_ids):
                     violations.append(f"LOCATION_OUTSIDE_HEADER_REGION: block {bid} is also mapped to body collections")
-                elif category_by_block_id.get(bid) in EXCLUDED_LOCATION_CATEGORIES:
-                    cat = category_by_block_id[bid]
+                elif category_by_block_id.get(bid) in EXCLUDED_LOCATION_CATEGORIES or (b.parent_block_id and category_by_block_id.get(b.parent_block_id) in EXCLUDED_LOCATION_CATEGORIES):
+                    cat = category_by_block_id.get(bid) or (category_by_block_id.get(b.parent_block_id) if b.parent_block_id else None)
                     violations.append(
-                        f"LOCATION_OUTSIDE_HEADER_REGION: block {bid} belongs to excluded category {cat.value}"
+                        f"LOCATION_OUTSIDE_HEADER_REGION: block {bid} belongs to excluded category {cat.value if cat else ''}"
                     )
                 elif b.suggested_role in EXCLUDED_LOCATION_ROLES:
                     violations.append(
@@ -2525,16 +2622,18 @@ def validate_semantic_output(output: SemanticOutput, input_data: SemanticInput) 
                 ]:
                     if fval and fval.source_block_ids:
                         for bid in fval.source_block_ids:
+                            bids_to_check = {bid} | {b.block_id for b in blocks_by_parent.get(bid, [])}
                             for other_s in exp_spans:
-                                if other_s.entity_index != assigned_span.entity_index and bid in other_s.block_ids:
+                                if other_s.entity_index != assigned_span.entity_index and any(b_chk in other_s.block_ids for b_chk in bids_to_check):
                                     violations.append(
                                         f"CROSS_ENTITY_PROVENANCE in experience[{i}].{fname}: "
                                         f"block {bid!r} belongs to experience entity span {other_s.entity_index}"
                                     )
                 for bid in exp.source_block_ids:
+                    bids_to_check = {bid} | {b.block_id for b in blocks_by_parent.get(bid, [])}
                     for other_s in exp_spans:
-                        if other_s.entity_index != assigned_span.entity_index and bid in other_s.block_ids:
-                            if bid not in assigned_span.block_ids:
+                        if other_s.entity_index != assigned_span.entity_index and any(b_chk in other_s.block_ids for b_chk in bids_to_check):
+                            if not any(b_chk in assigned_span.block_ids for b_chk in bids_to_check):
                                 violations.append(
                                     f"CROSS_ENTITY_PROVENANCE in experience[{i}]: "
                                     f"block {bid!r} belongs to experience entity span {other_s.entity_index}"

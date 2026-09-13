@@ -7,6 +7,7 @@ relying on document-specific text heuristics or semantic entity parsing.
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass, field
 import re
 from typing import Any
@@ -25,6 +26,8 @@ class GeometricCell:
     row_index: int
     column_index: int
     cell_role: str | None = None  # "HEADER", "DATA", or None
+    parent_block_id: str | None = None
+    spans: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass
@@ -41,7 +44,7 @@ class GeometricTable:
 
 
 def _group_fragments_to_cells(
-    fragments: list[tuple[str, int, float, float]],
+    fragments: list[tuple[str, int, float, float, dict[str, Any] | None]],
     b: SemanticBlockInput,
     table_id: str,
     r_idx: int,
@@ -63,46 +66,75 @@ def _group_fragments_to_cells(
                 row_index=r_idx,
                 column_index=c_idx,
                 cell_role=role,
+                parent_block_id=b.parent_block_id,
+                spans=tuple(b.spans) if hasattr(b, "spans") and b.spans else (),
             )
         ]
 
-    cells: list[GeometricCell] = []
+    grouped: list[dict[str, Any]] = []
     current_col = fragments[0][1]
     current_texts = [fragments[0][0]]
     current_x0 = fragments[0][2]
     current_x1 = fragments[0][3]
+    current_spans = [fragments[0][4]] if fragments[0][4] is not None else []
 
-    for text, c_idx, x0, x1 in fragments[1:]:
+    for item in fragments[1:]:
+        text, c_idx, x0, x1 = item[0], item[1], item[2], item[3]
+        s_dict = item[4] if len(item) > 4 else None
         if c_idx == current_col:
             current_texts.append(text)
             current_x1 = max(current_x1, x1)
+            if s_dict is not None:
+                current_spans.append(s_dict)
         else:
-            cells.append(
-                GeometricCell(
-                    block_id=b.block_id,
-                    text=" ".join(current_texts),
-                    bbox=[current_x0, b.bbox[1], current_x1, b.bbox[3]],
-                    table_id=table_id,
-                    row_index=r_idx,
-                    column_index=current_col,
-                    cell_role=role,
-                )
+            grouped.append(
+                {
+                    "col": current_col,
+                    "text": " ".join(current_texts),
+                    "bbox": [current_x0, b.bbox[1], current_x1, b.bbox[3]],
+                    "spans": tuple(current_spans),
+                }
             )
             current_col = c_idx
             current_texts = [text]
             current_x0 = x0
             current_x1 = x1
+            current_spans = [s_dict] if s_dict is not None else []
 
     if current_texts:
+        grouped.append(
+            {
+                "col": current_col,
+                "text": " ".join(current_texts),
+                "bbox": [current_x0, b.bbox[1], current_x1, b.bbox[3]],
+                "spans": tuple(current_spans),
+            }
+        )
+
+    col_counts = Counter(g["col"] for g in grouped)
+    col_seen: Counter[int] = Counter()
+    cells: list[GeometricCell] = []
+    parent_id = b.parent_block_id or b.block_id
+
+    for g in grouped:
+        c = g["col"]
+        if col_counts[c] == 1:
+            frag_id = f"{b.block_id}_c{c}"
+        else:
+            frag_id = f"{b.block_id}_c{c}_{col_seen[c]}"
+            col_seen[c] += 1
+
         cells.append(
             GeometricCell(
-                block_id=b.block_id,
-                text=" ".join(current_texts),
-                bbox=[current_x0, b.bbox[1], current_x1, b.bbox[3]],
+                block_id=frag_id,
+                text=g["text"],
+                bbox=g["bbox"],
                 table_id=table_id,
                 row_index=r_idx,
-                column_index=current_col,
+                column_index=c,
                 cell_role=role,
+                parent_block_id=parent_id,
+                spans=g["spans"],
             )
         )
 
@@ -318,6 +350,8 @@ class GeometricTableBinder:
                     row_index=r_idx,
                     column_index=c_idx,
                     cell_role=role,
+                    parent_block_id=b.parent_block_id,
+                    spans=tuple(b.spans) if hasattr(b, "spans") and b.spans else (),
                 )
             ]
 
@@ -335,12 +369,14 @@ class GeometricTableBinder:
                     row_index=r_idx,
                     column_index=c_idx,
                     cell_role=role,
+                    parent_block_id=b.parent_block_id,
+                    spans=tuple(b.spans) if hasattr(b, "spans") and b.spans else (),
                 )
             ]
 
         # 1. Check if actual word/span geometry is available on the block
         if hasattr(b, "spans") and b.spans:
-            fragments: list[tuple[str, int, float, float]] = []
+            fragments: list[tuple[str, int, float, float, dict[str, Any] | None]] = []
             for s in b.spans:
                 s_text = s.get("text", "") if isinstance(s, dict) else getattr(s, "text", "")
                 s_bbox = s.get("bbox", []) if isinstance(s, dict) else getattr(s, "bbox", [])
@@ -348,7 +384,8 @@ class GeometricTableBinder:
                     continue
                 s_mid = (s_bbox[0] + s_bbox[2]) / 2.0
                 c_idx = next((i for i, sep in enumerate(seps) if s_mid < sep), len(seps))
-                fragments.append((s_text, c_idx, s_bbox[0], s_bbox[2]))
+                s_dict = s if isinstance(s, dict) else getattr(s, "__dict__", None)
+                fragments.append((s_text, c_idx, s_bbox[0], s_bbox[2], s_dict))
 
             if fragments:
                 return _group_fragments_to_cells(fragments, b, table_id, r_idx, role)
@@ -371,6 +408,8 @@ class GeometricTableBinder:
                     row_index=r_idx,
                     column_index=c_idx,
                     cell_role=role,
+                    parent_block_id=b.parent_block_id,
+                    spans=tuple(b.spans) if hasattr(b, "spans") and b.spans else (),
                 )
             ]
 
@@ -378,15 +417,15 @@ class GeometricTableBinder:
         total_width = max(0.0, b.bbox[2] - b.bbox[0])
         char_w = total_width / max(1, total_len)
 
-        fragments = []
+        fallback_fragments: list[tuple[str, int, float, float, dict[str, Any] | None]] = []
         for word_text, start_idx, end_idx in tokens:
             wx0 = b.bbox[0] + (start_idx * char_w)
             wx1 = b.bbox[0] + (end_idx * char_w)
             w_mid = (wx0 + wx1) / 2.0
             c_idx = next((i for i, s in enumerate(seps) if w_mid < s), len(seps))
-            fragments.append((word_text, c_idx, wx0, wx1))
+            fallback_fragments.append((word_text, c_idx, wx0, wx1, None))
 
-        return _group_fragments_to_cells(fragments, b, table_id, r_idx, role)
+        return _group_fragments_to_cells(fallback_fragments, b, table_id, r_idx, role)
 
     def detect_document_tables(
         self,
@@ -427,24 +466,26 @@ class GeometricTableBinder:
             binding_map: dict[str, list[GeometricCell]] = {}
             for t in tables:
                 for cell in t.cells:
-                    binding_map.setdefault(cell.block_id, []).append(cell)
+                    src_id = cell.parent_block_id or cell.block_id
+                    binding_map.setdefault(src_id, []).append(cell)
 
             for b in p_blocks:
                 if b.block_id in binding_map:
                     matched_cells = binding_map[b.block_id]
                     for cell in matched_cells:
-                        bound_blocks.append(
-                            b.model_copy(
-                                update={
-                                    "text": cell.text,
-                                    "bbox": cell.bbox,
-                                    "table_id": cell.table_id,
-                                    "row_index": cell.row_index,
-                                    "column_index": cell.column_index,
-                                    "cell_role": cell.cell_role,
-                                }
-                            )
-                        )
+                        update_kwargs: dict[str, Any] = {
+                            "block_id": cell.block_id,
+                            "parent_block_id": cell.parent_block_id or b.parent_block_id,
+                            "text": cell.text,
+                            "bbox": cell.bbox,
+                            "table_id": cell.table_id,
+                            "row_index": cell.row_index,
+                            "column_index": cell.column_index,
+                            "cell_role": cell.cell_role,
+                        }
+                        if cell.spans:
+                            update_kwargs["spans"] = list(cell.spans)
+                        bound_blocks.append(b.model_copy(update=update_kwargs))
                 else:
                     bound_blocks.append(b)
 
