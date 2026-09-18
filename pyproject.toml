@@ -28,3 +28,7 @@ minversion = "7.0"
 addopts = "-q"
 pythonpath = ["."]
 python_files = ["test_*.py"]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
