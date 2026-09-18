@@ -5,21 +5,26 @@ LOW_CONFIDENCE_THRESHOLD = 0.70
 
 
 class Settings(BaseSettings):
-    # Required environment values (no default) — pydantic-settings will
-    # map field names like `kafka_brokers` -> `KAFKA_BROKERS` automatically.
-    kafka_brokers: str
+    # Kafka configuration (disabled by default in HTTP standalone mode)
+    kafka_enabled: bool = False
+    kafka_brokers: str = "localhost:9092"
 
     # Topics with reasonable defaults.
     kafka_topic_request: str = "resume.parse.requested"
     kafka_topic_completed: str = "resume.parse.completed"
     kafka_topic_failed: str = "resume.parse.failed"
 
-    # MinIO configuration
-    minio_endpoint: str
-    minio_access_key: str
-    minio_secret_key: str
-    minio_bucket_name: str
-    minio_secure: bool = True
+    # MinIO configuration (optional in HTTP standalone mode)
+    minio_endpoint: str = "localhost:9000"
+    minio_access_key: str = "minioadmin"
+    minio_secret_key: str = "minioadmin"
+    minio_bucket_name: str = "resumes"
+    minio_secure: bool = False
+
+    # Upload & OCR configuration
+    max_upload_size: int = 10 * 1024 * 1024  # 10MB
+    ocr_enabled: bool = True
+    ocr_engine: str = "pymupdf"
 
     # Parser version
     parser_version: str = "1.0.0"

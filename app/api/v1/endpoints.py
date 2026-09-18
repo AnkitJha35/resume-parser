@@ -52,13 +52,24 @@ from app.pipeline.parser import PipelineError, ResumeParser
 from app.pipeline.stages.layout import interpret_layout
 from app.pipeline.stages.reconstruction import reconstruct_document
 from app.pipeline.stages.text_extraction import PDFExtractor
-from tests.benchmark.generalization import GENERALIZATION_FIXTURES_DIR, GeneralizationCorpus
-from tests.benchmark.metadata import BENCHMARK_FIXTURES
-from tests.benchmark.semantic_runner import FIXTURES_DIR, SemanticBenchmarkRunner
+
+try:
+    from tests.benchmark.generalization import GENERALIZATION_FIXTURES_DIR, GeneralizationCorpus
+    from tests.benchmark.metadata import BENCHMARK_FIXTURES
+    from tests.benchmark.semantic_runner import FIXTURES_DIR, SemanticBenchmarkRunner
+    _TESTS_AVAILABLE = True
+except ImportError:
+    _TESTS_AVAILABLE = False
+    GENERALIZATION_FIXTURES_DIR = None
+    GeneralizationCorpus = None
+    BENCHMARK_FIXTURES = {}
+    FIXTURES_DIR = None
+    SemanticBenchmarkRunner = None
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
 
 MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10 MB
 

@@ -10,7 +10,7 @@ from app.domain.document import Document
 from app.domain.resume import Resume
 from app.domain.semantic_contract import (
     build_semantic_input,
-    repair_grounded_provenance,
+    repair_semantic_output_provenance,
     sanitize_grounded_current_status,
     sanitize_grounded_personal_location,
     sanitize_grounded_skills,
@@ -103,6 +103,7 @@ def parse_document_semantically(
     document: Document,
     extractor: SemanticExtractor,
     document_id: str = "doc-1",
+    enable_supplementation: bool = False,
 ) -> Resume:
     """Execute provider-independent semantic extraction on a layout Document.
 
@@ -150,21 +151,21 @@ def parse_document_semantically(
     output, loc_diagnostics = sanitize_grounded_personal_location(output, semantic_input)
     if loc_diagnostics:
         logger.info(
-            "Personal location sanitized doc_id=%s reason=%s value=%r source_blocks=%s",
+            "Personal location sanitized doc_id=%s reason=%s source_blocks=%s",
             document_id,
             loc_diagnostics[0].get("reason"),
-            loc_diagnostics[0].get("value"),
             loc_diagnostics[0].get("source_block_ids"),
         )
-    output, supplemented = supplement_high_confidence_semantic_fields(output, semantic_input)
-    if supplemented:
-        logger.info(
-            "Deterministic supplementation applied doc_id=%s count=%d fields=%s",
-            document_id,
-            len(supplemented),
-            [s.get("field") for s in supplemented],
-        )
-    output, repairs = repair_grounded_provenance(output, semantic_input)
+    if enable_supplementation:
+        output, supplemented = supplement_high_confidence_semantic_fields(output, semantic_input)
+        if supplemented:
+            logger.info(
+                "Deterministic supplementation applied doc_id=%s count=%d fields=%s",
+                document_id,
+                len(supplemented),
+                [s.get("field") for s in supplemented],
+            )
+    output, repairs = repair_semantic_output_provenance(output, semantic_input)
     if repairs:
         logger.info(
             "Deterministic provenance repair applied doc_id=%s repair_count=%d repairs=%s",

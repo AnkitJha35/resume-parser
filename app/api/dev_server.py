@@ -72,11 +72,17 @@ async def generic_exception_handler(request: Request, exc: Exception) -> JSONRes
     )
 
 
+@app.get("/health")
+def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
 @app.get("/")
 def index() -> dict[str, str]:
     return {
         "service": "Resume Parser Local Test Harness",
         "docs": "/docs",
-        "health": "/api/v1/health",
-        "config": "/api/v1/config",
+        "health": "/health",
+        "api_v1_health": "/api/v1/health",
+        "api_v1_config": "/api/v1/config",
     }

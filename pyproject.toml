@@ -12,17 +12,19 @@ dependencies = [
   "pydantic-settings>=2.0",
   "minio>=7.1.0",
   "aiokafka>=0.10.0",
-  "PyMuPDF>=1.22.0"
+  "PyMuPDF>=1.22.0",
+  "httpx>=0.24.0",
+  "python-multipart>=0.0.9",
 ]
 
 [project.optional-dependencies]
 dev = [
   "pytest>=8.0",
-  "httpx>=0.24.0",
-  "requests>=2.30.0"
+  "requests>=2.30.0",
 ]
 
 [tool.pytest.ini_options]
 minversion = "7.0"
 addopts = "-q"
+pythonpath = ["."]
 python_files = ["test_*.py"]
