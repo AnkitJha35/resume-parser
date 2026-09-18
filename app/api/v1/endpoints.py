@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from pathlib import Path
@@ -513,7 +514,17 @@ async def parse_resume(file: UploadFile = File(...)) -> ParseResponse:
         )
 
     settings = Settings()
-    return _run_parse_pipeline(pdf_bytes, file.filename, settings)
+    return await asyncio.to_thread(_run_parse_pipeline, pdf_bytes, file.filename, settings)
+
+
+def _build_diagnostic_ir(pdf_bytes: bytes, filename: str) -> tuple[Any, SemanticInput]:
+    """Execute CPU-bound PDF text extraction, layout reconstruction, and input building."""
+    raw_text_blocks = PDFExtractor.extract(pdf_bytes)
+    physical_doc = document_from_text_blocks(raw_text_blocks)
+    reconstructed_doc = reconstruct_document(physical_doc)
+    layout_doc = interpret_layout(reconstructed_doc)
+    semantic_input = build_semantic_input(layout_doc, document_id=filename)
+    return layout_doc, semantic_input
 
 
 @router.post("/parse/diagnostic", response_model=DiagnosticResponse)
@@ -551,13 +562,9 @@ async def parse_diagnostic(
             },
         )
 
-    # Execute structural pipeline stages
+    # Execute structural pipeline stages off the asyncio event loop
     try:
-        raw_text_blocks = PDFExtractor.extract(pdf_bytes)
-        physical_doc = document_from_text_blocks(raw_text_blocks)
-        reconstructed_doc = reconstruct_document(physical_doc)
-        layout_doc = interpret_layout(reconstructed_doc)
-        semantic_input = build_semantic_input(layout_doc, document_id=file.filename)
+        layout_doc, semantic_input = await asyncio.to_thread(_build_diagnostic_ir, pdf_bytes, file.filename)
     except Exception as exc:
         logger.exception("Structural extraction failed for %s", file.filename)
         raise HTTPException(
