@@ -1799,3 +1799,93 @@ def test_composite_contact_line_phone_grounding_deterministic():
     assert _is_value_semantically_supported("1415550188", composite_text) is False
     assert _is_value_semantically_supported("+1 (415) 55-0188", composite_text) is False
 
+
+def test_personal_location_sanitized_when_unsupported_by_contact_source_block():
+    """Header/contact source containing 'Stanford University | email | phone' with personal.location='Stanford, CA' is sanitized to None."""
+    blocks = [
+        _make_block("b_p1_0", "Elena Rostova", 1, 0, region_kind="header", suggested_role="HEADER"),
+        _make_block(
+            "b_p1_2",
+            "Department of Computer Science, Stanford University | elena.rostova@cs.stanford.edu | (650) 498-1240",
+            1,
+            1,
+            region_kind="header",
+            suggested_role="CONTACT",
+        ),
+    ]
+    sem_input = SemanticInput(
+        document_id="doc-rostova-cv",
+        page_count=1,
+        archetype=DocumentArchetype.ACADEMIC_CV,
+        pages=[SemanticPageMeta(page_number=1, width=612.0, height=792.0)],
+        blocks=blocks,
+    )
+    output = SemanticOutput(
+        document_archetype=DocumentArchetype.ACADEMIC_CV,
+        personal=GroundedPersonal(
+            name=GroundedString(value="Elena Rostova", source_block_ids=["b_p1_0"]),
+            location=GroundedString(value="Stanford, CA", source_block_ids=["b_p1_2"]),
+        ),
+    )
+    sanitized, diags = sanitize_grounded_personal_location(output, sem_input)
+    assert sanitized.personal.location is None
+    assert len(diags) == 1
+    assert diags[0]["field"] == "personal.location"
+    assert diags[0]["value"] == "Stanford, CA"
+    assert diags[0]["source_block_ids"] == ["b_p1_2"]
+    assert diags[0]["reason"] == "unsupported_value_in_source_b_p1_2"
+    violations = validate_semantic_output(sanitized, sem_input)
+    assert violations == []
+
+
+def test_experience_location_remains_valid_from_organization_block_with_stanford_ca():
+    """The same 'Stanford, CA' remains valid as experience.location when sourced from an experience ORGANIZATION block."""
+    blocks = [
+        _make_block("b_p1_0", "Elena Rostova", 1, 0, region_kind="header", suggested_role="HEADER"),
+        _make_block(
+            "b_p1_2",
+            "Department of Computer Science, Stanford University | elena.rostova@cs.stanford.edu | (650) 498-1240",
+            1,
+            1,
+            region_kind="header",
+            suggested_role="CONTACT",
+        ),
+        _make_block("b_p1_12", "RESEARCH EXPERIENCE", 1, 2, region_kind="physical_region", suggested_role="SECTION_HEADING", is_bold=True),
+        _make_block("b_p1_13", "Postdoctoral Research Fellow", 1, 3, region_kind="physical_region", suggested_role="ENTRY_TITLE"),
+        _make_block("b_p1_15", "Stanford University, Stanford, CA", 1, 4, region_kind="physical_region", suggested_role="ORGANIZATION"),
+        _make_block("b_p1_14", "2022 - Present", 1, 5, region_kind="physical_region", suggested_role="DATE"),
+    ]
+    sem_input = SemanticInput(
+        document_id="doc-rostova-cv-exp",
+        page_count=1,
+        archetype=DocumentArchetype.ACADEMIC_CV,
+        pages=[SemanticPageMeta(page_number=1, width=612.0, height=792.0)],
+        blocks=blocks,
+    )
+    output = SemanticOutput(
+        document_archetype=DocumentArchetype.ACADEMIC_CV,
+        personal=GroundedPersonal(
+            name=GroundedString(value="Elena Rostova", source_block_ids=["b_p1_0"]),
+            location=GroundedString(value="Stanford, CA", source_block_ids=["b_p1_2"]),
+        ),
+        experience=[
+            GroundedExperienceItem(
+                designation=GroundedString(value="Postdoctoral Research Fellow", source_block_ids=["b_p1_13"]),
+                company=GroundedString(value="Stanford University", source_block_ids=["b_p1_15"]),
+                location=GroundedString(value="Stanford, CA", source_block_ids=["b_p1_15"]),
+                startDate=GroundedString(value="2022", source_block_ids=["b_p1_14"]),
+                source_block_ids=["b_p1_13", "b_p1_14", "b_p1_15"],
+            )
+        ],
+    )
+    sanitized, diags = sanitize_grounded_personal_location(output, sem_input)
+    assert sanitized.personal.location is None
+    assert len(diags) == 1
+    assert diags[0]["reason"] == "unsupported_value_in_source_b_p1_2"
+
+    assert sanitized.experience[0].location is not None
+    assert sanitized.experience[0].location.value == "Stanford, CA"
+    assert sanitized.experience[0].location.source_block_ids == ["b_p1_15"]
+
+    violations = validate_semantic_output(sanitized, sem_input)
+    assert violations == []

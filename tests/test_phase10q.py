@@ -393,18 +393,18 @@ def test_gemini_extractor_groups_academic_cv_targets(monkeypatch):
         two_pass=True,
     )
     blocks = [
-        _block("h0", "Prof. Smith", suggested_role="HEADER", region_kind="header"),
-        _block("b1", "ACADEMIC APPOINTMENTS", suggested_role="SECTION_HEADING"),
-        _block("b2", "Associate Professor", suggested_role="ENTRY_TITLE"),
-        _block("b3", "MIT", suggested_role="ORGANIZATION"),
-        _block("b4", "2018 - Present", suggested_role="DATE"),
-        _block("b5", "POSTDOCTORAL FELLOWSHIPS", suggested_role="SECTION_HEADING"),
-        _block("b6", "Postdoc", suggested_role="ENTRY_TITLE"),
-        _block("b7", "Stanford", suggested_role="ORGANIZATION"),
-        _block("b8", "2016 - 2018", suggested_role="DATE"),
-        _block("b9", "EDUCATION", suggested_role="SECTION_HEADING"),
-        _block("b10", "Ph.D.", suggested_role="DEGREE"),
-        _block("b11", "Berkeley", suggested_role="INSTITUTION"),
+        _block("h0", "Prof. Smith", suggested_role="HEADER", region_kind="header", reading_order=0),
+        _block("b1", "ACADEMIC APPOINTMENTS", suggested_role="SECTION_HEADING", reading_order=1),
+        _block("b2", "Associate Professor", suggested_role="ENTRY_TITLE", reading_order=2),
+        _block("b3", "MIT", suggested_role="ORGANIZATION", reading_order=3),
+        _block("b4", "2018 - Present", suggested_role="DATE", reading_order=4),
+        _block("b5", "POSTDOCTORAL FELLOWSHIPS", suggested_role="SECTION_HEADING", reading_order=5),
+        _block("b6", "Postdoc", suggested_role="ENTRY_TITLE", reading_order=6),
+        _block("b7", "Stanford", suggested_role="ORGANIZATION", reading_order=7),
+        _block("b8", "2016 - 2018", suggested_role="DATE", reading_order=8),
+        _block("b9", "EDUCATION", suggested_role="SECTION_HEADING", reading_order=9),
+        _block("b10", "Ph.D.", suggested_role="DEGREE", reading_order=10),
+        _block("b11", "Berkeley", suggested_role="INSTITUTION", reading_order=11),
     ]
     inp = _input_with_archetype(DocumentArchetype.ACADEMIC_CV, blocks)
 
@@ -414,21 +414,27 @@ def test_gemini_extractor_groups_academic_cv_targets(monkeypatch):
         executed_passes.append(pass_name)
         if pass_name == "personal":
             data = {"personal": {"name": {"value": "Prof. Smith", "source_block_ids": ["h0"]}}}
-        elif pass_name == "body_sec_experience":
-            data = {
-                "experience": [
-                    {
-                        "company": {"value": "MIT", "source_block_ids": ["b3"]},
-                        "designation": {"value": "Associate Professor", "source_block_ids": ["b2"]},
-                        "source_block_ids": ["b2", "b3", "b4"],
-                    },
-                    {
-                        "company": {"value": "Stanford", "source_block_ids": ["b7"]},
-                        "designation": {"value": "Postdoc", "source_block_ids": ["b6"]},
-                        "source_block_ids": ["b6", "b7", "b8"],
-                    },
-                ]
-            }
+        elif pass_name == "body_appt_experience":
+            if "Associate Professor" in prompt:
+                data = {
+                    "experience": [
+                        {
+                            "company": {"value": "MIT", "source_block_ids": ["b3"]},
+                            "designation": {"value": "Associate Professor", "source_block_ids": ["b2"]},
+                            "source_block_ids": ["b2", "b3", "b4"],
+                        }
+                    ]
+                }
+            else:
+                data = {
+                    "experience": [
+                        {
+                            "company": {"value": "Stanford", "source_block_ids": ["b7"]},
+                            "designation": {"value": "Postdoc", "source_block_ids": ["b6"]},
+                            "source_block_ids": ["b6", "b7", "b8"],
+                        }
+                    ]
+                }
         elif pass_name == "body_sec_education":
             data = {
                 "education": [
@@ -447,12 +453,13 @@ def test_gemini_extractor_groups_academic_cv_targets(monkeypatch):
     res = extractor.extract(inp)
 
     # Verifications:
-    # 1. Only 1 body_sec_experience pass was executed (not 2!)
-    exp_passes = [p for p in executed_passes if p == "body_sec_experience"]
-    assert len(exp_passes) == 1
-    # 2. Total body passes = 2 (experience and education)
-    body_passes = [p for p in executed_passes if p != "personal"]
-    assert sorted(body_passes) == ["body_sec_education", "body_sec_experience"]
+    # 1. Experience target executed per deterministic appointment group (2 appointments)
+    exp_passes = [p for p in executed_passes if p == "body_appt_experience"]
+    assert len(exp_passes) == 2
+    # 2. Education executed as single section pass
+    edu_passes = [p for p in executed_passes if p == "body_sec_education"]
+    assert len(edu_passes) == 1
+    # 3. Merged experience correctly contains both distinct appointment items
     assert len(res.experience) == 2
 
 

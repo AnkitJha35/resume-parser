@@ -82,7 +82,12 @@ def test_mocked_gemini_extraction_through_benchmark_runner(tmp_path):
                 "name": {"value": "John Doe", "raw_value": "John Doe", "source_block_ids": ["b_p1_0"]},
                 "email": {"value": "john.doe@example.com", "source_block_ids": ["b_p1_1"]},
             },
-            "experience": [],
+            "experience": [
+                {
+                    "title": {"value": "Senior Software Engineer", "source_block_ids": ["b_p1_5"]},
+                    "company": {"value": "Acme Corporation", "source_block_ids": ["b_p1_4"]},
+                }
+            ],
         }
         envelope = {
             "candidates": [

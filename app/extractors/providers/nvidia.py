@@ -27,6 +27,10 @@ from app.domain.semantic_contract import (
     merge_body_outputs,
     merge_semantic_passes,
     partition_semantic_input_into_sections,
+    constrain_appointment_experience_provenance,
+    enforce_single_experience_entity,
+    isolate_unit_target_collections,
+    plan_section_aware_body_passes,
     sanitize_grounded_current_status,
     should_use_section_aware_body_extraction,
 )
@@ -596,6 +600,21 @@ class NvidiaSemanticExtractor:
         api_key, model, base_url, timeout, max_retries, max_tokens, response_format_type, enable_thinking = self._resolve_config()
         start_time = self._time_fn()
         schema = get_compact_schema(SemanticOutput)
+        schema["required"] = [
+            "document_archetype",
+            "personal",
+            "skills",
+            "experience",
+            "education",
+            "projects",
+            "certifications",
+            "languages",
+            "achievements",
+        ]
+        if "properties" in schema and "personal" in schema["properties"]:
+            p_prop = schema["properties"]["personal"]
+            if isinstance(p_prop, dict) and "properties" in p_prop:
+                p_prop["required"] = ["name", "email", "phone", "location"]
         prompt = build_compact_extraction_prompt(input_data)
 
         raw_text, usage_dict, retry_count = self._execute_prompt_request(
@@ -613,7 +632,64 @@ class NvidiaSemanticExtractor:
         )
 
         result = parse_semantic_output(raw_text)
-        result = sanitize_grounded_current_status(result, input_data)
+        ev_cat = get_body_evidence_category(input_data)
+        is_empty = not bool(
+            result.skills
+            or result.experience
+            or result.education
+            or result.projects
+            or result.certifications
+            or result.languages
+            or result.achievements
+        )
+        body_recovery_invoked = False
+        body_recovery_attempts = 0
+        if is_empty and ev_cat:
+            prompt_recovery = build_body_recovery_prompt(input_data)
+            schema_body = get_body_schema()
+            raw_rec_text, rec_usage, rec_retries = self._execute_prompt_request(
+                prompt=prompt_recovery,
+                response_schema=schema_body,
+                api_key=api_key,
+                model=model,
+                base_url=base_url,
+                timeout=timeout,
+                max_retries=max_retries,
+                max_tokens=max_tokens,
+                response_format_type=response_format_type,
+                enable_thinking=enable_thinking,
+                pass_name="recovery",
+            )
+            rec_parsed = parse_body_output(raw_rec_text)
+            result.skills = rec_parsed.skills
+            result.experience = rec_parsed.experience
+            result.education = rec_parsed.education
+            result.projects = rec_parsed.projects
+            result.certifications = rec_parsed.certifications
+            result.languages = rec_parsed.languages
+            result.achievements = rec_parsed.achievements
+            if rec_parsed.summary and not result.summary:
+                result.summary = rec_parsed.summary
+            if rec_parsed.block_classifications:
+                result.block_classifications.extend(rec_parsed.block_classifications)
+            body_recovery_invoked = True
+            body_recovery_attempts = 1
+            retry_count += rec_retries
+            p_tok = (usage_dict.get("prompt_tokens") or 0) + (rec_usage.get("prompt_tokens") or 0)
+            o_tok = (usage_dict.get("output_tokens") or 0) + (rec_usage.get("output_tokens") or 0)
+            tot_tok = (usage_dict.get("total_tokens") or 0) + (rec_usage.get("total_tokens") or 0)
+            usage_dict["prompt_tokens"] = p_tok
+            usage_dict["output_tokens"] = o_tok
+            usage_dict["total_tokens"] = tot_tok
+            is_empty = not bool(
+                result.skills
+                or result.experience
+                or result.education
+                or result.projects
+                or result.certifications
+                or result.languages
+                or result.achievements
+            )
 
         elapsed_ms = (self._time_fn() - start_time) * 1000
         usage_meta = {
@@ -621,6 +697,12 @@ class NvidiaSemanticExtractor:
             "latency_ms": elapsed_ms,
             "retry_count": retry_count,
             "two_pass": False,
+            "body_recovery_invoked": body_recovery_invoked,
+            "body_recovery_reason": "suspicious_empty_body_recovery" if body_recovery_invoked else None,
+            "body_recovery_attempts": body_recovery_attempts,
+            "final_body_empty": is_empty,
+            "body_completeness_failure": False,
+            "evidence_category": ev_cat,
         }
         self.last_usage_metadata = usage_meta
         self._last_call_meta = usage_meta
@@ -698,28 +780,22 @@ class NvidiaSemanticExtractor:
             use_section_aware = should_use_section_aware_body_extraction(input_data)
 
             if use_section_aware:
-                sections = partition_semantic_input_into_sections(input_data)
-                grouped_supported = group_sections_by_target(sections)
-                skipped = [s for s in sections if s.canonical_target == "unsupported"]
-
+                units = plan_section_aware_body_passes(input_data)
                 arch_name = (
                     input_data.archetype.value
                     if hasattr(input_data.archetype, "value")
                     else str(input_data.archetype)
                 )
                 logger.info(
-                    "NVIDIA body pass section-aware mode doc_id=%s archetype=%s "
-                    "total_sections=%d grouped_supported=%d skipped_unsupported=%d",
+                    "NVIDIA body pass section-aware mode doc_id=%s archetype=%s units=%d",
                     input_data.document_id,
                     arch_name,
-                    len(sections),
-                    len(grouped_supported),
-                    len(skipped),
+                    len(units),
                 )
 
-                if not grouped_supported:
+                if not units:
                     logger.warning(
-                        "NVIDIA body pass section-aware mode found no supported sections; "
+                        "NVIDIA body pass section-aware mode found no units; "
                         "falling through to monolithic pass doc_id=%s",
                         input_data.document_id,
                     )
@@ -732,12 +808,38 @@ class NvidiaSemanticExtractor:
                     total_tot_t = 0
                     total_retries = 0
 
-                    for sec in grouped_supported:
-                        sec_input = filter_semantic_input_to_blocks(input_data, sec.block_ids)
+                    for unit in units:
+                        if unit.is_appointment:
+                            logger.info(
+                                "NVIDIA body pass appointment extraction doc_id=%s section=%r "
+                                "appt=%d/%d title_id=%s blocks=%d",
+                                input_data.document_id,
+                                unit.section_heading,
+                                unit.appt_index,
+                                unit.total_appts,
+                                unit.title_block_id,
+                                len(unit.section_input.blocks),
+                            )
+                        else:
+                            logger.info(
+                                "NVIDIA body pass section extraction doc_id=%s section=%r "
+                                "target=%s blocks=%d",
+                                input_data.document_id,
+                                unit.section_heading,
+                                unit.canonical_target,
+                                len(unit.section_input.blocks),
+                            )
                         try:
                             sec_res, sec_usage, sec_retries = _run_body_for_section_input(
-                                sec_input, pass_name=f"body_sec_{sec.canonical_target}"
+                                unit.section_input, pass_name=unit.pass_name
                             )
+                            sec_res = isolate_unit_target_collections(sec_res, unit.canonical_target)
+                            if unit.is_appointment:
+                                sec_res = enforce_single_experience_entity(sec_res, unit.title_block_id)
+                                allowed_bids = unit.appointment_block_ids or [
+                                    b.block_id for b in unit.section_input.blocks
+                                ]
+                                sec_res = constrain_appointment_experience_provenance(sec_res, allowed_bids)
                             section_outputs.append(sec_res)
                             total_p_t += (sec_usage.get("prompt_tokens") or 0)
                             total_o_t += (sec_usage.get("output_tokens") or 0)
@@ -747,11 +849,12 @@ class NvidiaSemanticExtractor:
                             if isinstance(sec_exc, SemanticConfigurationError):
                                 raise
                             logger.warning(
-                                "NVIDIA section extraction failed doc_id=%s section=%r "
+                                "NVIDIA %s extraction failed doc_id=%s section=%r "
                                 "target=%s error_type=%s: %s",
+                                "appointment" if unit.is_appointment else "section",
                                 input_data.document_id,
-                                sec.heading_text,
-                                sec.canonical_target,
+                                unit.section_heading,
+                                unit.canonical_target,
                                 type(sec_exc).__name__,
                                 sec_exc,
                             )
@@ -767,9 +870,9 @@ class NvidiaSemanticExtractor:
                             input_data.document_id,
                             model,
                         )
-                        supported_block_ids: list[str] = [
-                            bid for sec in grouped_supported for bid in sec.block_ids
-                        ]
+                        supported_block_ids: list[str] = list(
+                            dict.fromkeys(b.block_id for u in units for b in u.section_input.blocks)
+                        )
                         recovery_input = filter_semantic_input_to_blocks(
                             input_data, supported_block_ids, include_headers=False
                         )

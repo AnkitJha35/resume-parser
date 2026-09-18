@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -750,3 +751,382 @@ def test_benchmark_runner_accepts_nvidia_provider(monkeypatch):
     # When NVIDIA_API_KEY is not set, main should exit cleanly with return code 1 and error message
     rc = main(["--provider", "nvidia"])
     assert rc == 1
+
+
+# =====================================================================
+# 7. Phase 10U-Fix: NVIDIA Academic Appointment-Scoped Extraction Parity
+# =====================================================================
+
+def test_nvidia_academic_postdoc_cv_isolated_appointment_blocks(monkeypatch):
+    """NVIDIA receives strictly isolated appointment block sets for postdoc CV and produces 1 entity per appointment."""
+    from pathlib import Path
+    from app.domain.document import document_from_text_blocks
+    from app.pipeline.stages.text_extraction import PDFExtractor
+    from app.pipeline.stages.reconstruction import reconstruct_document
+    from app.pipeline.stages.layout import interpret_layout
+    from app.domain.semantic_contract import build_semantic_input, validate_semantic_output
+
+    fpath = Path("tests/fixtures/generalization/academic_research_postdoc_cv.pdf")
+    raw = fpath.read_bytes()
+    doc = document_from_text_blocks(PDFExtractor.extract(raw))
+    rec = reconstruct_document(doc)
+    layout_doc = interpret_layout(rec)
+    sinput = build_semantic_input(layout_doc, document_id=fpath.name, archetype=DocumentArchetype.ACADEMIC_CV)
+
+    captured_requests: list[dict[str, Any]] = []
+
+    def mock_execute_prompt_request(
+        prompt: str,
+        response_schema: dict[str, Any],
+        api_key: str,
+        model: str,
+        base_url: str,
+        timeout: float,
+        max_retries: int,
+        max_tokens: int,
+        response_format_type: str,
+        enable_thinking: bool,
+        pass_name: str,
+    ):
+        captured_requests.append({
+            "pass_name": pass_name,
+            "prompt": prompt,
+        })
+        if pass_name == "personal":
+            data = {"personal": {"name": {"value": "Elena Rostova", "source_block_ids": ["b_p1_0"]}}}
+        elif pass_name == "body_appt_experience":
+            if "b_p1_13" in prompt:
+                # Appt 1: Postdoc Fellow (deliberately include extra entity to verify single-entity enforcement)
+                data = {
+                    "experience": [
+                        {
+                            "designation": {"value": "Postdoctoral Research Fellow", "source_block_ids": ["b_p1_13"]},
+                            "company": {"value": "Stanford University", "source_block_ids": ["b_p1_15"]},
+                            "startDate": {"value": "2023 - Present", "source_block_ids": ["b_p1_14"]},
+                            "endDate": {"value": "Present", "source_block_ids": ["b_p1_14"]},
+                            "source_block_ids": ["b_p1_13", "b_p1_14", "b_p1_15", "b_p1_16", "b_p1_17"],
+                        },
+                        {
+                            "designation": {"value": "Extraneous Hallucinated Sub-role", "source_block_ids": ["b_p1_13"]},
+                            "company": {"value": "Stanford University", "source_block_ids": ["b_p1_15"]},
+                            "source_block_ids": ["b_p1_13"],
+                        },
+                    ]
+                }
+            elif "b_p1_18" in prompt:
+                # Appt 2: Graduate Research Assistant
+                data = {
+                    "experience": [
+                        {
+                            "designation": {"value": "Graduate Research Assistant", "source_block_ids": ["b_p1_18"]},
+                            "company": {"value": "Computer Science and Artificial Intelligence Laboratory (CSAIL), MIT", "source_block_ids": ["b_p1_20"]},
+                            "startDate": {"value": "2018 - 2023", "source_block_ids": ["b_p1_19"]},
+                            "endDate": {"value": "2018 - 2023", "source_block_ids": ["b_p1_19"]},
+                            "source_block_ids": ["b_p1_18", "b_p1_19", "b_p1_20", "b_p1_21", "b_p1_22"],
+                        }
+                    ]
+                }
+            elif "b_p2_37" in prompt:
+                # Appt 3: Teaching Assistant · CS 244B
+                data = {
+                    "experience": [
+                        {
+                            "designation": {"value": "Teaching Assistant · CS 244B: Distributed Systems", "source_block_ids": ["b_p2_37"]},
+                            "company": {"value": "Stanford University", "source_block_ids": ["b_p2_39"]},
+                            "startDate": {"value": "Spring 2024", "source_block_ids": ["b_p2_38"]},
+                            "source_block_ids": ["b_p2_37", "b_p2_38", "b_p2_39"],
+                        }
+                    ]
+                }
+            elif "b_p2_40" in prompt:
+                # Appt 4: Teaching Assistant · 6.824
+                data = {
+                    "experience": [
+                        {
+                            "designation": {"value": "Teaching Assistant · 6.824: Distributed Systems", "source_block_ids": ["b_p2_40"]},
+                            "company": {"value": "MIT Department of Electrical Engineering and Computer Science", "source_block_ids": ["b_p2_42"]},
+                            "startDate": {"value": "Fall 2021, Fall 2022", "source_block_ids": ["b_p2_41"]},
+                            "source_block_ids": ["b_p2_40", "b_p2_41", "b_p2_42"],
+                        }
+                    ]
+                }
+            else:
+                data = {"experience": []}
+        elif pass_name == "body_sec_education":
+            data = {
+                "education": [
+                    {
+                        "institution": {"value": "MIT", "source_block_ids": ["b_p1_3"]},
+                        "degree": {"value": "Ph.D.", "source_block_ids": ["b_p1_4"]},
+                        "source_block_ids": ["b_p1_3", "b_p1_4"],
+                    }
+                ]
+            }
+        else:
+            data = {}
+
+        return json.dumps(data), {"prompt_tokens": 100, "output_tokens": 50, "total_tokens": 150}, 0
+
+    extractor = NvidiaSemanticExtractor(api_key="nvapi-testkey", two_pass=True)
+    monkeypatch.setattr(extractor, "_execute_prompt_request", mock_execute_prompt_request)
+
+    res = extractor.extract(sinput)
+
+    # 1. Exactly four appointment-scoped experience requests were sent
+    appt_reqs = [r for r in captured_requests if r["pass_name"] == "body_appt_experience"]
+    assert len(appt_reqs) == 4
+
+    # 2. Extract block IDs present in each appointment request prompt
+    expected_appt_blocks = [
+        ["b_p1_13", "b_p1_14", "b_p1_15", "b_p1_16", "b_p1_17"],
+        ["b_p1_18", "b_p1_19", "b_p1_20", "b_p1_21", "b_p1_22"],
+        ["b_p2_37", "b_p2_38", "b_p2_39"],
+        ["b_p2_40", "b_p2_41", "b_p2_42"],
+    ]
+
+    for idx, (req, expected_bids) in enumerate(zip(appt_reqs, expected_appt_blocks)):
+        prompt = req["prompt"]
+        for bid in expected_bids:
+            assert f'"id":"{bid}"' in prompt, f"Expected block {bid} missing from appointment {idx + 1}"
+
+    # 3. Disjointness: No block from another appointment or section heading enters an appointment request
+    heading_bids = {"b_p1_12", "b_p2_36"}  # RESEARCH EXPERIENCE, TEACHING EXPERIENCE headings
+    for idx, (req, expected_bids) in enumerate(zip(appt_reqs, expected_appt_blocks)):
+        prompt = req["prompt"]
+        for h_bid in heading_bids:
+            assert f'"id":"{h_bid}"' not in prompt, f"Section heading {h_bid} leaked into appointment {idx + 1}"
+
+        other_bids = set().union(*[bids for j, bids in enumerate(expected_appt_blocks) if j != idx])
+        for o_bid in other_bids:
+            assert f'"id":"{o_bid}"' not in prompt, f"Foreign block {o_bid} leaked into appointment {idx + 1}"
+
+    # 4. Merged result contains exactly 4 experience items (extra entity was purged)
+    assert len(res.experience) == 4
+    assert res.experience[0].designation.value == "Postdoctoral Research Fellow"
+    assert res.experience[0].source_block_ids == ["b_p1_13", "b_p1_14", "b_p1_15", "b_p1_16", "b_p1_17"]
+
+    assert res.experience[1].designation.value == "Graduate Research Assistant"
+    assert res.experience[1].source_block_ids == ["b_p1_18", "b_p1_19", "b_p1_20", "b_p1_21", "b_p1_22"]
+
+    assert res.experience[2].designation.value == "Teaching Assistant · CS 244B: Distributed Systems"
+    assert res.experience[2].source_block_ids == ["b_p2_37", "b_p2_38", "b_p2_39"]
+
+    assert res.experience[3].designation.value == "Teaching Assistant · 6.824: Distributed Systems"
+    assert res.experience[3].source_block_ids == ["b_p2_40", "b_p2_41", "b_p2_42"]
+
+    # 5. Token accounting & metadata are populated
+    assert extractor.last_usage_metadata is not None
+    assert extractor.last_usage_metadata["two_pass"] is True
+    assert extractor.last_usage_metadata["body_pass"]["body_recovery_invoked"] is False
+
+
+def test_nvidia_academic_tenured_professor_cv_isolated_appointment_blocks(monkeypatch):
+    """NVIDIA receives strictly isolated appointment block sets for tenured professor CV."""
+    from pathlib import Path
+    from app.domain.document import document_from_text_blocks
+    from app.pipeline.stages.text_extraction import PDFExtractor
+    from app.pipeline.stages.reconstruction import reconstruct_document
+    from app.pipeline.stages.layout import interpret_layout
+    from app.domain.semantic_contract import build_semantic_input
+
+    fpath = Path("tests/fixtures/generalization/long_academic_tenured_professor_cv.pdf")
+    raw = fpath.read_bytes()
+    doc = document_from_text_blocks(PDFExtractor.extract(raw))
+    rec = reconstruct_document(doc)
+    layout_doc = interpret_layout(rec)
+    sinput = build_semantic_input(layout_doc, document_id=fpath.name, archetype=DocumentArchetype.ACADEMIC_CV)
+
+    captured_requests: list[dict[str, Any]] = []
+
+    def mock_execute_prompt_request(
+        prompt: str,
+        response_schema: dict[str, Any],
+        api_key: str,
+        model: str,
+        base_url: str,
+        timeout: float,
+        max_retries: int,
+        max_tokens: int,
+        response_format_type: str,
+        enable_thinking: bool,
+        pass_name: str,
+    ):
+        captured_requests.append({
+            "pass_name": pass_name,
+            "prompt": prompt,
+        })
+        if pass_name == "personal":
+            data = {"personal": {"name": {"value": "Prof. John Doe", "source_block_ids": ["b_p1_0"]}}}
+        elif pass_name == "body_appt_experience":
+            if "b_p1_4" in prompt:
+                data = {
+                    "experience": [
+                        {
+                            "designation": {"value": "Professor with Tenure", "source_block_ids": ["b_p1_4"]},
+                            "company": {"value": "University", "source_block_ids": ["b_p1_5"]},
+                            "source_block_ids": ["b_p1_4", "b_p1_5", "b_p1_6"],
+                        }
+                    ]
+                }
+            elif "b_p1_7" in prompt:
+                data = {
+                    "experience": [
+                        {
+                            "designation": {"value": "Associate Professor", "source_block_ids": ["b_p1_7"]},
+                            "company": {"value": "University", "source_block_ids": ["b_p1_8"]},
+                            "source_block_ids": ["b_p1_7", "b_p1_8", "b_p1_9"],
+                        }
+                    ]
+                }
+            elif "b_p1_10" in prompt:
+                data = {
+                    "experience": [
+                        {
+                            "designation": {"value": "Assistant Professor", "source_block_ids": ["b_p1_10"]},
+                            "company": {"value": "University", "source_block_ids": ["b_p1_11"]},
+                            "source_block_ids": ["b_p1_10", "b_p1_11", "b_p1_12"],
+                        }
+                    ]
+                }
+            elif "b_p1_13" in prompt:
+                data = {
+                    "experience": [
+                        {
+                            "designation": {"value": "Postdoctoral Research Fellow", "source_block_ids": ["b_p1_13"]},
+                            "company": {"value": "University", "source_block_ids": ["b_p1_14"]},
+                            "source_block_ids": ["b_p1_13", "b_p1_14", "b_p1_15"],
+                        }
+                    ]
+                }
+            else:
+                data = {"experience": []}
+        else:
+            data = {}
+
+        return json.dumps(data), {"prompt_tokens": 100, "output_tokens": 50, "total_tokens": 150}, 0
+
+    extractor = NvidiaSemanticExtractor(api_key="nvapi-testkey", two_pass=True)
+    monkeypatch.setattr(extractor, "_execute_prompt_request", mock_execute_prompt_request)
+
+    res = extractor.extract(sinput)
+
+    # 4 appointment requests executed
+    appt_reqs = [r for r in captured_requests if r["pass_name"] == "body_appt_experience"]
+    assert len(appt_reqs) == 4
+
+    # Merged result contains exactly 4 experience items
+    assert len(res.experience) == 4
+    titles = [it.designation.value for it in res.experience]
+    assert titles == [
+        "Professor with Tenure",
+        "Associate Professor",
+        "Assistant Professor",
+        "Postdoctoral Research Fellow",
+    ]
+
+
+def test_nvidia_standard_cv_remains_monolithic(monkeypatch):
+    """Standard CV continues to execute single monolithic body pass without appointment splitting."""
+    captured_passes: list[str] = []
+
+    def mock_execute_prompt_request(
+        prompt: str,
+        response_schema: dict[str, Any],
+        api_key: str,
+        model: str,
+        base_url: str,
+        timeout: float,
+        max_retries: int,
+        max_tokens: int,
+        response_format_type: str,
+        enable_thinking: bool,
+        pass_name: str,
+    ):
+        captured_passes.append(pass_name)
+        if pass_name == "personal":
+            data = {"personal": {"name": {"value": "Jane Doe", "source_block_ids": ["b0"]}}}
+        else:
+            data = {
+                "experience": [
+                    {
+                        "designation": {"value": "Software Engineer", "source_block_ids": ["b3"]},
+                        "company": {"value": "Acme Corp", "source_block_ids": ["b3"]},
+                        "source_block_ids": ["b3"],
+                    }
+                ]
+            }
+        return json.dumps(data), {"prompt_tokens": 100, "output_tokens": 50, "total_tokens": 150}, 0
+
+    extractor = NvidiaSemanticExtractor(api_key="nvapi-testkey", two_pass=True)
+    monkeypatch.setattr(extractor, "_execute_prompt_request", mock_execute_prompt_request)
+
+    res = extractor.extract(_sample_input(archetype=DocumentArchetype.STANDARD_CV))
+    assert "personal" in captured_passes
+    assert "body" in captured_passes
+    assert "body_appt_experience" not in captured_passes
+    assert len(res.experience) == 1
+
+
+def test_nvidia_appointment_provenance_leakage_constrained_at_merge_boundary(monkeypatch):
+    """NVIDIA provider constrains appointment top-level source_block_ids that leak outside appointment span."""
+    from app.domain.document import document_from_text_blocks
+    from app.pipeline.stages.text_extraction import PDFExtractor
+    from app.pipeline.stages.reconstruction import reconstruct_document
+    from app.pipeline.stages.layout import interpret_layout
+    from app.domain.semantic_contract import build_semantic_input
+
+    fpath = Path("tests/fixtures/generalization/long_academic_tenured_professor_cv.pdf")
+    raw = fpath.read_bytes()
+    doc = document_from_text_blocks(PDFExtractor.extract(raw))
+    rec = reconstruct_document(doc)
+    layout_doc = interpret_layout(rec)
+    sinput = build_semantic_input(layout_doc, document_id=fpath.name, archetype=DocumentArchetype.ACADEMIC_CV)
+
+    def mock_execute_prompt_request(
+        prompt: str,
+        response_schema: dict[str, Any],
+        api_key: str,
+        model: str,
+        base_url: str,
+        timeout: float,
+        max_retries: int,
+        max_tokens: int,
+        response_format_type: str,
+        enable_thinking: bool,
+        pass_name: str,
+    ):
+        if pass_name == "personal":
+            data = {"personal": {"name": {"value": "Prof. John Doe", "source_block_ids": ["b_p1_0"]}}}
+        elif pass_name == "body_appt_experience":
+            if "b_p1_4" in prompt:
+                # Deliberately leak blocks b_p1_7, b_p1_8, b_p1_99 into top-level source_block_ids
+                data = {
+                    "experience": [
+                        {
+                            "designation": {"value": "Professor with Tenure", "source_block_ids": ["b_p1_4"]},
+                            "company": {"value": "University", "source_block_ids": ["b_p1_5"]},
+                            "source_block_ids": ["b_p1_4", "b_p1_5", "b_p1_6", "b_p1_7", "b_p1_8", "b_p1_99"],
+                        }
+                    ]
+                }
+            else:
+                data = {"experience": []}
+        else:
+            data = {}
+
+        return json.dumps(data), {"prompt_tokens": 100, "output_tokens": 50, "total_tokens": 150}, 0
+
+    extractor = NvidiaSemanticExtractor(api_key="nvapi-testkey", two_pass=True)
+    monkeypatch.setattr(extractor, "_execute_prompt_request", mock_execute_prompt_request)
+
+    res = extractor.extract(sinput)
+    assert len(res.experience) == 1
+    exp = res.experience[0]
+
+    # Top-level source_block_ids is constrained to the first appointment's block_ids
+    assert exp.source_block_ids == ["b_p1_4", "b_p1_5", "b_p1_6"]
+    # Individual field provenance remains untouched
+    assert exp.designation.value == "Professor with Tenure"
+    assert exp.designation.source_block_ids == ["b_p1_4"]
+    assert exp.company.value == "University"
+    assert exp.company.source_block_ids == ["b_p1_5"]

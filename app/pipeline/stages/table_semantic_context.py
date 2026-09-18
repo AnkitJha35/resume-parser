@@ -541,6 +541,9 @@ _CONTINUATION_TRAILING_PATTERNS = re.compile(
 _SERIAL_NO_PATTERN = re.compile(r"^\s*(?:\d+|[ivxIVX]+|[A-Za-z])[\.\)]\s*$|^\s*#?\d+\s*$")
 _TRAILING_PUNCT_WORD = re.compile(r"[/&,\-]\s*\w+\s*$")
 _STANDALONE_ACRONYM = re.compile(r"^[A-Z]{2,}(?:\s*/\s*[A-Z]{2,})*$")
+_RANK_PREFIX = re.compile(r"\b(?:1st|2nd|3rd|4th|Chief|Deck|Junior|Senior|Trainee)\b", re.IGNORECASE)
+_RANK_SUFFIX = re.compile(r"^\s*(?:Officer|Cadet|Engineer|Master|Captain|Rating|Crew)\b", re.IGNORECASE)
+
 
 
 def is_logical_row_continuation(
@@ -564,7 +567,10 @@ def is_logical_row_continuation(
         if c.semantic_role == "serial_no":
             return False
         if c.column_index == 0 and _SERIAL_NO_PATTERN.match(c.text):
-            return False
+            is_col_serial = (columns and columns[0].semantic_role == "serial_no")
+            clean_num = re.sub(r"\D", "", c.text)
+            if is_col_serial or (clean_num and int(clean_num) > 0 and len(c.text.strip()) <= 4):
+                return False
 
     # Negative Guard 2: Full date interval in curr_row (both start/issue and end/expiry dates)
     has_issue = any(c.semantic_role in ("issue_date", "sign_on", "start_date") and c.text.strip() for c in curr_pop)
@@ -583,6 +589,20 @@ def is_logical_row_continuation(
     )
     if prev_cert and curr_cert and prev_cert != curr_cert:
         return False
+
+    # Negative Guard 4: Both rows have distinct primary entity values or distinct dates in matching columns
+    curr_has_dates = any(re.search(r"\b(?:\d{1,2}[/-]\w{3}[/-]\d{2,4}|\d{4})\b", c.text) for c in curr_pop)
+    for c in curr_pop:
+        k = c.column_index
+        p_c = prev_row[k]
+        p_txt = p_c.text.strip()
+        c_txt = c.text.strip()
+        if not p_txt or not c_txt:
+            continue
+        if c.semantic_role == "vessel_name" and curr_has_dates and not _CONTINUATION_TRAILING_PATTERNS.search(p_txt) and not _CONTINUATION_LEADING_PATTERNS.match(c_txt):
+            return False
+        if c.semantic_role in ("sign_off", "end_date", "expiry_date") and re.search(r"\d{4}", c_txt) and re.search(r"\d{4}", p_txt):
+            return False
 
     # Positive Signal Check
     for c in curr_pop:
@@ -608,8 +628,30 @@ def is_logical_row_continuation(
         if (
             p_text
             and _TRAILING_PUNCT_WORD.search(p_text)
+            and not re.search(r"[-/]\s*\d{4}\s*$", p_text)
             and not _STANDALONE_ACRONYM.match(c_text)
+            and not re.search(r"\d{4}", c_text)
             and len(c_text.split()) <= 3
+        ):
+            return True
+
+        # 5. Model or numeric wrapping where previous cell ends with slash/dash + digits (e.g. '/200')
+        # and current row contains isolated wrapped digits (e.g. '0')
+        if (
+            p_text
+            and re.search(r"[/–\-]\s*\d+\s*$", p_text)
+            and re.fullmatch(r"\d{1,2}", c_text)
+            and len(curr_pop) == 1
+        ):
+            return True
+
+        # 6. Rank or designation continuation where previous cell ends with rank prefix (e.g. '3rd', '2nd', 'Deck')
+        # and current cell starts with rank noun (e.g. 'Officer', 'Cadet', 'Engineer') without separate dates
+        if (
+            p_text
+            and not curr_has_dates
+            and _RANK_PREFIX.search(p_text)
+            and _RANK_SUFFIX.match(c_text)
         ):
             return True
 
@@ -645,7 +687,7 @@ def merge_logical_table_rows(
                 c_txt = c_c.text.strip()
 
                 if p_txt and c_txt:
-                    if p_txt.endswith("-") and not p_txt.endswith("--"):
+                    if (p_txt.endswith("-") and not p_txt.endswith("--")) or (re.search(r"[/–\-]\d+$", p_txt) and c_txt.isdigit()):
                         combined_text = p_txt + c_txt
                     else:
                         combined_text = f"{p_txt} {c_txt}"

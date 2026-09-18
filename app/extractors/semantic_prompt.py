@@ -23,16 +23,23 @@ SEMANTIC_EXTRACTION_SYSTEM_PROMPT = """You are a precise, layout-aware resume da
 Your task is to analyze the provided structured document blocks and extract canonical resume entities strictly grounded in the supplied text blocks.
 
 CRITICAL GROUNDING AND PROVENANCE RULES:
-1. Every non-null grounded value MUST reference the exact `source_block_ids` from which it was extracted.
+1. Every non-null grounded value MUST reference the exact `source_block_ids` from which it was extracted. When an extracted summary, description, designation, or multi-line sentence spans across multiple consecutive text blocks, you MUST include ALL block IDs containing any part of the extracted text in `source_block_ids`. Never omit trailing or continuation blocks from `source_block_ids` if you included their text in `value`.
 2. EXTRACT ONLY supported information. DO NOT invent, hallucinate, or infer missing values.
-3. DO NOT perform semantic renaming or enrichment (e.g., do not rename companies, do not expand job titles).
-4. Use exact verbatim text from source blocks in `raw_value` when available. In `value`, only safe canonical normalizations are permitted (e.g., ISO dates 'YYYY-MM-DD'/'YYYY-MM'/'YYYY', phone digits, whitespace/case cleanup). When source evidence contains only a year (for example '2020' or a range such as '2020 - 2024'), preserve year precision and return '2020' and '2024'. NEVER pad a year-only source with '-01' or '-01-01'. Only include month/day when those components are explicitly present in the source evidence.
+3. DO NOT perform semantic renaming or enrichment (e.g., do not rename companies, do not expand job titles like '3rd' to '3rd Officer' unless 'Officer' is explicitly present in the cited source blocks).
+4. Use exact verbatim text from source blocks in `raw_value` when available. In `value`, only safe canonical normalizations are permitted (e.g., ISO dates 'YYYY-MM-DD'/'YYYY-MM'/'YYYY', phone digits, whitespace/case cleanup). NEVER add synthetic labels, prefixes, or formatting (such as 'Vessel:', 'Type:', 'Ship Name:', 'Role:') not present in the cited source text blocks. When source evidence contains only a year (for example '2020' or a range such as '2020 - 2024'), preserve year precision and return '2020' and '2024'. NEVER pad a year-only source with '-01' or '-01-01'. Only include month/day when those components are explicitly present in the source evidence.
 5. DO NOT treat document headers, form titles (e.g., 'APPLICATION FORM', 'Curriculum Vitae', 'Surname'), or section labels as personal names.
 6. DO NOT treat table column headers (e.g., 'Ship Name', 'Period', 'S.No.', 'Documents Details') as actual company, designation, or degree values.
 7. DO NOT classify referee or reference contacts as employment experience. Mark referee and boilerplate blocks explicitly under block_classifications.
 8. Every boolean field (e.g., `current`) MUST reference the source block IDs providing explicit evidence (e.g., blocks explicitly containing 'Present', 'Current', 'Currently', 'Ongoing', 'Till Date', 'Now'). An end date or year alone (including future years, current calendar years, or date ranges without explicit current wording) DOES NOT establish `current=true`. When explicit current wording is absent, set `current: null` (or omit).
 9. If evidence for a field is absent or ambiguous, return null or empty list rather than guessing.
 10. Return a single valid JSON object adhering strictly to the SemanticOutput schema.
+
+OUTPUT COMPLETENESS & STRUCTURE REQUIREMENTS:
+1. The response JSON MUST explicitly include every top-level field defined by SemanticOutput: `document_archetype`, `block_classifications`, `personal` (with `name`, `email`, `phone`, `location`), `summary`, `skills`, `experience`, `education`, `projects`, `certifications`, `languages`, `achievements`.
+2. NEVER omit optional fields from the output JSON. Use `[]` for empty collections and `null` for unavailable scalar/object values.
+3. EXTRACT EVERY applicable collection supported by the supplied evidence (including all personal contact info, experience, education, certifications, and skills present in document tables or sections).
+4. DO NOT return only summary or personal when body evidence exists across the document.
+5. In all description, summary, designation, or contextual fields, preserve verbatim text from the cited source blocks. NEVER invent artificial labels, prefixes, or formatting (such as 'Vessel:', 'Type:', 'Ship Name:', 'Role:') not present in the cited source blocks.
 
 STRUCTURED FORMS AND TABLE EXTRACTION GUIDANCE:
 1. Form & Archetype Completeness:
@@ -506,6 +513,10 @@ def serialize_compact_semantic_input(semantic_input: SemanticInput) -> str:
     is_standard = semantic_input.archetype == DocumentArchetype.STANDARD_CV
 
     if is_standard:
+        has_multi_column = any(b.column_id is not None for b in semantic_input.blocks) or any(
+            b.region_kind in ("sidebar", "column") for b in semantic_input.blocks
+        )
+
         sorted_blocks = sorted(
             semantic_input.blocks,
             key=lambda b: (b.page, b.reading_order, b.block_id),
@@ -523,6 +534,25 @@ def serialize_compact_semantic_input(semantic_input: SemanticInput) -> str:
                 block_dict["page"] = b.page
             if b.is_bold is True:
                 block_dict["bold"] = True
+            if getattr(b, "is_italic", None) is True:
+                block_dict["italic"] = True
+            if getattr(b, "heading_candidate", None) is True:
+                block_dict["heading"] = True
+            if b.parent_block_id:
+                block_dict["parent_id"] = b.parent_block_id
+            elif getattr(b, "parent_heading_id", None):
+                block_dict["parent_id"] = b.parent_heading_id
+            if b.font_size and b.font_size >= 13.0:
+                block_dict["size"] = round(b.font_size, 1)
+
+            if has_multi_column and b.table_id is None:
+                if b.column_id is not None:
+                    block_dict["col"] = b.column_id
+                if b.region_id:
+                    block_dict["region"] = b.region_id
+                if b.region_kind and b.region_kind not in ("physical_region", "body", "unknown"):
+                    block_dict["kind"] = b.region_kind
+
             if b.table_id is not None:
                 block_dict["table"] = b.table_id
                 if b.row_index is not None:
@@ -592,6 +622,18 @@ def serialize_compact_semantic_input(semantic_input: SemanticInput) -> str:
             "id": b.block_id,
             "text": b.text,
         }
+        if b.parent_block_id:
+            block_dict["parent_id"] = b.parent_block_id
+        elif getattr(b, "parent_heading_id", None):
+            block_dict["parent_id"] = b.parent_heading_id
+        if getattr(b, "heading_candidate", None) is True:
+            block_dict["heading"] = True
+        if getattr(b, "is_italic", None) is True:
+            block_dict["italic"] = True
+        if b.reading_order:
+            block_dict["order"] = b.reading_order
+        if b.bbox:
+            block_dict["bbox"] = [round(x, 1) for x in b.bbox]
         if b.suggested_role and b.suggested_role != "UNKNOWN":
             block_dict["role"] = b.suggested_role
         if b.page > 1 or semantic_input.page_count > 1:
@@ -650,12 +692,22 @@ def serialize_structured_table_semantic_input(semantic_input: SemanticInput) -> 
             "id": b.block_id,
             "text": b.text,
         }
+        if b.parent_block_id:
+            b_dict["parent_id"] = b.parent_block_id
+        if b.reading_order:
+            b_dict["order"] = b.reading_order
+        if b.bbox:
+            b_dict["bbox"] = [round(x, 1) for x in b.bbox]
         if b.suggested_role and b.suggested_role != "UNKNOWN":
             b_dict["role"] = b.suggested_role
         if b.page > 1 or semantic_input.page_count > 1:
             b_dict["page"] = b.page
         if b.region_id:
             b_dict["region"] = b.region_id
+        if b.region_kind and b.region_kind != "physical_region":
+            b_dict["kind"] = b.region_kind
+        if b.column_id is not None:
+            b_dict["col"] = b.column_id
         if b.is_bold is True:
             b_dict["bold"] = True
         non_table_blocks.append(b_dict)

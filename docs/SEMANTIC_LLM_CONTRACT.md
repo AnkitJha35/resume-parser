@@ -521,3 +521,101 @@ semantic_output_to_resume()      --> Resume domain model
 
 ### 8. Table Detection Deferred
 - As established in Phase 8-2B, upstream table detection remains intentionally deferred. `SemanticBlockInput` supports table coordinates, but un-enriched blocks retain `table_id=None`. The extractor does not invent missing table coordinates.
+
+---
+
+## 10. Phase 8-4: Real LLM Semantic Benchmark Evaluation
+
+Phase 8-4 introduces instrumentation and a repeatable benchmark harness to evaluate the Gemini semantic pipeline against the 12 real resume PDFs.
+
+### 1. Opt-in Evaluation Architecture
+- **No Live LLM Calls in Normal Pytest:** Standard test commands (`pytest -q`, `pytest -q tests/benchmark`) run purely offline with mocked HTTP transport. Live Gemini extraction requires explicit execution:
+  ```bash
+  python -m tests.benchmark.run_semantic [--model gemini-2.5-flash] [--timeout 30.0] [--compare]
+  ```
+- **Fail-Fast Credential Check:** If `GEMINI_API_KEY` is not present in the environment or configuration, the CLI fails cleanly without making network requests.
+- **Safety & Secret Hygiene:** API keys and credentials are never printed to the console or serialized into benchmark JSON reports.
+
+### 2. Deterministic Baseline as the Control
+- The existing deterministic layout benchmark (`tests/benchmark/runner.py`) remains the unchanged baseline.
+- The comparison helper (`tests/benchmark/compare.py`) compares field-level extractions between deterministic and semantic results across identical fixtures.
+- Categorizes deltas using objective terms (`improved`, `regressed`, `unchanged`, `validation failure`, `extraction failure`) rather than synthetic "accuracy scores".
+
+### 3. Separate Tracking of Validation Failures
+- The benchmark runner (`SemanticBenchmarkRunner`) explicitly distinguishes between:
+  - **Extraction Failures (`EXTRACTION_ERROR`):** Provider API errors, HTTP status codes, network timeouts, malformed JSON envelopes.
+  - **Validation Failures (`VALIDATION_ERROR`):** Responses where the model proposed output that violated deterministic domain invariants (e.g. document titles as names, hallucinated block IDs, unsupported strings).
+- An individual failure never crashes the benchmark run. Every fixture executes independently.
+
+### 4. Token & Cost Instrumentation
+- Token metrics (`prompt_tokens`, `output_tokens`, `total_tokens`) are captured solely when provided in the provider's response envelope (`usageMetadata`).
+- If usage metadata is omitted by the provider or mock, it remains `None`. No extra API calls or synthetic estimates are introduced.
+
+---
+
+## 11. Local Development LLM Provider: Ollama
+
+To enable local, zero-cloud development and evaluation without external API fees or token quotas, the semantic pipeline introduces a native Ollama adapter.
+
+### 1. Architecture Alignment
+- **Provider Protocol Equivalence:** `OllamaSemanticExtractor` ([`app/extractors/providers/ollama.py`](file:///home/ankit-jha/my-workspace/resume-parser/app/extractors/providers/ollama.py)) implements the same `SemanticExtractor` interface (`extract(SemanticInput) -> SemanticOutput`) as `GeminiSemanticExtractor` and `MockSemanticExtractor`.
+- **Zero Domain Contamination:** All HTTP calls to Ollama's `/api/chat` and schema formatting remain inside the provider module. Domain models and pipeline validation remain 100% provider-agnostic.
+- **Structured Schema Handling:** Uses the shared `resolve_schema_defs(SemanticOutput)` helper to pass an inlined JSON Schema to Ollama's `format` parameter.
+
+### 2. Configuration & Defaults
+- **Base URL:** `http://localhost:11434` (configurable via `OLLAMA_BASE_URL` or constructor).
+- **Default Model:** `qwen2.5-coder:7b` (configurable via `OLLAMA_MODEL` or constructor).
+- **Timeout:** `120.0s` (configurable via `OLLAMA_TIMEOUT` or constructor) to accommodate local inference times.
+- **No Credentials Required:** Operates entirely offline without API keys or external authentication.
+
+### 3. Pre-Flight Availability Checks
+- The CLI command (`python -m tests.benchmark.run_semantic --provider ollama`) executes `OllamaSemanticExtractor.check_availability()` against `/api/tags` prior to benchmark execution.
+- If Ollama is not running or the requested model is not downloaded, it prints an actionable message with the exact `ollama serve` or `ollama pull <model>` command required.
+
+### 4. Provider-Neutral Benchmark Harness
+- `SemanticBenchmarkRunner` accepts an injected `SemanticExtractor`, operating identically whether driven by Ollama, Gemini, or a Mock.
+
+---
+
+## 12. Phase 10C: Two-Pass Semantic Benchmark & Quality Gate
+
+Phase 10C introduces benchmarking for the production concurrent two-pass Gemini semantic extractor against the 12-resume regression corpus and comparison with the Phase 8-5 single-pass Candidate-B baseline.
+
+### 1. Benchmark Representations
+- **`single_pass_candidate_b`:** Single-pass semantic extraction using compact Candidate-B serialization and full monolithic `SemanticOutput` schema.
+- **`two_pass_candidate_b`:** Production concurrent two-pass semantic extraction using compact Candidate-B serialization with Pass 1 (`PersonalSemanticOutput`) and Pass 2 (`BodySemanticOutput`) executed concurrently and merged deterministically.
+
+### 2. Exact Benchmark Commands
+
+#### a) Candidate-B Single Pass Benchmark
+```bash
+python -m tests.benchmark.run_semantic --provider gemini --representation single_pass_candidate_b [--model gemini-3.5-flash-lite]
+```
+
+#### b) Candidate-B Two Pass Benchmark (Production Default)
+```bash
+python -m tests.benchmark.run_semantic --provider gemini --representation two_pass_candidate_b [--model gemini-3.5-flash-lite]
+```
+
+#### c) Semantic Comparison (Baseline vs Candidate)
+```bash
+python -m tests.benchmark.compare --baseline tests/benchmark/reports/candidate_b_single_pass_baseline.json --candidate benchmark_results/<candidate_run>.json [--markdown]
+```
+Or directly during benchmark run:
+```bash
+python -m tests.benchmark.run_semantic --provider gemini --representation two_pass_candidate_b --compare-baseline tests/benchmark/reports/candidate_b_single_pass_baseline.json
+```
+
+#### d) Production Quality Gate Evaluation
+```bash
+python -m tests.benchmark.quality_gate --results benchmark_results/<candidate_run>.json [--output-json <path.json>]
+```
+Or directly during benchmark run:
+```bash
+python -m tests.benchmark.run_semantic --provider gemini --representation two_pass_candidate_b --quality-gate
+```
+
+### 3. Metric Aggregation & Reporting
+- **Aggregate Telemetry:** In two-pass mode, prompt tokens, output tokens, total tokens, latency, and retries are aggregated across both Gemini calls while preserving pass-specific telemetry under `usage.pass_metadata`.
+- **Quality Gate Invariants:** Enforces `0` validation failures, `0` provider errors, `min_pass_rate_pct >= 80%`, `max_fail_rate_pct = 0%`, and 10 historical regression rules.
+- **Sanitized Outputs:** Zero API keys, prompts, or PII appear in comparison tables or serialized reports.

@@ -13,6 +13,7 @@ These models define:
 
 from __future__ import annotations
 
+from collections import Counter
 import re
 from dataclasses import dataclass, field
 from enum import Enum
@@ -177,8 +178,11 @@ class SemanticBlockInput(BaseModel):
     reading_order: int
     column_id: int | None = None
     is_bold: bool | None = None
+    is_italic: bool | None = None
     font_size: float | None = None
     suggested_role: str | None = None  # from existing StructuralRole
+    heading_candidate: bool | None = None
+    parent_heading_id: str | None = None
 
     # Generic table representation (populated when block is in a table structure)
     table_id: str | None = None
@@ -614,13 +618,20 @@ def _is_section_boundary_block(block: SemanticBlockInput) -> bool:
     """
     if block.region_kind in ("header", "footer"):
         return False
-    if block.suggested_role == "SECTION_HEADING":
-        return True
-    if block.suggested_role in ("SKILL", "BULLET"):
-        return False
 
     text = (block.text or "").strip()
-    if len(text) < 3 or len(text) > 70:
+    if not text or len(text) < 3 or len(text) > 70:
+        return False
+
+    # Narrative clauses starting with subordinate conjunctions/prepositions + participle or article
+    # (e.g. "After gathering the experience and knowledge", "While working as", "Having completed")
+    # are descriptive sentence openings, never section headings.
+    if re.match(r"^(?:after|before|during|while|having|with|as|upon|since)\b\s+(?:the\b|a\b|an\b|\w+ing\b)", text, re.IGNORECASE):
+        return False
+
+    if block.suggested_role == "SECTION_HEADING" or getattr(block, "heading_candidate", None) is True:
+        return True
+    if block.suggested_role in ("SKILL", "BULLET"):
         return False
 
     # Check for uppercase heading text (ignoring parenthetical clauses e.g. '(Total: $5.8M)')
@@ -628,6 +639,13 @@ def _is_section_boundary_block(block: SemanticBlockInput) -> bool:
     alphas = [c for c in cleaned if c.isalpha()]
     if len(alphas) >= 4 and all(c.isupper() for c in alphas):
         return True
+
+    # Title Case heading check
+    words = cleaned.split()
+    if 1 <= len(words) <= 6 and not text.endswith((".", ";", ":", ",")):
+        if all(w[:1].isupper() for w in words if w and w[0].isalpha()):
+            if block.is_bold or (block.font_size is not None and block.font_size >= 12.0):
+                return True
 
     return False
 
@@ -643,6 +661,7 @@ def _is_qualifying_education_entry_title(block: SemanticBlockInput) -> bool:
 def _infer_section_target(
     heading_text: str,
     child_blocks: list[SemanticBlockInput],
+    archetype: DocumentArchetype | None = None,
 ) -> str:
     """Infer the canonical destination for a section using structural signals and generic aliases.
 
@@ -702,7 +721,13 @@ def _infer_section_target(
     if not clean_h and child_roles and all(r in ("DESCRIPTION", "UNKNOWN") for r in child_roles):
         return "summary"
 
-    return "unsupported"
+    if re.search(r"\b(?:publications?|papers?|bibliography|editorial|peer\s*reviewed|references?|referees?|declarations?)\b", clean_h):
+        return "unsupported"
+
+    if archetype == DocumentArchetype.ACADEMIC_CV:
+        return "unsupported"
+
+    return "unknown"
 
 
 
@@ -760,7 +785,7 @@ def partition_semantic_input_into_sections(
             block_by_id[bid] for bid in current_block_ids
             if bid != current_heading_id and bid in block_by_id
         ]
-        target = _infer_section_target(current_heading_text, child_blocks)
+        target = _infer_section_target(current_heading_text, child_blocks, archetype=semantic_input.archetype)
 
         # Implicit education refinement: an unheaded preamble section targeting education
         # may start with introductory summary prose before the first degree title.
@@ -776,7 +801,7 @@ def partition_semantic_input_into_sections(
                 pre_bids = current_block_ids[:first_edu_idx]
                 edu_bids = current_block_ids[first_edu_idx:]
                 pre_children = [block_by_id[bid] for bid in pre_bids if bid in block_by_id]
-                pre_target = _infer_section_target("", pre_children)
+                pre_target = _infer_section_target("", pre_children, archetype=semantic_input.archetype)
                 if pre_target == "unsupported":
                     pre_roles = [b.suggested_role for b in pre_children if b.suggested_role]
                     if pre_roles and all(r in ("DESCRIPTION", "UNKNOWN") for r in pre_roles):
@@ -982,7 +1007,7 @@ RECOVERY_OVERVIEW_TARGETS: frozenset[str] = frozenset(
     {"summary", "skills", "certifications", "languages", "achievements"}
 )
 RECOVERY_ENTITY_TARGETS: frozenset[str] = frozenset(
-    {"experience", "education", "projects"}
+    {"experience", "education", "projects", "unknown"}
 )
 
 
@@ -1443,43 +1468,70 @@ def build_deterministic_appointment_groups(
     if not child_blocks:
         return []
 
-    # Ensure child blocks are in strict reading order
-    child_blocks.sort(key=lambda b: (b.page, b.reading_order, b.block_id))
+    # Filter out table header rows
+    valid_blocks = [
+        b for b in child_blocks
+        if not (b.table_id is not None and (b.cell_role == "HEADER" or b.row_index == 0))
+    ]
+    if not valid_blocks:
+        return []
+
+    # Group table blocks by (table_id, row_index)
+    table_rows: dict[tuple[str, int], list[SemanticBlockInput]] = {}
+    non_table_blocks: list[SemanticBlockInput] = []
+    for b in valid_blocks:
+        if b.table_id is not None and b.row_index is not None:
+            table_rows.setdefault((b.table_id, b.row_index), []).append(b)
+        else:
+            non_table_blocks.append(b)
+
+    units: list[tuple[str, tuple[int, int, float], list[SemanticBlockInput]]] = []
+    for (t_id, r_idx), r_blocks in table_rows.items():
+        r_blocks.sort(key=lambda x: (x.column_index if x.column_index is not None else 0, x.reading_order, x.block_id))
+        min_pos = (min(x.page for x in r_blocks), min(x.reading_order for x in r_blocks), min(x.bbox[1] for x in r_blocks))
+        units.append(("table_row", min_pos, r_blocks))
+
+    for b in non_table_blocks:
+        pos = (b.page, b.reading_order, b.bbox[1])
+        units.append(("non_table", pos, [b]))
+
+    units.sort(key=lambda u: u[1])
 
     groups: list[list[SemanticBlockInput]] = []
     current_group: list[SemanticBlockInput] = []
     current_has_title = False
     current_has_org = False
 
-    for idx, b in enumerate(child_blocks):
-        role = b.suggested_role
-        next_block = child_blocks[idx + 1] if idx + 1 < len(child_blocks) else None
-
-        is_boundary = False
-        if role == "ENTRY_TITLE":
-            if current_has_title:
-                is_boundary = True
-        elif role == "ORGANIZATION":
-            if (
-                next_block is not None
-                and next_block.suggested_role == "ENTRY_TITLE"
-                and current_has_org
-                and current_has_title
-            ):
-                is_boundary = True
-
-        if is_boundary:
+    for u_type, _, u_blocks in units:
+        if u_type == "table_row":
             if current_group:
                 groups.append(current_group)
-            current_group = [b]
-            current_has_title = (role == "ENTRY_TITLE")
-            current_has_org = (role == "ORGANIZATION")
+                current_group = []
+                current_has_title = False
+                current_has_org = False
+            groups.append(u_blocks)
         else:
-            current_group.append(b)
-            if role == "ENTRY_TITLE":
-                current_has_title = True
-            if role == "ORGANIZATION":
-                current_has_org = True
+            b = u_blocks[0]
+            is_boundary = False
+            if b.suggested_role == "ENTRY_TITLE":
+                if current_has_title:
+                    is_boundary = True
+            elif b.suggested_role == "ORGANIZATION":
+                if current_has_org and current_has_title:
+                    is_boundary = True
+
+            if is_boundary:
+                if current_group:
+                    groups.append(current_group)
+                current_group = [b]
+                current_has_title = (b.suggested_role == "ENTRY_TITLE")
+                current_has_org = (b.suggested_role == "ORGANIZATION")
+            else:
+                current_group.append(b)
+                if b.suggested_role == "ENTRY_TITLE":
+                    current_has_title = True
+                if b.suggested_role == "ORGANIZATION":
+                    current_has_org = True
 
     if current_group:
         groups.append(current_group)
@@ -1784,8 +1836,34 @@ def build_deterministic_experience_spans(
         if not child_blocks:
             continue
 
-        # Ensure child blocks are in strict reading order
-        child_blocks.sort(key=lambda b: (b.page, b.reading_order, b.block_id))
+        # Filter out table header rows
+        valid_blocks = [
+            b for b in child_blocks
+            if not (b.table_id is not None and (b.cell_role == "HEADER" or b.row_index == 0))
+        ]
+        if not valid_blocks:
+            continue
+
+        # Group table blocks by (table_id, row_index)
+        table_rows: dict[tuple[str, int], list[SemanticBlockInput]] = {}
+        non_table_blocks: list[SemanticBlockInput] = []
+        for b in valid_blocks:
+            if b.table_id is not None and b.row_index is not None:
+                table_rows.setdefault((b.table_id, b.row_index), []).append(b)
+            else:
+                non_table_blocks.append(b)
+
+        units: list[tuple[str, tuple[int, int, float], list[SemanticBlockInput]]] = []
+        for (t_id, r_idx), r_blocks in table_rows.items():
+            r_blocks.sort(key=lambda x: (x.column_index if x.column_index is not None else 0, x.reading_order, x.block_id))
+            min_pos = (min(x.page for x in r_blocks), min(x.reading_order for x in r_blocks), min(x.bbox[1] for x in r_blocks))
+            units.append(("table_row", min_pos, r_blocks))
+
+        for b in non_table_blocks:
+            pos = (b.page, b.reading_order, b.bbox[1])
+            units.append(("non_table", pos, [b]))
+
+        units.sort(key=lambda u: u[1])
 
         current_span_blocks: list[str] = []
         current_title_id: str | None = None
@@ -1794,23 +1872,8 @@ def build_deterministic_experience_spans(
         last_role: str | None = None
         has_content = False
 
-        for b in child_blocks:
-            is_new_boundary = False
-            if b.suggested_role == "ENTRY_TITLE":
-                if current_title_id is not None or has_content:
-                    is_new_boundary = True
-            elif b.suggested_role == "ORGANIZATION":
-                if current_org_id is not None or has_content:
-                    is_new_boundary = True
-            elif b.suggested_role == "DATE":
-                if (
-                    current_date_id is not None
-                    and last_role != "DATE"
-                    and (current_title_id is not None or current_org_id is not None or has_content)
-                ):
-                    is_new_boundary = True
-
-            if is_new_boundary:
+        for u_type, _, u_blocks in units:
+            if u_type == "table_row":
                 if current_span_blocks:
                     spans.append(
                         DeterministicEntitySpan(
@@ -1821,23 +1884,71 @@ def build_deterministic_experience_spans(
                         )
                     )
                     global_entity_idx += 1
-                current_span_blocks = [b.block_id]
-                current_title_id = b.block_id if b.suggested_role == "ENTRY_TITLE" else None
-                current_org_id = b.block_id if b.suggested_role == "ORGANIZATION" else None
-                current_date_id = b.block_id if b.suggested_role == "DATE" else None
-                has_content = False
-            else:
-                current_span_blocks.append(b.block_id)
-                if current_title_id is None and b.suggested_role == "ENTRY_TITLE":
-                    current_title_id = b.block_id
-                if current_org_id is None and b.suggested_role == "ORGANIZATION":
-                    current_org_id = b.block_id
-                if current_date_id is None and b.suggested_role == "DATE":
-                    current_date_id = b.block_id
-                if b.suggested_role in ("DESCRIPTION", "BULLET"):
-                    has_content = True
+                    current_span_blocks = []
+                    current_title_id = None
+                    current_org_id = None
+                    current_date_id = None
+                    last_role = None
+                    has_content = False
 
-            last_role = b.suggested_role
+                row_title_id = next((b.block_id for b in u_blocks if b.suggested_role == "ENTRY_TITLE"), None)
+                if row_title_id is None and u_blocks:
+                    row_title_id = u_blocks[0].block_id
+
+                spans.append(
+                    DeterministicEntitySpan(
+                        section_index=sec_idx,
+                        entity_index=global_entity_idx,
+                        block_ids=[b.block_id for b in u_blocks],
+                        title_block_id=row_title_id,
+                    )
+                )
+                global_entity_idx += 1
+            else:
+                b = u_blocks[0]
+                is_new_boundary = False
+                if b.suggested_role == "ENTRY_TITLE":
+                    if current_title_id is not None or has_content:
+                        is_new_boundary = True
+                elif b.suggested_role == "ORGANIZATION":
+                    if current_org_id is not None or has_content:
+                        is_new_boundary = True
+                elif b.suggested_role == "DATE":
+                    if (
+                        current_date_id is not None
+                        and last_role != "DATE"
+                        and (current_title_id is not None or current_org_id is not None or has_content)
+                    ):
+                        is_new_boundary = True
+
+                if is_new_boundary:
+                    if current_span_blocks:
+                        spans.append(
+                            DeterministicEntitySpan(
+                                section_index=sec_idx,
+                                entity_index=global_entity_idx,
+                                block_ids=list(current_span_blocks),
+                                title_block_id=current_title_id,
+                            )
+                        )
+                        global_entity_idx += 1
+                    current_span_blocks = [b.block_id]
+                    current_title_id = b.block_id if b.suggested_role == "ENTRY_TITLE" else None
+                    current_org_id = b.block_id if b.suggested_role == "ORGANIZATION" else None
+                    current_date_id = b.block_id if b.suggested_role == "DATE" else None
+                    has_content = False
+                else:
+                    current_span_blocks.append(b.block_id)
+                    if current_title_id is None and b.suggested_role == "ENTRY_TITLE":
+                        current_title_id = b.block_id
+                    if current_org_id is None and b.suggested_role == "ORGANIZATION":
+                        current_org_id = b.block_id
+                    if current_date_id is None and b.suggested_role == "DATE":
+                        current_date_id = b.block_id
+                    if b.suggested_role in ("DESCRIPTION", "BULLET"):
+                        has_content = True
+
+                last_role = b.suggested_role
 
         if current_span_blocks:
             spans.append(
@@ -1937,7 +2048,7 @@ def repair_grounded_provenance(
             )
             current_supported = (
                 bool(current_bids)
-                and _is_value_semantically_supported(val, current_text)
+                and _is_value_semantically_supported(val, current_text, is_single_block=(len(current_bids) == 1))
             )
             current_roles_compatible = (
                 bool(current_bids)
@@ -2003,6 +2114,31 @@ def repair_grounded_provenance(
                     "expected_structural_role": sorted(list(compatible_roles)),
                     "reason": "incompatible_or_cross_entity_provenance",
                 })
+            elif not current_in_span and field_name == "location":
+                # For an optional experience subfield such as location:
+                # If the LLM cites blocks outside the assigned experience span, and no unique
+                # grounded replacement exists in the assigned span, clear the ungrounded optional
+                # field and remove foreign entity blocks from exp.source_block_ids.
+                orig_bids = list(current_bids)
+                setattr(exp, field_name, None)
+
+                # Prune cross-entity bids from exp.source_block_ids
+                other_span_bids = {
+                    b_id for s in spans if s.entity_index != assigned_span.entity_index for b_id in s.block_ids
+                }
+                exp.source_block_ids = [
+                    eb for eb in exp.source_block_ids
+                    if eb not in orig_bids and eb not in other_span_bids
+                ]
+
+                repairs.append({
+                    "field": f"experience[{exp_idx}].{field_name}",
+                    "original_value": val,
+                    "repaired_value": None,
+                    "original_source_block_ids": orig_bids,
+                    "repaired_source_block_ids": [],
+                    "reason": "cross_entity_optional_subfield_cleared",
+                })
 
     # 2. Block classifications normalization guard for experience items mislabeled as TABLE_HEADER
     exp_all_bids: set[str] = set()
@@ -2028,6 +2164,397 @@ def repair_grounded_provenance(
                     "repaired_category": "EXPERIENCE",
                     "reason": "non_table_block_in_experience",
                 })
+
+    return output, repairs
+
+
+_STRUCTURAL_LABEL_PREFIX_RE = re.compile(
+    r"(?:^|(?<=[\s,;]))(?:vessel\s+(?:name|type)|ship\s+(?:name|type)|project\s+(?:name|title|description|scope)|company\s+name|type\s*/\s*gt|role|designation|title|description|scope|responsibilities|duties|vessel|ship|type|flag|imo|gt|grt|dwt|nrt)\s*:\s*",
+    re.IGNORECASE,
+)
+_UNGROUNDED_METADATA_CLAUSE_RE = re.compile(r",?\s*(?:gt|grt|dwt|nrt)\s*:\s*\d+\b", re.IGNORECASE)
+
+
+def _iter_grounded_string_fields(output: Any):
+    """Yield tuples of (field_path, parent_object, field_name_or_index, GroundedString)."""
+    # Personal
+    if hasattr(output, "personal") and output.personal:
+        for fname in ("name", "email", "phone", "location", "linkedin", "github", "portfolio"):
+            gs = getattr(output.personal, fname, None)
+            if gs is not None and isinstance(gs, GroundedString):
+                yield f"personal.{fname}", output.personal, fname, gs
+
+    # Experience
+    for i, exp in enumerate(getattr(output, "experience", [])):
+        for fname in ("company", "designation", "location", "startDate", "endDate", "description"):
+            gs = getattr(exp, fname, None)
+            if gs is not None and isinstance(gs, GroundedString):
+                yield f"experience[{i}].{fname}", exp, fname, gs
+        for j, tech in enumerate(getattr(exp, "technologies", [])):
+            if isinstance(tech, GroundedString):
+                yield f"experience[{i}].technologies[{j}]", exp.technologies, j, tech
+
+    # Education
+    for i, edu in enumerate(getattr(output, "education", [])):
+        for fname in ("institution", "degree", "fieldOfStudy", "startDate", "endDate", "grade"):
+            gs = getattr(edu, fname, None)
+            if gs is not None and isinstance(gs, GroundedString):
+                yield f"education[{i}].{fname}", edu, fname, gs
+
+    # Projects
+    for i, prj in enumerate(getattr(output, "projects", [])):
+        for fname in ("name", "description", "startDate", "endDate"):
+            gs = getattr(prj, fname, None)
+            if gs is not None and isinstance(gs, GroundedString):
+                yield f"projects[{i}].{fname}", prj, fname, gs
+        for j, tech in enumerate(getattr(prj, "technologies", [])):
+            if isinstance(tech, GroundedString):
+                yield f"projects[{i}].technologies[{j}]", prj.technologies, j, tech
+
+    # Collections
+    for col_name in ("skills", "certifications", "languages", "achievements"):
+        for i, item in enumerate(getattr(output, col_name, [])):
+            if isinstance(item, GroundedString):
+                yield f"{col_name}[{i}]", getattr(output, col_name), i, item
+
+    # Summary
+    if hasattr(output, "summary") and isinstance(output.summary, GroundedString):
+        yield "summary", output, "summary", output.summary
+
+
+def _normalize_structural_labels_in_output(output: Any, blocks_by_id: dict[str, Any], repairs: list[dict[str, Any]]) -> None:
+    for context, parent, key, gs in _iter_grounded_string_fields(output):
+        if not gs.value or not gs.source_block_ids:
+            continue
+        val = gs.value.strip()
+        if not _STRUCTURAL_LABEL_PREFIX_RE.search(val):
+            continue
+        source_text = " ".join(blocks_by_id[bid].text for bid in gs.source_block_ids if bid in blocks_by_id)
+        is_single = len(gs.source_block_ids) == 1
+        if _is_value_semantically_supported(val, source_text, is_single_block=is_single) or (len(gs.source_block_ids) > 1 and _is_multiblock_text_semantically_supported(val, source_text)):
+            continue
+
+        val_clean = val
+        m_gt = _UNGROUNDED_METADATA_CLAUSE_RE.search(val_clean)
+        if m_gt:
+            gt_digits = re.findall(r"\d+", m_gt.group(0))
+            if gt_digits and not any(d in source_text for d in gt_digits):
+                val_clean = _UNGROUNDED_METADATA_CLAUSE_RE.sub("", val_clean)
+
+        val_clean = _STRUCTURAL_LABEL_PREFIX_RE.sub("", val_clean)
+        val_clean = re.sub(r"\s*,\s*", ", ", val_clean).strip(" ,;")
+
+        if val_clean and val_clean != val:
+            if _is_value_semantically_supported(val_clean, source_text, is_single_block=is_single) or (len(gs.source_block_ids) > 1 and _is_multiblock_text_semantically_supported(val_clean, source_text)):
+                repairs.append({
+                    "field": context,
+                    "original_value": val,
+                    "repaired_value": val_clean,
+                    "reason": "structural_label_normalization",
+                })
+                gs.value = val_clean
+
+
+def repair_semantic_output_provenance(
+    output: TOutput,
+    semantic_input: SemanticInput,
+) -> tuple[TOutput, list[dict[str, Any]]]:
+    """Deterministically repair provenance and normalize structural labels across semantic output.
+
+    Applies:
+    1. Bullet citation remapping: resolves citations pointing to bullet symbols onto sibling text blocks.
+    2. Structural label normalization pass 1: strips schema labels when text is already supported.
+    3. Wrapped provenance completion: expands citations for wrapped table cells, table entries, and contiguous text lines.
+    4. Non-contributing cited block pruning: drops extraneous cited blocks contributing 0 tokens to value.
+    5. Structural label normalization pass 2: cleans any values unblocked by completed provenance.
+    6. Deterministic experience span and role repair.
+    """
+    repairs: list[dict[str, Any]] = []
+    blocks_by_id = {b.block_id: b for b in semantic_input.blocks}
+    sorted_blocks = sorted(semantic_input.blocks, key=lambda b: (b.page, b.reading_order, b.block_id))
+
+    # 1. Bullet Citation Remapping
+    for context, parent, key, gs in _iter_grounded_string_fields(output):
+        if not gs.value or not gs.source_block_ids:
+            continue
+        val = gs.value.strip()
+        bullet_bids = [
+            bid for bid in gs.source_block_ids
+            if bid in blocks_by_id and (
+                blocks_by_id[bid].suggested_role == "BULLET"
+                or re.match(r"^[•·\-\*]$", blocks_by_id[bid].text.strip())
+            )
+        ]
+        if not bullet_bids:
+            continue
+
+        for b_bullet_id in bullet_bids:
+            b_bullet = blocks_by_id[b_bullet_id]
+            if _is_value_semantically_supported(val, b_bullet.text):
+                continue
+            candidates = []
+            for cand in blocks_by_id.values():
+                if cand.page != b_bullet.page or cand.block_id == b_bullet_id:
+                    continue
+                if cand.suggested_role == "BULLET" or re.match(r"^[•·\-\*]$", cand.text.strip()):
+                    continue
+                y_dist = abs(cand.bbox[1] - b_bullet.bbox[1])
+                ro_dist = abs(cand.reading_order - b_bullet.reading_order)
+                if y_dist <= 15.0 and _is_value_semantically_supported(val, cand.text):
+                    candidates.append((y_dist, cand))
+                elif ro_dist <= 2 and _is_value_semantically_supported(val, cand.text):
+                    candidates.append((100.0 + ro_dist, cand))
+
+            if candidates:
+                candidates.sort(key=lambda x: x[0])
+                best_cand = candidates[0][1]
+                orig = list(gs.source_block_ids)
+                new_bids = [best_cand.block_id if bid == b_bullet_id else bid for bid in gs.source_block_ids]
+                deduped_bids = list(dict.fromkeys(new_bids))
+                gs.source_block_ids = deduped_bids
+                repairs.append({
+                    "field": context,
+                    "original_source_block_ids": orig,
+                    "repaired_source_block_ids": deduped_bids,
+                    "reason": "bullet_citation_remapped",
+                })
+
+    # 2. Structural Label Normalization Pass 1
+    _normalize_structural_labels_in_output(output, blocks_by_id, repairs)
+
+    # 3. Wrapped Provenance Completion (Table Cells, Table Entries & Sequential Layout Lines)
+    for context, parent, key, gs in _iter_grounded_string_fields(output):
+        if not gs.value or not gs.source_block_ids:
+            continue
+        val = gs.value.strip()
+        curr_text = " ".join(blocks_by_id[bid].text for bid in gs.source_block_ids if bid in blocks_by_id)
+        
+        check_vals = [val]
+        if _STRUCTURAL_LABEL_PREFIX_RE.search(val):
+            val_no_prefix = _STRUCTURAL_LABEL_PREFIX_RE.sub("", val).strip(" ,;")
+            if val_no_prefix and val_no_prefix != val:
+                check_vals.append(val_no_prefix)
+
+        def _is_supp(t: str, bids: list[str]) -> bool:
+            for cv in check_vals:
+                if _is_value_semantically_supported(cv, t, is_single_block=(len(bids) == 1)) or (len(bids) > 1 and _is_multiblock_text_semantically_supported(cv, t)):
+                    return True
+            return False
+
+        if _is_supp(curr_text, gs.source_block_ids):
+            continue
+
+        valid_blocks = [blocks_by_id[bid] for bid in gs.source_block_ids if bid in blocks_by_id]
+        if not valid_blocks:
+            continue
+
+        # Case A: Table cell contiguous slice completion / same cell remap
+        if all(b.table_id is not None for b in valid_blocks):
+            t_id = valid_blocks[0].table_id
+            r_idx = valid_blocks[0].row_index
+            c_idx = valid_blocks[0].column_index
+            if all(b.table_id == t_id and b.row_index == r_idx and b.column_index == c_idx for b in valid_blocks):
+                cell_blocks = sorted(
+                    [b for b in sorted_blocks if b.table_id == t_id and b.row_index == r_idx and b.column_index == c_idx],
+                    key=lambda x: (x.page, x.reading_order, x.bbox[1]),
+                )
+                matching_slices = []
+                # First try slices that intersect cited blocks
+                for start in range(len(cell_blocks)):
+                    for end in range(start + 1, len(cell_blocks) + 1):
+                        slice_blocks = cell_blocks[start:end]
+                        if not any(b.block_id in gs.source_block_ids for b in slice_blocks):
+                            continue
+                        slice_text = " ".join(b.text for b in slice_blocks)
+                        if _is_supp(slice_text, [b.block_id for b in slice_blocks]):
+                            matching_slices.append((end - start, [b.block_id for b in slice_blocks]))
+                if matching_slices:
+                    matching_slices.sort(key=lambda x: x[0])
+                    best_bids = matching_slices[0][1]
+                    if best_bids != gs.source_block_ids:
+                        repairs.append({
+                            "field": context,
+                            "original_source_block_ids": list(gs.source_block_ids),
+                            "repaired_source_block_ids": list(best_bids),
+                            "reason": "wrapped_table_cell_slice_completion",
+                        })
+                        gs.source_block_ids = list(best_bids)
+                        continue
+                else:
+                    # Fallback: any slice in the same cell
+                    for start in range(len(cell_blocks)):
+                        for end in range(start + 1, len(cell_blocks) + 1):
+                            slice_blocks = cell_blocks[start:end]
+                            slice_text = " ".join(b.text for b in slice_blocks)
+                            if _is_supp(slice_text, [b.block_id for b in slice_blocks]):
+                                matching_slices.append((end - start, [b.block_id for b in slice_blocks]))
+                    if matching_slices:
+                        matching_slices.sort(key=lambda x: x[0])
+                        best_bids = matching_slices[0][1]
+                        if best_bids != gs.source_block_ids:
+                            repairs.append({
+                                "field": context,
+                                "original_source_block_ids": list(gs.source_block_ids),
+                                "repaired_source_block_ids": list(best_bids),
+                                "reason": "table_cell_slice_remap",
+                            })
+                            gs.source_block_ids = list(best_bids)
+                            continue
+
+            # Case B: Table cell offset citation remap (e.g. single cited block pointing to adjacent row/col in same table)
+            if len(gs.source_block_ids) == 1:
+                b = valid_blocks[0]
+                table_candidates = [
+                    cand for cand in sorted_blocks
+                    if cand.table_id == b.table_id
+                    and cand.block_id != b.block_id
+                    and abs((cand.row_index or 0) - (b.row_index or 0)) <= 1
+                    and _is_supp(cand.text, [cand.block_id])
+                ]
+                if len(table_candidates) == 1:
+                    orig = list(gs.source_block_ids)
+                    gs.source_block_ids = [table_candidates[0].block_id]
+                    repairs.append({
+                        "field": context,
+                        "original_source_block_ids": orig,
+                        "repaired_source_block_ids": list(gs.source_block_ids),
+                        "reason": "table_cell_offset_remap",
+                    })
+                    continue
+
+            # Case B2: Table entry multi-row continuation (cited blocks in same table within 1-2 rows)
+            if all(b.table_id == t_id for b in valid_blocks):
+                min_r = min(b.row_index for b in valid_blocks if b.row_index is not None)
+                max_r = max(b.row_index for b in valid_blocks if b.row_index is not None)
+                if (max_r - min_r) <= 2:
+                    table_entry_cands = [
+                        cand for cand in sorted_blocks
+                        if cand.table_id == t_id
+                        and cand.block_id not in set(gs.source_block_ids)
+                        and cand.row_index is not None
+                        and min_r <= cand.row_index <= max(max_r, min_r + 1)
+                        and cand.suggested_role not in ("SECTION_HEADING", "HEADER", "FOOTER", "TABLE_HEADER")
+                    ]
+                    test_bids = list(gs.source_block_ids)
+                    for cand in table_entry_cands:
+                        test_bids.append(cand.block_id)
+                        test_text = " ".join(blocks_by_id[bid].text for bid in test_bids if bid in blocks_by_id)
+                        if _is_supp(test_text, test_bids):
+                            repairs.append({
+                                "field": context,
+                                "original_source_block_ids": list(gs.source_block_ids),
+                                "repaired_source_block_ids": list(test_bids),
+                                "reason": "table_entry_continuation",
+                            })
+                            gs.source_block_ids = list(test_bids)
+                            break
+
+        # Case C: Non-table reading order continuation in same region/entity
+        elif all(b.table_id is None for b in valid_blocks):
+            page = valid_blocks[0].page
+            min_ro = min(b.reading_order for b in valid_blocks)
+            max_ro = max(b.reading_order for b in valid_blocks)
+            candidates = [
+                cand for cand in sorted_blocks
+                if cand.page == page
+                and cand.table_id is None
+                and cand.block_id not in set(gs.source_block_ids)
+                and cand.suggested_role not in ("SECTION_HEADING", "HEADER", "FOOTER", "TABLE_HEADER")
+                and (
+                    (1 <= (cand.reading_order - max_ro) <= 3)
+                    or (1 <= (min_ro - cand.reading_order) <= 2)
+                    or (min_ro <= cand.reading_order <= max_ro)
+                )
+            ]
+            candidates.sort(key=lambda c: (0 if min_ro <= c.reading_order <= max_ro else (abs(c.reading_order - max_ro) if c.reading_order > max_ro else 10 + abs(min_ro - c.reading_order))))
+            test_bids = list(gs.source_block_ids)
+            for cand in candidates:
+                test_bids.append(cand.block_id)
+                test_bids_sorted = sorted(test_bids, key=lambda bid: blocks_by_id[bid].reading_order if bid in blocks_by_id else 0)
+                test_text = " ".join(blocks_by_id[bid].text for bid in test_bids_sorted if bid in blocks_by_id)
+                if _is_supp(test_text, test_bids_sorted):
+                    repairs.append({
+                        "field": context,
+                        "original_source_block_ids": list(gs.source_block_ids),
+                        "repaired_source_block_ids": list(test_bids_sorted),
+                        "reason": "wrapped_nontable_continuation",
+                    })
+                    gs.source_block_ids = list(test_bids_sorted)
+                    break
+
+    # 4. Non-Contributing Cited Block Pruning
+    for context, parent, key, gs in _iter_grounded_string_fields(output):
+        if not gs.value or len(gs.source_block_ids) <= 1:
+            continue
+        val = gs.value.strip()
+        curr_text = " ".join(blocks_by_id[bid].text for bid in gs.source_block_ids if bid in blocks_by_id)
+        
+        check_vals = [val]
+        if _STRUCTURAL_LABEL_PREFIX_RE.search(val):
+            val_no_prefix = _STRUCTURAL_LABEL_PREFIX_RE.sub("", val).strip(" ,;")
+            if val_no_prefix and val_no_prefix != val:
+                check_vals.append(val_no_prefix)
+
+        def _is_supp(t: str, bids: list[str]) -> bool:
+            for cv in check_vals:
+                if _is_value_semantically_supported(cv, t, is_single_block=(len(bids) == 1)) or (len(bids) > 1 and _is_multiblock_text_semantically_supported(cv, t)):
+                    return True
+            return False
+
+        if _is_supp(curr_text, gs.source_block_ids):
+            continue
+
+        val_tokens = set()
+        for cv in check_vals:
+            val_tokens.update(t.lower() for t in re.findall(r"[A-Za-z0-9]+", cv))
+        if not val_tokens:
+            continue
+
+        contrib_bids = [
+            bid for bid in gs.source_block_ids
+            if bid in blocks_by_id
+            and not set(t.lower() for t in re.findall(r"[A-Za-z0-9]+", blocks_by_id[bid].text)).isdisjoint(val_tokens)
+        ]
+        if 0 < len(contrib_bids) < len(gs.source_block_ids):
+            contrib_text = " ".join(blocks_by_id[bid].text for bid in contrib_bids)
+            if _is_supp(contrib_text, contrib_bids):
+                repairs.append({
+                    "field": context,
+                    "original_source_block_ids": list(gs.source_block_ids),
+                    "repaired_source_block_ids": list(contrib_bids),
+                    "reason": "prune_non_contributing_blocks",
+                })
+                gs.source_block_ids = list(contrib_bids)
+            else:
+                last_contrib = max((blocks_by_id[bid] for bid in contrib_bids), key=lambda x: x.reading_order)
+                continuation_candidates = [
+                    cand for cand in sorted_blocks
+                    if cand.page == last_contrib.page
+                    and 1 <= (cand.reading_order - last_contrib.reading_order) <= 2
+                    and cand.table_id == last_contrib.table_id
+                    and cand.column_index == last_contrib.column_index
+                    and cand.suggested_role not in ("SECTION_HEADING", "HEADER", "FOOTER", "TABLE_HEADER")
+                ]
+                test_bids = list(contrib_bids)
+                for cand in continuation_candidates:
+                    test_bids.append(cand.block_id)
+                    test_text = " ".join(blocks_by_id[bid].text for bid in test_bids if bid in blocks_by_id)
+                    if _is_supp(test_text, test_bids):
+                        repairs.append({
+                            "field": context,
+                            "original_source_block_ids": list(gs.source_block_ids),
+                            "repaired_source_block_ids": list(test_bids),
+                            "reason": "prune_and_continue_blocks",
+                        })
+                        gs.source_block_ids = list(test_bids)
+                        break
+
+    # 5. Structural Label Normalization Pass 2
+    _normalize_structural_labels_in_output(output, blocks_by_id, repairs)
+
+    # 6. Deterministic Experience Span & Role Repair
+    output, exp_repairs = repair_grounded_provenance(output, semantic_input)
+    repairs.extend(exp_repairs)
 
     return output, repairs
 
@@ -2100,6 +2627,64 @@ def classify_document_archetype(document: Document) -> DocumentArchetype:
     return DocumentArchetype.STANDARD_CV
 
 
+_CONTACT_TEXT_RE = re.compile(
+    r"(?:@|https?://|www\.|linkedin\.com|github\.com|leetcode\.com|gitlab\.com|\+?\d[\d\s\-\(\)]{7,}\d|^\s*(?:e-?mail|phone|tel|mobile|cell|linkedin|github|portfolio|website)\b)",
+    re.IGNORECASE,
+)
+
+
+def _is_false_unknown_table(ctx: Any) -> bool:
+    """Detect whether a candidate table with UNKNOWN purpose is a false table.
+
+    Rejects candidate tables that originate from:
+    1. Letterhead / contact headers falsely detected as multi-column tables.
+    2. Multi-column page layouts (columns of prose resumes) falsely detected as tables.
+    3. Tables whose data rows contain top-level section headings or multi-line prose paragraphs.
+    """
+    from app.pipeline.stages.table_semantic_context import TablePurpose
+    from app.pipeline.stages.structural_roles import _is_known_section_alias
+
+    if ctx.purpose != TablePurpose.UNKNOWN:
+        return False
+
+    non_empty_headers = [c.header_text.strip() for c in ctx.columns if c.header_text.strip()]
+    if non_empty_headers:
+        contact_header_count = sum(1 for h in non_empty_headers if _CONTACT_TEXT_RE.search(h))
+        if contact_header_count > 0 and contact_header_count >= len(non_empty_headers) * 0.5:
+            return True
+
+    for h in non_empty_headers:
+        h_upper = h.upper()
+        if _is_known_section_alias(h_upper):
+            return True
+        words = h_upper.split()
+        if any(w in words for w in ("SUMMARY", "PROFILE", "EXPERIENCE", "EDUCATION", "SKILLS", "PROJECTS", "OBJECTIVE")):
+            return True
+
+    section_heading_cells = 0
+    long_prose_cells = 0
+    for row in ctx.rows:
+        for cell in row:
+            text = cell.text.strip()
+            if not text:
+                continue
+            text_upper = text.upper()
+            words = text.split()
+            if _is_known_section_alias(text_upper) or (
+                len(words) <= 3 and any(w in text_upper.split() for w in ("EXPERIENCE", "EDUCATION", "PROJECTS", "EMPLOYMENT HISTORY"))
+            ):
+                section_heading_cells += 1
+            if len(words) > 18 or (len(words) > 12 and text.startswith(("•", "-", "–", "—", "*"))):
+                long_prose_cells += 1
+
+    if section_heading_cells >= 1:
+        return True
+    if long_prose_cells >= 2:
+        return True
+
+    return False
+
+
 def build_semantic_input(
     document: Document,
     document_id: str = "doc-1",
@@ -2137,10 +2722,33 @@ def build_semantic_input(
     block_counter = 0
     for page in document.pages:
         for region in page.regions:
+            current_heading_block_id: str | None = None
             for line in region.lines:
                 block_id = f"b_p{page.page_number}_{block_counter}"
                 block_counter += 1
                 suggested_role = role_by_line_id.get(line.line_id, "UNKNOWN")
+
+                is_heading = False
+                if suggested_role == "SECTION_HEADING":
+                    is_heading = True
+                elif suggested_role in ("UNKNOWN", "HEADING") and region.kind not in ("header", "footer"):
+                    txt = line.text.strip()
+                    words = txt.split()
+                    if (
+                        1 <= len(words) <= 6
+                        and len(txt) <= 60
+                        and not any(ch.isdigit() for ch in txt)
+                        and not txt.endswith((".", ":", ";", ","))
+                    ):
+                        emphasis = bool(line.style.bold) or (line.style.font_size is not None and line.style.font_size >= 12.5) or (txt.isupper() and any(c.isalpha() for c in txt))
+                        if emphasis and not ("@" in txt or re.search(r"\+?\d[\d\s\-\(\)]{7,}\d", txt) or re.search(r"\b(?:inc|llc|ltd|corp|corporation)\b", txt, re.I)):
+                            is_heading = True
+
+                if is_heading:
+                    current_heading_block_id = block_id
+                    parent_h_id = None
+                else:
+                    parent_h_id = current_heading_block_id
 
                 sblock = SemanticBlockInput(
                     block_id=block_id,
@@ -2152,8 +2760,11 @@ def build_semantic_input(
                     column_id=region.column_id,
                     reading_order=line.reading_order if line.reading_order is not None else block_counter,
                     is_bold=line.style.bold,
+                    is_italic=getattr(line.style, "italic", None),
                     font_size=line.style.font_size,
                     suggested_role=suggested_role,
+                    heading_candidate=is_heading if is_heading else None,
+                    parent_heading_id=parent_h_id,
                     spans=[
                         {"text": s.text, "bbox": [s.bbox.x0, s.bbox.y0, s.bbox.x1, s.bbox.y1]}
                         for s in line.spans
@@ -2172,22 +2783,71 @@ def build_semantic_input(
         )
 
     semantic_tables: list[Any] = []
-    if archetype in (
-        DocumentArchetype.MARITIME_CV,
-        DocumentArchetype.MARITIME_TABULAR,
-        DocumentArchetype.STRUCTURED_FORM,
-    ):
-        from app.pipeline.stages.table_binding import GeometricTableBinder
-        from app.pipeline.stages.table_semantic_context import (
-            apply_table_semantics_to_blocks,
-            build_table_semantic_contexts,
-        )
+    from app.pipeline.stages.table_binding import GeometricTableBinder
+    from app.pipeline.stages.table_semantic_context import (
+        TablePurpose,
+        apply_table_semantics_to_blocks,
+        build_table_semantic_contexts,
+    )
+    from app.pipeline.stages.structural_roles import _is_known_section_alias
 
-        binder = GeometricTableBinder()
-        tables = binder.detect_document_tables(all_blocks)
-        all_blocks = binder.bind_document_tables(all_blocks)
-        if tables:
-            semantic_tables = build_table_semantic_contexts(tables, all_blocks)
+    binder = GeometricTableBinder()
+    tables = binder.detect_document_tables(all_blocks)
+    if tables:
+        candidate_contexts = build_table_semantic_contexts(tables, all_blocks)
+        valid_contexts = []
+        for ctx in candidate_contexts:
+            # 1. Never accept a table whose header contains top-level resume section headings or paragraphs
+            is_layout_header = False
+            for col in ctx.columns:
+                hdr = col.header_text.strip().upper()
+                if any(_is_known_section_alias(t) for t in hdr.split()):
+                    if any(w in hdr for w in ("SUMMARY", "SKILLS", "EXPERIENCE", "EDUCATION", "CONTACT", "PROJECTS")) and len(ctx.columns) == 2:
+                        is_layout_header = True
+                        break
+                if len(hdr.split()) > 15:
+                    is_layout_header = True
+                    break
+            if is_layout_header:
+                continue
+
+            # Reject contact-dominated or prose-dominated false tables with UNKNOWN purpose
+            if _is_false_unknown_table(ctx):
+                continue
+
+            # 2. 3+ columns with multiple rows is strong tabular evidence
+            if len(ctx.columns) >= 3 and len(ctx.rows) >= 2:
+                valid_contexts.append(ctx)
+                continue
+
+            # 3. 2 columns: require conservative evidence (form table or high-confidence table purpose)
+            if len(ctx.columns) == 2:
+                # Date or lengthy prose in header indicates standard title + right-aligned date, not a genuine table
+                has_date_header = any(re.search(r"\b(19|20)\d{2}\b", col.header_text) for col in ctx.columns)
+                has_long_header = any(len(col.header_text.split()) > 7 for col in ctx.columns)
+                if has_date_header or has_long_header:
+                    continue
+
+                if ctx.purpose in (
+                    TablePurpose.PERSONAL_DATA,
+                    TablePurpose.CONTACT_DETAILS,
+                    TablePurpose.DOCUMENTS,
+                    TablePurpose.SEA_SERVICE,
+                    TablePurpose.EDUCATION,
+                    TablePurpose.CERTIFICATION,
+                    TablePurpose.COURSES_CERTIFICATIONS,
+                ) and ctx.confidence >= 0.25:
+                    valid_contexts.append(ctx)
+                elif ctx.is_form_table and len(ctx.rows) >= 3:
+                    col0_texts = [r[0].text for r in ctx.rows if len(r) > 0 and r[0].text.strip()]
+                    if col0_texts and all(len(txt.split()) <= 6 for txt in col0_texts):
+                        valid_contexts.append(ctx)
+
+        if valid_contexts:
+            valid_table_ids = {c.table_id for c in valid_contexts}
+            valid_tables = [t for t in tables if t.table_id in valid_table_ids]
+            all_blocks = binder.bind_document_tables(all_blocks, valid_tables)
+            semantic_tables = valid_contexts
             all_blocks = apply_table_semantics_to_blocks(semantic_tables, all_blocks)
 
     return SemanticInput(
@@ -2244,7 +2904,7 @@ def _is_two_digit_date_supported(year: str, month: str | None, day: str | None, 
     return False
 
 
-def _is_value_semantically_supported(canonical_val: str, source_text: str) -> bool:
+def _is_value_semantically_supported(canonical_val: str, source_text: str, is_single_block: bool = True) -> bool:
     """Deterministic validation boundary checking if canonical value is supported by source evidence.
 
     Permits ONLY:
@@ -2252,9 +2912,11 @@ def _is_value_semantically_supported(canonical_val: str, source_text: str) -> bo
     2. Phone digit normalization (canonical digits sequence is exact substring of source digits).
     3. ISO date normalization (year digits and month name/number explicitly present in source text,
        including explicit 2-digit dates matching the 4-digit canonical year).
+    4. Current-status date markers ('Present' supported by 'Till Now', etc.).
+    5. Single-block ordered subphrase grounding (at least 2 tokens, exact order preserved in single source block).
 
     Strictly forbids:
-    - Token subset combinations
+    - Multi-block token combination fabrication
     - Synonym replacement
     - Company renaming (e.g. 'Darya Shaan' -> 'Darya Shipping')
     - Title expansion (e.g. 'Senior Software Engineer' -> 'Principal Software Engineer')
@@ -2293,7 +2955,8 @@ def _is_value_semantically_supported(canonical_val: str, source_text: str) -> bo
             return True
 
     # 3. Phone digit normalization (e.g. "+919829519017" from "+91 98295 19017", "+16504981240" from "(650) 498-1240")
-    if _PHONE_CANONICAL_RE.match(c_val):
+    val_clean_phone = "".join(ch for ch in c_val if ch.isdigit() or ch == "+")
+    if _PHONE_CANONICAL_RE.match(val_clean_phone):
         val_digits = "".join(ch for ch in c_val if ch.isdigit())
         src_digits = "".join(ch for ch in s_text if ch.isdigit())
         if val_digits and val_digits in src_digits:
@@ -2304,6 +2967,22 @@ def _is_value_semantically_supported(canonical_val: str, source_text: str) -> bo
             and val_digits.endswith(src_digits)
         ):
             return True
+
+    # 4. Current-status date marker normalization (e.g. "Present" supported by "Till Now", "ongoing", "current")
+    if c_val.lower() in ("present", "current", "now"):
+        if any(pat.search(s_text) for pat in ACCEPTED_CURRENT_MARKERS):
+            return True
+
+    # 5. Conservative single-block ordered subphrase grounding
+    # (e.g. "Medicine & Public Health" grounded by
+    # "Doctor of Medicine (M.D.) & Master of Public Health (M.P.H.)")
+    if is_single_block:
+        val_tokens = [t.lower() for t in re.findall(r"[A-Za-z0-9]+", c_val)]
+        src_tokens = [t.lower() for t in re.findall(r"[A-Za-z0-9]+", s_text)]
+        if len(val_tokens) >= 2 and (Counter(val_tokens) <= Counter(src_tokens)):
+            it = iter(src_tokens)
+            if all(tok in it for tok in val_tokens):
+                return True
 
     return False
 
@@ -2327,10 +3006,12 @@ NAME_FORM_DESCRIPTOR_TOKENS: frozenset[str] = frozenset({
 })
 
 
-def _is_name_form_descriptor_supported(canonical_name: str, source_text: str) -> bool:
+def _is_name_form_descriptor_supported(canonical_name: str, source_text: str, is_multiblock: bool = False) -> bool:
     """Check if canonical human name tokens match source evidence tokens after filtering form descriptors.
 
     Requires exact multiset equality:
+    - Source evidence MUST contain at least one recognized name form descriptor token (e.g. 'First name', 'Surname', 'Last name')
+      OR source evidence is multi-block name where canonical tokens are an exact multiset permutation of source tokens
     - Token order may differ (e.g., 'Surname Alam First Name Akibul' -> 'Akibul Alam', 'Last name PARASHAR First name JOSH' -> 'JOSH PARASHAR')
     - Standard name descriptor labels are filtered from source tokens
     - Zero tokens may be added (no hallucinated middle names/words)
@@ -2343,6 +3024,10 @@ def _is_name_form_descriptor_supported(canonical_name: str, source_text: str) ->
     if not val_tokens:
         return False
 
+    has_descriptor = any(t in NAME_FORM_DESCRIPTOR_TOKENS for t in src_tokens)
+    if not has_descriptor and not is_multiblock:
+        return False
+
     # Filter recognized standard form descriptor tokens from source text
     filtered_src_tokens = [t for t in src_tokens if t not in NAME_FORM_DESCRIPTOR_TOKENS]
 
@@ -2353,15 +3038,15 @@ def _is_name_form_descriptor_supported(canonical_name: str, source_text: str) ->
     return sorted(val_tokens) == sorted(filtered_src_tokens)
 
 
-def _is_name_semantically_supported(canonical_name: str, source_text: str) -> bool:
+def _is_name_semantically_supported(canonical_name: str, source_text: str, is_multiblock: bool = False) -> bool:
     """Deterministic validation boundary specifically for personal.name.
 
     1. Checks generic deterministic support first (exact alphanumeric substring).
-    2. Falls back to form-descriptor token multiset matching specifically for human names.
+    2. Falls back to form-descriptor / multi-block token multiset matching specifically for human names.
     """
     if _is_value_semantically_supported(canonical_name, source_text):
         return True
-    return _is_name_form_descriptor_supported(canonical_name, source_text)
+    return _is_name_form_descriptor_supported(canonical_name, source_text, is_multiblock=is_multiblock)
 
 
 def _is_multiblock_text_semantically_supported(canonical_val: str, source_text: str) -> bool:
@@ -2430,7 +3115,10 @@ def validate_semantic_output(output: SemanticOutput, input_data: SemanticInput) 
         _verify_block_ids(gs.source_block_ids, context)
         if gs.source_block_ids:
             source_text = " ".join(_get_block_text(bid) for bid in gs.source_block_ids if _resolve_block_id(bid))
-            if not _is_value_semantically_supported(gs.value, source_text):
+            is_single = len(gs.source_block_ids) == 1
+            if not _is_value_semantically_supported(gs.value, source_text, is_single_block=is_single):
+                if len(gs.source_block_ids) > 1 and _is_multiblock_text_semantically_supported(gs.value, source_text):
+                    return
                 violations.append(f"UNSUPPORTED_CANONICAL_VALUE in {context}: {gs.value!r} not supported by {source_text!r}")
 
     # Helper specifically for long-text description/summary validation
@@ -2440,7 +3128,8 @@ def validate_semantic_output(output: SemanticOutput, input_data: SemanticInput) 
         _verify_block_ids(gs.source_block_ids, context)
         if gs.source_block_ids:
             source_text = " ".join(_get_block_text(bid) for bid in gs.source_block_ids if _resolve_block_id(bid))
-            if not _is_value_semantically_supported(gs.value, source_text):
+            is_single = len(gs.source_block_ids) == 1
+            if not _is_value_semantically_supported(gs.value, source_text, is_single_block=is_single):
                 # Narrowly scoped fallback only for long-text fields with multiple source_block_ids
                 if len(gs.source_block_ids) > 1 and _is_multiblock_text_semantically_supported(gs.value, source_text):
                     return
@@ -2453,7 +3142,8 @@ def validate_semantic_output(output: SemanticOutput, input_data: SemanticInput) 
         _verify_block_ids(gs.source_block_ids, context)
         if gs.source_block_ids:
             source_text = " ".join(_get_block_text(bid) for bid in gs.source_block_ids if _resolve_block_id(bid))
-            if not _is_name_semantically_supported(gs.value, source_text):
+            is_multiblock = len(gs.source_block_ids) > 1
+            if not _is_name_semantically_supported(gs.value, source_text, is_multiblock=is_multiblock):
                 violations.append(f"UNSUPPORTED_CANONICAL_VALUE in {context}: {gs.value!r} not supported by {source_text!r}")
 
     # Helper for grounded boolean validation

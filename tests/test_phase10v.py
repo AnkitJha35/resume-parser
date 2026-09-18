@@ -269,7 +269,9 @@ def test_fresher_fixture_end_to_end_supplementation():
                 education=[],
             )
 
-    resume = parse_document_semantically(doc, OmittedSemanticExtractor(), document_id="fresher-test")
+    resume = parse_document_semantically(
+        doc, OmittedSemanticExtractor(), document_id="fresher-test", enable_supplementation=True
+    )
     assert resume.personal.email == "aditianand136@gmail.com"
     assert len(resume.skills) == 14
 

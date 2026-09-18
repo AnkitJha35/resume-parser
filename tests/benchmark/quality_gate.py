@@ -17,6 +17,7 @@ class BenchmarkOutcome(str, Enum):
     PASS = "PASS"
     PARTIAL = "PARTIAL"
     FAIL = "FAIL"
+    VALIDATION_FAILED = "VALIDATION_FAILED"
     ERROR = "ERROR"
     COMPLETENESS_FAILED = "COMPLETENESS_FAILED"
 
@@ -59,6 +60,15 @@ class QualityGateSummary:
     partial_rate_pct: float = 0.0
     fail_rate_pct: float = 0.0
     error_rate_pct: float = 0.0
+
+    # New correctness & completeness aggregate metrics
+    hard_correctness_pass_rate_pct: float = 0.0
+    entity_completeness_rate_pct: float = 0.0
+    field_completeness_rate_pct: float = 0.0
+    skills_recall_pct: float | None = None
+    validation_failure_rate_pct: float = 0.0
+    extraction_failure_rate_pct: float = 0.0
+    avg_requests_per_resume: float = 1.0
 
     validation_failure_count: int = 0
     completeness_failure_count: int = 0
@@ -232,6 +242,29 @@ def evaluate_quality_gate(
     summary.fail_rate_pct = round((summary.fail_count / summary.total_resumes) * 100.0, 2)
     summary.error_rate_pct = round((summary.error_count / summary.total_resumes) * 100.0, 2)
 
+    hard_correct_passes = summary.pass_count + summary.partial_count
+    summary.hard_correctness_pass_rate_pct = round((hard_correct_passes / summary.total_resumes) * 100.0, 2)
+    summary.validation_failure_rate_pct = round((summary.validation_failure_count / summary.total_resumes) * 100.0, 2)
+    summary.extraction_failure_rate_pct = round((summary.error_count / summary.total_resumes) * 100.0, 2)
+
+    # Average entity and field completeness
+    entity_comps = [float(r.get("entity_completeness_pct", 100.0 if r.get("passed_validation") else 0.0)) for r in raw_result_dicts]
+    field_comps = [float(r.get("field_completeness_pct", 100.0 if r.get("passed_validation") else 0.0)) for r in raw_result_dicts]
+    summary.entity_completeness_rate_pct = round(sum(entity_comps) / len(entity_comps), 1) if entity_comps else 0.0
+    summary.field_completeness_rate_pct = round(sum(field_comps) / len(field_comps), 1) if field_comps else 0.0
+
+    # Skills recall
+    skills_recalls = []
+    for r in raw_result_dicts:
+        sm = r.get("skills_metrics")
+        if isinstance(sm, dict) and "recall_pct" in sm and sm["recall_pct"] is not None:
+            skills_recalls.append(float(sm["recall_pct"]))
+    summary.skills_recall_pct = round(sum(skills_recalls) / len(skills_recalls), 1) if skills_recalls else None
+
+    # Average requests per resume
+    pass_counts = [int(r.get("pass_count", 1)) for r in raw_result_dicts]
+    summary.avg_requests_per_resume = round(sum(pass_counts) / len(pass_counts), 2) if pass_counts else 1.0
+
     summary.avg_latency_seconds = round(total_latency / summary.total_resumes, 2)
     if tokens_reported_count > 0:
         summary.avg_tokens_per_resume = round(summary.total_tokens / tokens_reported_count, 1)
@@ -308,6 +341,13 @@ def format_quality_gate_markdown(summary: QualityGateSummary) -> str:
         f"- **PARTIAL:** {summary.partial_count} ({summary.partial_rate_pct:.1f}%)",
         f"- **FAIL:** {summary.fail_count} ({summary.fail_rate_pct:.1f}%)",
         f"- **ERROR:** {summary.error_count} ({summary.error_rate_pct:.1f}%)",
+        f"- **Hard Correctness Pass Rate:** {summary.hard_correctness_pass_rate_pct:.1f}% ({summary.pass_count + summary.partial_count}/{summary.total_resumes})",
+        f"- **Entity Completeness Rate:** {summary.entity_completeness_rate_pct:.1f}%",
+        f"- **Field Completeness Rate:** {summary.field_completeness_rate_pct:.1f}%",
+        f"- **Skills Recall:** {f'{summary.skills_recall_pct:.1f}%' if summary.skills_recall_pct is not None else 'N/A'}",
+        f"- **Validation Failure Rate:** {summary.validation_failure_rate_pct:.1f}% ({summary.validation_failure_count}/{summary.total_resumes})",
+        f"- **Extraction Failure Rate:** {summary.extraction_failure_rate_pct:.1f}% ({summary.error_count}/{summary.total_resumes})",
+        f"- **Average Requests / Resume:** {summary.avg_requests_per_resume:.2f}",
         f"- **Validation Violations:** {summary.validation_failure_count}",
         f"- **Completeness Failures:** {summary.completeness_failure_count}",
         f"- **Fallbacks Invoked:** {summary.fallback_count}",
@@ -373,8 +413,8 @@ def format_quality_gate_markdown(summary: QualityGateSummary) -> str:
         "",
         "## 4. Per-Resume Execution Summary",
         "",
-        "| Resume | Archetype | Status | Tokens (P/O/Tot) | Latency | Recovery | Fallback | Violations | Counts (Sk/Ex/Ed/Pr) | Notes / Diagnostics |",
-        "|---|---|---|---|---|---|---|---|---|---|",
+        "| Resume | Archetype | Status | Hard Correctness | Entity Comp | Field Comp | Skills (Ext/Exp/Rec) | Counts (Sk/Ex/Ed/Pr) | Violations | Tokens (P/O/Tot) | Latency | Recovery | Notes / Diagnostics |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ])
 
     for r in summary.results:
@@ -387,14 +427,21 @@ def format_quality_gate_markdown(summary: QualityGateSummary) -> str:
         o_tok = usage.get("output_tokens") or 0
         t_tok = usage.get("total_tokens") or (p_tok + o_tok)
         tok_str = f"{p_tok}/{o_tok}/{t_tok}"
-        fb = "Yes" if (usage.get("fallback_invoked") or r.get("fallback_invoked")) else "No"
         rec = "Yes" if (usage.get("body_recovery_invoked") or r.get("body_recovery_invoked")) else "No"
         viol_count = len(r.get("validation_violations") or [])
+        hard_pass = "PASS" if r.get("hard_correctness_passed", st in ("PASS", "PARTIAL")) else "FAIL"
+        ent_comp = f"{float(r.get('entity_completeness_pct', 100.0)):.1f}%"
+        fld_comp = f"{float(r.get('field_completeness_pct', 100.0)):.1f}%"
+        sm = r.get("skills_metrics") or {}
+        sk_ext = sm.get("extracted_count", r.get("skills_count", 0))
+        sk_exp = sm.get("expected_count", "-")
+        sk_rec = f"{sm.get('recall_pct'):.0f}%" if sm.get("recall_pct") is not None else "-"
+        sk_str = f"{sk_ext}/{sk_exp} ({sk_rec})"
         counts_str = f"{r.get('skills_count', 0)}/{r.get('experience_count', 0)}/{r.get('education_count', 0)}/{r.get('projects_count', 0)}"
         diag = "<br>".join(r.get("diagnostics") or []) or "_Clean_"
 
         lines.append(
-            f"| `{fn}` | `{arch}` | **{st}** | {tok_str} | {lat} | {rec} | {fb} | {viol_count} | {counts_str} | {diag} |"
+            f"| `{fn}` | `{arch}` | **{st}** | {hard_pass} | {ent_comp} | {fld_comp} | {sk_str} | {counts_str} | {viol_count} | {tok_str} | {lat} | {rec} | {diag} |"
         )
 
     return "\n".join(lines)

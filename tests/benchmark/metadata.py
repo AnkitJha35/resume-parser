@@ -11,6 +11,8 @@ class DocumentArchetype(str, Enum):
     MARITIME_CV = "maritime_cv"
     MARITIME_TABULAR = "maritime_tabular"
     STRUCTURED_FORM = "structured_form"
+    ACADEMIC_CV = "academic_cv"
+    UNKNOWN = "unknown"
 
 
 @dataclass(frozen=True)

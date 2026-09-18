@@ -38,8 +38,14 @@ def format_semantic_terminal_summary(summary: SemanticBenchmarkSummary) -> str:
         f"Extraction failures: {summary.extraction_failures}",
         f"Validation failures: {summary.validation_failures}",
         f"Validation pass rate: {summary.validation_pass_rate_pct}%",
-        f"Total elapsed: {summary.total_elapsed_seconds:.2f}s",
+        f"Hard correctness pass rate: {getattr(summary, 'hard_correctness_pass_rate_pct', 0.0)}%",
+        f"Entity completeness rate: {getattr(summary, 'entity_completeness_rate_pct', 0.0)}%",
+        f"Field completeness rate: {getattr(summary, 'field_completeness_rate_pct', 0.0)}%",
     ]
+    if getattr(summary, "avg_skills_recall_pct", None) is not None:
+        lines.append(f"Average skills recall: {summary.avg_skills_recall_pct}%")
+    lines.append(f"Average requests / resume: {getattr(summary, 'avg_requests_per_resume', 1.0):.2f}")
+    lines.append(f"Total elapsed: {summary.total_elapsed_seconds:.2f}s")
     if summary.total_tokens is not None:
         lines.append(f"Total tokens recorded: {summary.total_tokens}")
 
@@ -56,11 +62,24 @@ def format_semantic_terminal_summary(summary: SemanticBenchmarkSummary) -> str:
     lines.extend([
         "",
         "Per resume:",
+        f"  {'Filename':<42} {'Status':<18} {'HardCorr':<10} {'EntComp':<9} {'FldComp':<9} {'Skills(Ext/Exp)':<17} {'Viol':<6} {'Tokens':<8} {'Latency':<8}",
+        f"  {'-'*42} {'-'*18} {'-'*10} {'-'*9} {'-'*9} {'-'*17} {'-'*6} {'-'*8} {'-'*8}",
     ])
     for r in summary.results:
-        diag = f" ({', '.join(r.diagnostics[:2])})" if r.diagnostics else ""
-        tok = f" [tokens={r.usage.get('total_tokens')}]" if r.usage and r.usage.get("total_tokens") else ""
-        lines.append(f"  {r.filename:<40} : {r.status}{diag}{tok}")
+        hard_corr = "PASS" if getattr(r, "hard_correctness_passed", r.status in ("PASS", "PARTIAL")) else "FAIL"
+        ent_comp = f"{getattr(r, 'entity_completeness_pct', 100.0):.1f}%"
+        fld_comp = f"{getattr(r, 'field_completeness_pct', 100.0):.1f}%"
+        sm = getattr(r, "skills_metrics", {}) or {}
+        sk_ext = sm.get("extracted_count", r.skills_count)
+        sk_exp = sm.get("expected_count") or "-"
+        sk_str = f"{sk_ext}/{sk_exp}"
+        viol_count = len(r.validation_violations)
+        tok_str = str(r.usage.get("total_tokens", "-")) if r.usage else "-"
+        lat_str = f"{r.elapsed_seconds:.2f}s"
+        lines.append(f"  {r.filename:<42} {r.status:<18} {hard_corr:<10} {ent_comp:<9} {fld_comp:<9} {sk_str:<17} {viol_count:<6} {tok_str:<8} {lat_str:<8}")
+        if r.diagnostics:
+            for d in r.diagnostics[:2]:
+                lines.append(f"    - {d}")
 
     return "\n".join(lines)
 
@@ -78,17 +97,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--representation",
         type=str,
-        default="two_pass_candidate_b",
+        default="structured_table_single_pass",
         choices=[
+            "structured_table_single_pass",
+            "structured_table_two_pass",
+            "structured_table",
             "two_pass_candidate_b",
             "single_pass_candidate_b",
             "candidate_b_compact",
             "candidate_b_two_pass",
             "candidate_b_single_pass",
             "full",
-            "structured_table_two_pass",
         ],
-        help="Payload representation and execution mode (default: two_pass_candidate_b)",
+        help="Payload representation and execution mode (default: structured_table_single_pass)",
     )
     parser.add_argument(
         "--two-pass",
@@ -141,8 +162,7 @@ def main(argv: list[str] | None = None) -> int:
     # Determine two_pass, compact, and structured_table flags
     rep = args.representation.lower()
 
-    # structured_table_two_pass is an explicit structured-table serializer representation
-    structured_table = (rep == "structured_table_two_pass")
+    structured_table = rep in ("structured_table_two_pass", "structured_table_single_pass", "structured_table")
 
     if args.two_pass is not None:
         two_pass = args.two_pass
@@ -153,7 +173,7 @@ def main(argv: list[str] | None = None) -> int:
 
     compact = (rep != "full")
     if structured_table:
-        resolved_rep = "structured_table_two_pass"
+        resolved_rep = "structured_table_two_pass" if two_pass else "structured_table_single_pass"
     elif two_pass:
         resolved_rep = "two_pass_candidate_b"
     elif not compact:

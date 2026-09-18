@@ -7,7 +7,7 @@
 - **PASS:** 4 (33.3%)
 - **PARTIAL:** 1 (8.3%)
 - **FAIL:** 7 (58.3%)
-- **Total Benchmark Runtime:** 1.56s
+- **Total Benchmark Runtime:** 1.41s
 
 ## 2. Archetype Breakdown
 
@@ -22,12 +22,12 @@
 
 | Resume | Archetype | Status | Skills | Experience | Education | Projects | Structural Diagnostics / Notes |
 |---|---|---|---|---|---|---|---|
-| `2nd Officer Mayur Agarwal_062029.pdf` | `maritime_tabular` | **FAIL** | 0 | 0 | 10 | 0 | • `NAME_SPLIT_INTO_LOCATION: 'AGARWAL'`<br>• `TABLE_METADATA_IN_EDUCATION[3]: inst='03-Oct-2019', deg='DOCUMENTS'`<br>• `TABLE_METADATA_IN_EDUCATION[4]: inst='', deg='ENDORSEMENTS'`<br>• `TABLE_METADATA_IN_EDUCATION[5]: inst='', deg='Endorsement'`<br>• `EXTREME_EDUCATION_COUNT_SKEW: 10 entries` |
+| `2nd Officer Mayur Agarwal_062029.pdf` | `maritime_tabular` | **FAIL** | 0 | 0 | 7 | 0 | • `NAME_SPLIT_INTO_LOCATION: 'AGARWAL'`<br>• `TABLE_METADATA_IN_EDUCATION[2]: inst='', deg='ENDORSEMENTS'`<br>• `TABLE_METADATA_IN_EDUCATION[3]: inst='', deg='Endorsement'`<br>• `TABLE_METADATA_IN_EDUCATION[5]: inst='03-Oct-2019', deg='DOCUMENTS'` |
 | `AASHISH DG.pdf` | `structured_form` | **FAIL** | 0 | 0 | 36 | 0 | • `NAME_IS_FORM_OR_DOC_TITLE: 'Seafarer Profile'`<br>• `SECTION_HEADER_IN_LOCATION: 'Discipline'`<br>• `TABLE_METADATA_IN_EDUCATION[18]: inst='', deg='Authorised Documents'`<br>• `TABLE_METADATA_IN_EDUCATION[33]: inst='', deg='DECLARATION TO BE MADE BY CANDIDATE :'`<br>• `EXTREME_EDUCATION_COUNT_SKEW: 36 entries` |
 | `AKIBUL ALAM CV(JO).pdf` | `structured_form` | **FAIL** | 0 | 0 | 25 | 0 | • `NAME_IS_FORM_OR_DOC_TITLE: 'Surname'`<br>• `NAME_SPLIT_INTO_LOCATION: 'Alam'`<br>• `TABLE_METADATA_IN_EDUCATION[11]: inst='Name of Institute / College', deg='Dangerous Cargo Endorsements'`<br>• `TABLE_METADATA_IN_EDUCATION[22]: inst='', deg='Previous Sea Service'`<br>• `EXTREME_EDUCATION_COUNT_SKEW: 25 entries` |
 | `AditCV_SOL.pdf` | `standard_cv` | **PASS** | 19 | 1 | 1 | 0 | _Clean_ |
 | `CV Rishabh Dixit.pdf` | `maritime_cv` | **FAIL** | 0 | 6 | 2 | 0 | • `NAME_IS_FORM_OR_DOC_TITLE: 'Curriculum Vitae'`<br>• `TABLE_HEADER_IN_EXPERIENCE[0]: comp='Ship Name', desig='S. No.'`<br>• `TABLE_HEADER_IN_EXPERIENCE[3]: comp='Documents', desig='S. No.'`<br>• `TABLE_METADATA_IN_EDUCATION[1]: inst='', deg='Declaration'` |
-| `JOSH PARASHAR MASTER CV2.pdf` | `structured_form` | **FAIL** | 0 | 4 | 28 | 0 | • `NAME_IS_FORM_OR_DOC_TITLE: 'APPLICATION FORM'`<br>• `SECTION_HEADER_IN_LOCATION: 'Position'`<br>• `TABLE_HEADER_IN_EXPERIENCE[0]: comp='Period', desig='Vessel Type'`<br>• `TABLE_METADATA_IN_EDUCATION[0]: inst='', deg='Readiness date 15/May/2026'`<br>• `TABLE_METADATA_IN_EDUCATION[9]: inst='', deg='Vaccinations'`<br>• `TABLE_METADATA_IN_EDUCATION[15]: inst='COVID 19 – 2nd Dose / Single-Dose Vaccine', deg='14/Jun/2014'`<br>• `EXTREME_EDUCATION_COUNT_SKEW: 28 entries` |
+| `JOSH PARASHAR MASTER CV2.pdf` | `structured_form` | **FAIL** | 0 | 53 | 33 | 0 | • `NAME_IS_FORM_OR_DOC_TITLE: 'APPLICATION FORM'`<br>• `SECTION_HEADER_IN_LOCATION: 'Position'`<br>• `TABLE_HEADER_IN_EXPERIENCE[49]: comp='Period', desig='Vessel Type'`<br>• `TABLE_METADATA_IN_EDUCATION[0]: inst='', deg='Readiness date 15/May/2026'`<br>• `TABLE_METADATA_IN_EDUCATION[10]: inst='', deg='Vaccinations'`<br>• `EXTREME_EDUCATION_COUNT_SKEW: 33 entries`<br>• `EXCESSIVE_EXPERIENCE_COUNT: 53 entries` |
 | `MUKUND 3RD OFF CV 2026.pdf` | `maritime_cv` | **FAIL** | 2 | 9 | 4 | 0 | • `SECTION_HEADER_IN_LOCATION: 'QUALIFICATION'`<br>• `TABLE_HEADER_IN_EXPERIENCE[4]: comp='Type', desig='Vessel Name'`<br>• `TABLE_HEADER_IN_EXPERIENCE[5]: comp='NAME', desig='Documents Details'`<br>• `TABLE_HEADER_IN_EXPERIENCE[8]: comp='POI', desig='DOI'`<br>• `TABLE_METADATA_IN_EDUCATION[0]: inst='13794 3RD OFF 05-08-2025 11-03-2026', deg='ITHACKI'` |
 | `Rajeev_Ranjan_Prajapati_FullStack_Engineer.pdf` | `standard_cv` | **PARTIAL** | 12 | 1 | 4 | 6 | • `PROJECTS_WITHOUT_NAMES: 3 items at indices [3, 4, 5]` |
 | `Résume_Shubham.pdf` | `standard_cv` | **PASS** | 13 | 3 | 1 | 2 | _Clean_ |

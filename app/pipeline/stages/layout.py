@@ -41,34 +41,41 @@ def _interpret_page(page: Page) -> Page:
         )
     ]
     body_lines = [line for line in source_lines if line not in header_lines]
+    regions: list[Region] = []
     if not body_lines:
         kind = "header" if header_lines else "physical_region"
-        region = _make_region(page.page_number, 0, kind, source_lines, None)
-        return replace(page, regions=[region])
+        regions.append(_make_region(page.page_number, 0, kind, source_lines, None))
+    else:
+        body_columns = _column_groups(body_lines)
+        if header_lines:
+            regions.append(_make_region(page.page_number, 0, "header", header_lines, None))
 
-    body_columns = _column_groups(body_lines)
-    regions: list[Region] = []
-    if header_lines:
-        regions.append(_make_region(page.page_number, 0, "header", header_lines, None))
-
-    if len(body_columns) < 2:
-        regions.append(
-            _make_region(page.page_number, len(regions), "physical_region", body_lines, None)
-        )
-        return replace(page, regions=regions)
-
-    for offset, column_lines in enumerate(body_columns):
-        regions.append(
-            _make_region(
-                page.page_number,
-                len(regions),
-                "column",
-                column_lines,
-                offset,
+        if len(body_columns) < 2:
+            regions.append(
+                _make_region(page.page_number, len(regions), "physical_region", body_lines, None)
             )
-        )
+        else:
+            for offset, column_lines in enumerate(body_columns):
+                regions.append(
+                    _make_region(
+                        page.page_number,
+                        len(regions),
+                        "column",
+                        column_lines,
+                        offset,
+                    )
+                )
 
-    return replace(page, regions=regions)
+    line_counter = 0
+    final_regions: list[Region] = []
+    for region in regions:
+        reordered_lines = []
+        for line in region.lines:
+            reordered_lines.append(replace(line, reading_order=line_counter))
+            line_counter += 1
+        final_regions.append(replace(region, lines=reordered_lines))
+
+    return replace(page, regions=final_regions)
 
 
 def _column_groups(lines: list[Line]) -> list[list[Line]]:

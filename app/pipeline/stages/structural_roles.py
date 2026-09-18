@@ -55,6 +55,8 @@ _ROLE_WORDS = {
     "designer",
     "trainee",
     "accountant",
+    "advisor",
+    "adviser",
 }
 
 _ORG_SUFFIXES: tuple[str, ...] = (
@@ -133,6 +135,15 @@ _GEO_TOKENS = {
     "il",
     "ma",
     "pa",
+}
+
+_US_STATE_CODES: set[str] = {
+    "al", "ak", "az", "ar", "ca", "co", "ct", "de", "fl", "ga",
+    "hi", "id", "il", "in", "ia", "ks", "ky", "la", "me", "md",
+    "ma", "mi", "mn", "ms", "mo", "mt", "ne", "nv", "nh", "nj",
+    "nm", "ny", "nc", "nd", "oh", "ok", "or", "pa", "ri", "sc",
+    "sd", "tn", "tx", "ut", "vt", "va", "wa", "wv", "wi", "wy",
+    "dc", "pr",
 }
 
 _CREDENTIAL_RE = re.compile(
@@ -269,6 +280,26 @@ _GENERIC_DEGREE_RE = re.compile(
     re.IGNORECASE,
 )
 
+_TITLE_PREFIXES: frozenset[str] = frozenset({
+    "senior",
+    "sr",
+    "junior",
+    "jr",
+    "lead",
+    "chief",
+    "principal",
+    "associate",
+    "head",
+    "staff",
+    "intern",
+    "graduate",
+    "assistant",
+    "vp",
+    "vice",
+    "cofounder",
+    "founder",
+})
+
 
 def _has_nearby_date_evidence(
     previous_text: str | None,
@@ -326,6 +357,8 @@ def _looks_like_composite_education_entry(
         if not _GENERIC_DEGREE_RE.search(part):
             return False
         if _contains_role_word(part):
+            return False
+        if _looks_like_location(part):
             return False
         return True
 
@@ -489,7 +522,7 @@ def classify_structural_role(
     if len(value) > 80:
         return StructuralRole.DESCRIPTION, 0.7, ("long_text",)
 
-    if _looks_like_technology(value, following=follow, previous_text=previous_text):
+    if not _has_typography_emphasis(font_size, bold) and _looks_like_technology(value, following=follow, previous_text=previous_text):
         return StructuralRole.TECHNOLOGY, 0.55, ("short_list_technology_candidate",)
 
     return StructuralRole.UNKNOWN, 0.0, ("no_strong_signal",)
@@ -739,6 +772,9 @@ def _looks_like_location(text: str) -> bool:
         return True
     if "," not in text:
         return False
+    m = re.search(r",\s*([A-Za-z]{2})\b", text)
+    if m and m.group(1).lower() in _US_STATE_CODES:
+        return True
     return any(re.search(rf"\b{re.escape(token)}\b", lowered) for token in _GEO_TOKENS)
 
 
@@ -775,6 +811,13 @@ def _looks_like_section_heading(
     if _looks_like_organization(value):
         return False
 
+    if _GENERIC_DEGREE_RE.search(value):
+        return False
+
+    first_clean = re.sub(r"[^A-Za-z]", "", words[0]).lower()
+    if first_clean in _TITLE_PREFIXES:
+        return False
+
     last_word_clean = re.sub(r"[^A-Za-z0-9]", "", words[-1]).lower()
     if last_word_clean in _INSTITUTIONAL_NOUNS:
         return False
@@ -800,6 +843,11 @@ def _looks_like_section_heading(
     #      "RELEVANT COURSEWORK", "ACADEMIC APPOINTMENTS", "PROJECT HIGHLIGHTS"
     first_word_clean = re.sub(r"[^A-Za-z0-9]", "", words[0]).lower()
     if last_word_clean in _CANONICAL_SECTION_KEYWORDS or first_word_clean in _CANONICAL_SECTION_KEYWORDS:
+        return True
+
+    # Section boundary geometry:
+    # If following content contains role titles, this prominent line introduces an arbitrary section.
+    if any(_contains_role_word(item) for item in following[:3]):
         return True
 
     # Section boundary geometry fallback: following content looks like a list / short competency cluster

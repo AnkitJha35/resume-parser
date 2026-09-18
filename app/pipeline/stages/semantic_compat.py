@@ -100,6 +100,15 @@ def candidate_sections_to_text_blocks(
         ]
         if unassigned:
             converted["UNASSIGNED"] = unassigned
+    else:
+        unassigned = []
+        for section in sections:
+            for block in section.content:
+                if block.block_id not in assigned_ids:
+                    unassigned.append(_structural_to_text_block(block))
+                    assigned_ids.add(block.block_id)
+        if unassigned:
+            converted["UNASSIGNED"] = unassigned
     return converted
 
 

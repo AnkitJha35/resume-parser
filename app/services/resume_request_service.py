@@ -60,6 +60,7 @@ class ResumeRequestService:
         try:
             pdf_bytes = await self._download_pdf(storage_key)
             start_time = time.monotonic()
+            logger.info("Executing resume parser jobId=%s resumeId=%s mode=%s", job_id, resume_id, self._settings.parser_mode)
             if self._settings.parser_mode == "legacy":
                 resume = await asyncio.to_thread(self._parser.parse, pdf_bytes)
             elif self._settings.parser_mode == "layout":
@@ -72,7 +73,10 @@ class ResumeRequestService:
                     document_id=storage_key,
                 )
             processing_time_ms = int((time.monotonic() - start_time) * 1000)
+            logger.info("Resume parser completed jobId=%s resumeId=%s processing_time_ms=%d", job_id, resume_id, processing_time_ms)
+            logger.info("Publishing completed event jobId=%s resumeId=%s", job_id, resume_id)
             await self._publish_completed_event(job_id, resume_id, resume, processing_time_ms)
+            logger.info("Resume request processing finished successfully jobId=%s resumeId=%s", job_id, resume_id)
         except StorageClientError as exc:
             logger.exception("Storage error while processing resume request")
             await self._publish_failed_event(job_id, resume_id, "STORAGE_ERROR", str(exc))
@@ -130,7 +134,9 @@ class ResumeRequestService:
             "result": resume.model_dump(),
             "metadata": metadata,
         }
+        logger.info("Sending completed event to Kafka topic=%s jobId=%s resumeId=%s", self._settings.kafka_topic_completed, job_id, resume_id)
         await self._producer.send_json(self._settings.kafka_topic_completed, message)
+        logger.info("Completed event successfully sent to Kafka topic=%s jobId=%s resumeId=%s", self._settings.kafka_topic_completed, job_id, resume_id)
 
     async def _publish_failed_event(self, job_id: str, resume_id: str, code: str, message: str) -> None:
         event = {

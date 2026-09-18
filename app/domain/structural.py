@@ -24,6 +24,7 @@ class StructuralRole(str, Enum):
     SIDEBAR = "SIDEBAR"
     TABLE_CELL = "TABLE_CELL"
     UNKNOWN = "UNKNOWN"
+    SKILL = "SKILL"
 
 
 @dataclass(frozen=True)

@@ -5,7 +5,7 @@
   "pass_count": 4,
   "partial_count": 1,
   "fail_count": 7,
-  "total_elapsed_seconds": 1.5552,
+  "total_elapsed_seconds": 1.405,
   "archetype_breakdown": {
     "maritime_tabular": {
       "total": 1,
@@ -39,7 +39,7 @@
       "target_domain": "Maritime / Deck Officer",
       "parser_success": true,
       "status": "FAIL",
-      "elapsed_seconds": 0.1928,
+      "elapsed_seconds": 0.1591,
       "error_message": null,
       "error_traceback": null,
       "personal": {
@@ -54,7 +54,7 @@
       "skills_sample": [],
       "experience_count": 0,
       "experience_items": [],
-      "education_count": 10,
+      "education_count": 7,
       "education_items": [
         {
           "institution": "MARITIME INSTITUTE, Maharashtra, India {2016-2019}",
@@ -67,6 +67,22 @@
         {
           "institution": "Best All-Round Performance Award (Gold Medalist)",
           "degree": "B.Sc. Nautical Science",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "ENDORSEMENTS",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "Endorsement",
           "fieldOfStudy": null,
           "startDate": null,
           "endDate": null,
@@ -90,46 +106,6 @@
         },
         {
           "institution": null,
-          "degree": "ENDORSEMENTS",
-          "fieldOfStudy": null,
-          "startDate": null,
-          "endDate": null,
-          "grade": null
-        },
-        {
-          "institution": null,
-          "degree": "Endorsement",
-          "fieldOfStudy": null,
-          "startDate": null,
-          "endDate": null,
-          "grade": null
-        },
-        {
-          "institution": null,
-          "degree": "Certificate",
-          "fieldOfStudy": null,
-          "startDate": null,
-          "endDate": null,
-          "grade": null
-        },
-        {
-          "institution": null,
-          "degree": "Issued Date",
-          "fieldOfStudy": null,
-          "startDate": null,
-          "endDate": null,
-          "grade": null
-        },
-        {
-          "institution": null,
-          "degree": "Valid Date",
-          "fieldOfStudy": null,
-          "startDate": null,
-          "endDate": null,
-          "grade": null
-        },
-        {
-          "institution": null,
           "degree": "N/A",
           "fieldOfStudy": null,
           "startDate": null,
@@ -141,10 +117,9 @@
       "projects_items": [],
       "diagnostics": [
         "NAME_SPLIT_INTO_LOCATION: 'AGARWAL'",
-        "TABLE_METADATA_IN_EDUCATION[3]: inst='03-Oct-2019', deg='DOCUMENTS'",
-        "TABLE_METADATA_IN_EDUCATION[4]: inst='', deg='ENDORSEMENTS'",
-        "TABLE_METADATA_IN_EDUCATION[5]: inst='', deg='Endorsement'",
-        "EXTREME_EDUCATION_COUNT_SKEW: 10 entries"
+        "TABLE_METADATA_IN_EDUCATION[2]: inst='', deg='ENDORSEMENTS'",
+        "TABLE_METADATA_IN_EDUCATION[3]: inst='', deg='Endorsement'",
+        "TABLE_METADATA_IN_EDUCATION[5]: inst='03-Oct-2019', deg='DOCUMENTS'"
       ],
       "notes": "Maritime 2nd Officer CV with extensive sea-service, STCW, and certification tables."
     },
@@ -154,7 +129,7 @@
       "target_domain": "Maritime / Seafarer Registry",
       "parser_success": true,
       "status": "FAIL",
-      "elapsed_seconds": 0.2468,
+      "elapsed_seconds": 0.2328,
       "error_message": null,
       "error_traceback": null,
       "personal": {
@@ -477,7 +452,7 @@
       "target_domain": "Maritime / Deck Cadet",
       "parser_success": true,
       "status": "FAIL",
-      "elapsed_seconds": 0.1367,
+      "elapsed_seconds": 0.1265,
       "error_message": null,
       "error_traceback": null,
       "personal": {
@@ -712,7 +687,7 @@
       "target_domain": "Human Resources",
       "parser_success": true,
       "status": "PASS",
-      "elapsed_seconds": 0.0481,
+      "elapsed_seconds": 0.0437,
       "error_message": null,
       "error_traceback": null,
       "personal": {
@@ -769,7 +744,7 @@
       "target_domain": "Maritime / Third Officer",
       "parser_success": true,
       "status": "FAIL",
-      "elapsed_seconds": 0.0668,
+      "elapsed_seconds": 0.0603,
       "error_message": null,
       "error_traceback": null,
       "personal": {
@@ -868,7 +843,7 @@
       "target_domain": "Maritime / Master Mariner",
       "parser_success": true,
       "status": "FAIL",
-      "elapsed_seconds": 0.309,
+      "elapsed_seconds": 0.267,
       "error_message": null,
       "error_traceback": null,
       "personal": {
@@ -881,8 +856,400 @@
       },
       "skills_count": 0,
       "skills_sample": [],
-      "experience_count": 4,
+      "experience_count": 53,
       "experience_items": [
+        {
+          "company": null,
+          "designation": "SEA Route.",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": null,
+          "designation": "Manager",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": "STENA",
+          "designation": "Dynagas",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": null,
+          "designation": "Shipping",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": "CORPORATION",
+          "designation": null,
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": null,
+          "designation": "OF India",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": null,
+          "designation": "Shipping",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": "CORPORATION",
+          "designation": null,
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": null,
+          "designation": "OF India",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": null,
+          "designation": "Shipping",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": "CORPORATION",
+          "designation": null,
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": null,
+          "designation": "OF India",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": null,
+          "designation": "Shipping",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": "CORPORATION",
+          "designation": null,
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": null,
+          "designation": "OF India",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": null,
+          "designation": "Shipping",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": "CORPORATION",
+          "designation": null,
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": null,
+          "designation": "OF India",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": null,
+          "designation": "Shipping",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": "CORPORATION",
+          "designation": null,
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": null,
+          "designation": "OF India",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": null,
+          "designation": "Shipping",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": "CORPORATION",
+          "designation": null,
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": null,
+          "designation": "OF India",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": null,
+          "designation": "Shipping",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": "CORPORATION",
+          "designation": null,
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": null,
+          "designation": "OF India",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": null,
+          "designation": "Shipping",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": "CORPORATION",
+          "designation": null,
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": null,
+          "designation": "OF India",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": null,
+          "designation": "Shipping",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": "CORPORATION",
+          "designation": null,
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": null,
+          "designation": "OF India",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": null,
+          "designation": "Shipping",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": "CORPORATION",
+          "designation": null,
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": null,
+          "designation": "OF India",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": null,
+          "designation": "Shipping",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": "CORPORATION",
+          "designation": null,
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": null,
+          "designation": "OF India",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": null,
+          "designation": "Shipping",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": "CORPORATION",
+          "designation": null,
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": null,
+          "designation": "OF India",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": null,
+          "designation": "Shipping",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": "CORPORATION",
+          "designation": null,
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": null,
+          "designation": "OF India",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": null,
+          "designation": "Shipping",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": "CORPORATION",
+          "designation": null,
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": null,
+          "designation": "OF India",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
+        {
+          "company": "CORPORATION",
+          "designation": "Shipping",
+          "startDate": null,
+          "endDate": null,
+          "current": false,
+          "location": null
+        },
         {
           "company": "Period",
           "designation": "Vessel Type",
@@ -916,7 +1283,7 @@
           "location": null
         }
       ],
-      "education_count": 28,
+      "education_count": 33,
       "education_items": [
         {
           "institution": null,
@@ -961,6 +1328,14 @@
         {
           "institution": null,
           "degree": "Category",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "2008",
           "fieldOfStudy": null,
           "startDate": null,
           "endDate": null,
@@ -1039,22 +1414,6 @@
           "grade": null
         },
         {
-          "institution": "COVID 19 – 2nd Dose / Single-Dose Vaccine",
-          "degree": "14/Jun/2014",
-          "fieldOfStudy": null,
-          "startDate": null,
-          "endDate": null,
-          "grade": null
-        },
-        {
-          "institution": null,
-          "degree": "08/Jul/2025",
-          "fieldOfStudy": null,
-          "startDate": null,
-          "endDate": null,
-          "grade": null
-        },
-        {
           "institution": null,
           "degree": "Sea Services",
           "fieldOfStudy": null,
@@ -1064,7 +1423,55 @@
         },
         {
           "institution": null,
-          "degree": "Vessel",
+          "degree": "Rank",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "14/Jun/2014",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "Cargo",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "LNG",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "LNG",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "LNG",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": null,
+          "degree": "LNG",
           "fieldOfStudy": null,
           "startDate": null,
           "endDate": null,
@@ -1079,8 +1486,8 @@
           "grade": null
         },
         {
-          "institution": null,
-          "degree": "GRT",
+          "institution": "DELHI",
+          "degree": "RML",
           "fieldOfStudy": null,
           "startDate": null,
           "endDate": null,
@@ -1088,7 +1495,15 @@
         },
         {
           "institution": null,
-          "degree": "Owner /",
+          "degree": "Remarks",
+          "fieldOfStudy": null,
+          "startDate": null,
+          "endDate": null,
+          "grade": null
+        },
+        {
+          "institution": "NAVIGATION",
+          "degree": "ICE",
           "fieldOfStudy": null,
           "startDate": null,
           "endDate": null,
@@ -1119,14 +1534,6 @@
           "grade": null
         },
         {
-          "institution": null,
-          "degree": "DYNAGAS",
-          "fieldOfStudy": null,
-          "startDate": null,
-          "endDate": null,
-          "grade": null
-        },
-        {
           "institution": "Pre-Employment Checks",
           "degree": "28D",
           "fieldOfStudy": null,
@@ -1148,11 +1555,11 @@
       "diagnostics": [
         "NAME_IS_FORM_OR_DOC_TITLE: 'APPLICATION FORM'",
         "SECTION_HEADER_IN_LOCATION: 'Position'",
-        "TABLE_HEADER_IN_EXPERIENCE[0]: comp='Period', desig='Vessel Type'",
+        "TABLE_HEADER_IN_EXPERIENCE[49]: comp='Period', desig='Vessel Type'",
         "TABLE_METADATA_IN_EDUCATION[0]: inst='', deg='Readiness date 15/May/2026'",
-        "TABLE_METADATA_IN_EDUCATION[9]: inst='', deg='Vaccinations'",
-        "TABLE_METADATA_IN_EDUCATION[15]: inst='COVID 19 – 2nd Dose / Single-Dose Vaccine', deg='14/Jun/2014'",
-        "EXTREME_EDUCATION_COUNT_SKEW: 28 entries"
+        "TABLE_METADATA_IN_EDUCATION[10]: inst='', deg='Vaccinations'",
+        "EXTREME_EDUCATION_COUNT_SKEW: 33 entries",
+        "EXCESSIVE_EXPERIENCE_COUNT: 53 entries"
       ],
       "notes": "Multi-page crew application form with vessel sea services, vaccinations, and passport grids."
     },
@@ -1162,7 +1569,7 @@
       "target_domain": "Maritime / Third Officer",
       "parser_success": true,
       "status": "FAIL",
-      "elapsed_seconds": 0.1941,
+      "elapsed_seconds": 0.1784,
       "error_message": null,
       "error_traceback": null,
       "personal": {
@@ -1305,7 +1712,7 @@
       "target_domain": "Software Engineering",
       "parser_success": true,
       "status": "PARTIAL",
-      "elapsed_seconds": 0.0523,
+      "elapsed_seconds": 0.0532,
       "error_message": null,
       "error_traceback": null,
       "personal": {
@@ -1448,7 +1855,7 @@
       "target_domain": "Software Engineering",
       "parser_success": true,
       "status": "PASS",
-      "elapsed_seconds": 0.0861,
+      "elapsed_seconds": 0.0789,
       "error_message": null,
       "error_traceback": null,
       "personal": {
@@ -1548,7 +1955,7 @@
       "target_domain": "Maritime / Marine Engineering",
       "parser_success": true,
       "status": "FAIL",
-      "elapsed_seconds": 0.1349,
+      "elapsed_seconds": 0.1275,
       "error_message": null,
       "error_traceback": null,
       "personal": {
@@ -1711,7 +2118,7 @@
       "target_domain": "Human Resources",
       "parser_success": true,
       "status": "PASS",
-      "elapsed_seconds": 0.0309,
+      "elapsed_seconds": 0.0274,
       "error_message": null,
       "error_traceback": null,
       "personal": {
@@ -1767,7 +2174,7 @@
       "target_domain": "Software Engineering",
       "parser_success": true,
       "status": "PASS",
-      "elapsed_seconds": 0.0557,
+      "elapsed_seconds": 0.0493,
       "error_message": null,
       "error_traceback": null,
       "personal": {

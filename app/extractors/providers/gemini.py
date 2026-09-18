@@ -19,6 +19,7 @@ from app.domain.semantic_contract import (
     PersonalSemanticOutput,
     SemanticInput,
     SemanticOutput,
+    build_deterministic_appointment_groups,
     filter_semantic_input_to_blocks,
     get_body_evidence_category,
     group_sections_by_target,
@@ -27,6 +28,9 @@ from app.domain.semantic_contract import (
     merge_body_outputs,
     merge_semantic_passes,
     partition_semantic_input_into_sections,
+    enforce_single_experience_entity,
+    isolate_unit_target_collections,
+    plan_section_aware_body_passes,
     sanitize_grounded_current_status,
     should_use_section_aware_body_extraction,
     summarize_body_evidence,
@@ -215,14 +219,6 @@ class GeminiSemanticExtractor:
         self._structured_table = structured_table
         self.last_usage_metadata: dict[str, Any] | None = None
 
-    def _resolve_representation(self, two_pass: bool) -> str:
-        """Return the representation label for usage metadata."""
-        if self._structured_table:
-            return "structured_table_two_pass" if two_pass else "structured_table_single_pass"
-        if self._compact:
-            return "candidate_b_compact"
-        return "full"
-
     def _resolve_two_pass(self) -> bool:
         """Resolve two-pass mode configuration."""
         if self._explicit_two_pass is not None:
@@ -241,6 +237,14 @@ class GeminiSemanticExtractor:
         except (ValidationError, OSError):
             pass
         return False
+
+    def _resolve_representation(self, two_pass: bool) -> str:
+        """Return the representation label for usage metadata."""
+        if self._structured_table:
+            return "structured_table_two_pass" if two_pass else "structured_table_single_pass"
+        if self._compact:
+            return "candidate_b_compact"
+        return "full"
 
     def _resolve_config(self) -> tuple[str, str, str, float, int]:
         """Resolve API key, model, base_url, timeout, and max_retries with strict precedence."""
@@ -628,6 +632,21 @@ class GeminiSemanticExtractor:
                 else:
                     prompt = build_full_extraction_prompt(input_data)
                 response_schema = pydantic_to_gemini_schema(SemanticOutput)
+                response_schema["required"] = [
+                    "document_archetype",
+                    "personal",
+                    "skills",
+                    "experience",
+                    "education",
+                    "projects",
+                    "certifications",
+                    "languages",
+                    "achievements",
+                ]
+                if "properties" in response_schema and "personal" in response_schema["properties"]:
+                    p_prop = response_schema["properties"]["personal"]
+                    if isinstance(p_prop, dict) and "properties" in p_prop:
+                        p_prop["required"] = ["name", "email", "phone", "location"]
 
                 raw_text, usage_dict, retry_count = self._execute_prompt_request(
                     prompt=prompt,
@@ -653,6 +672,57 @@ class GeminiSemanticExtractor:
                     or result.achievements
                 )
 
+                body_recovery_invoked = False
+                body_recovery_attempts = 0
+                if is_empty and ev_cat:
+                    logger.warning(
+                        "Gemini single-pass returned empty body despite substantial evidence (cat=%s). Invoking single bounded recovery...",
+                        ev_cat,
+                    )
+                    prompt_recovery = build_body_recovery_prompt(input_data)
+                    schema_body = pydantic_to_gemini_schema(BodySemanticOutput)
+                    raw_rec_text, rec_usage, rec_retries = self._execute_prompt_request(
+                        prompt=prompt_recovery,
+                        response_schema=schema_body,
+                        api_key=api_key,
+                        model=model,
+                        base_url=base_url,
+                        timeout=timeout,
+                        max_retries=max_retries,
+                        pass_name="recovery",
+                    )
+                    rec_parsed = parse_body_output(raw_rec_text)
+                    result.skills = rec_parsed.skills
+                    result.experience = rec_parsed.experience
+                    result.education = rec_parsed.education
+                    result.projects = rec_parsed.projects
+                    result.certifications = rec_parsed.certifications
+                    result.languages = rec_parsed.languages
+                    result.achievements = rec_parsed.achievements
+                    if rec_parsed.summary and not result.summary:
+                        result.summary = rec_parsed.summary
+                    if rec_parsed.block_classifications:
+                        result.block_classifications.extend(rec_parsed.block_classifications)
+
+                    is_empty = not bool(
+                        result.skills
+                        or result.experience
+                        or result.education
+                        or result.projects
+                        or result.certifications
+                        or result.languages
+                        or result.achievements
+                    )
+                    body_recovery_invoked = True
+                    body_recovery_attempts = 1
+                    retry_count += rec_retries
+                    p_tok = (usage_dict.get("prompt_tokens") or 0) + (rec_usage.get("prompt_tokens") or 0)
+                    o_tok = (usage_dict.get("output_tokens") or 0) + (rec_usage.get("output_tokens") or 0)
+                    tot_tok = (usage_dict.get("total_tokens") or 0) + (rec_usage.get("total_tokens") or 0)
+                    usage_dict["prompt_tokens"] = p_tok
+                    usage_dict["output_tokens"] = o_tok
+                    usage_dict["total_tokens"] = tot_tok
+
                 total_latency_ms = max(0.0, (self._time_fn() - start_time) * 1000.0)
                 self.last_usage_metadata = {
                     "provider": "gemini",
@@ -664,21 +734,22 @@ class GeminiSemanticExtractor:
                     "latency_ms": round(total_latency_ms, 2),
                     "retry_count": retry_count,
                     "two_pass": False,
-                    "body_recovery_invoked": False,
-                    "body_recovery_reason": None,
-                    "body_recovery_attempts": 0,
+                    "body_recovery_invoked": body_recovery_invoked,
+                    "body_recovery_reason": "suspicious_empty_body_recovery" if body_recovery_invoked else None,
+                    "body_recovery_attempts": body_recovery_attempts,
                     "final_body_empty": is_empty,
                     "body_completeness_failure": False,
                     "evidence_category": ev_cat,
                     "status": "success",
                 }
                 logger.info(
-                    "Gemini request completed (single-pass) model=%s latency_ms=%.2f retries=%d prompt_tokens=%s output_tokens=%s",
+                    "Gemini request completed (single-pass) model=%s latency_ms=%.2f retries=%d prompt_tokens=%s output_tokens=%s recovery=%s",
                     model,
                     total_latency_ms,
                     retry_count,
                     usage_dict.get("prompt_tokens"),
                     usage_dict.get("output_tokens"),
+                    body_recovery_invoked,
                 )
                 return result
 
@@ -713,6 +784,7 @@ class GeminiSemanticExtractor:
             else:
                 prompt_personal = build_personal_extraction_prompt(input_data)
             schema_personal = pydantic_to_gemini_schema(PersonalSemanticOutput)
+
             schema_body = pydantic_to_gemini_schema(BodySemanticOutput)
 
             def _run_personal() -> tuple[PersonalSemanticOutput, dict[str, Any], int]:
@@ -786,29 +858,23 @@ class GeminiSemanticExtractor:
                 use_section_aware = should_use_section_aware_body_extraction(input_data)
 
                 if use_section_aware:
-                    sections = partition_semantic_input_into_sections(input_data)
-                    grouped_supported = group_sections_by_target(sections)
-                    skipped = [s for s in sections if s.canonical_target == "unsupported"]
-
+                    units = plan_section_aware_body_passes(input_data)
                     arch_name = (
                         input_data.archetype.value
                         if hasattr(input_data.archetype, "value")
                         else str(input_data.archetype)
                     )
                     logger.info(
-                        "Gemini body pass section-aware mode doc_id=%s archetype=%s "
-                        "total_sections=%d grouped_supported=%d skipped_unsupported=%d",
+                        "Gemini body pass section-aware mode doc_id=%s archetype=%s units=%d",
                         input_data.document_id,
                         arch_name,
-                        len(sections),
-                        len(grouped_supported),
-                        len(skipped),
+                        len(units),
                     )
 
-                    if not grouped_supported:
+                    if not units:
                         # All sections are unsupported; fall through to monolithic path
                         logger.warning(
-                            "Gemini body pass section-aware mode found no supported sections; "
+                            "Gemini body pass section-aware mode found no units; "
                             "falling through to monolithic pass doc_id=%s",
                             input_data.document_id,
                         )
@@ -821,20 +887,35 @@ class GeminiSemanticExtractor:
                         total_tot_t = 0
                         total_retries = 0
 
-                        for sec in grouped_supported:
-                            sec_input = filter_semantic_input_to_blocks(input_data, sec.block_ids)
-                            logger.info(
-                                "Gemini body pass section extraction doc_id=%s section=%r "
-                                "target=%s blocks=%d",
-                                input_data.document_id,
-                                sec.heading_text,
-                                sec.canonical_target,
-                                len(sec_input.blocks),
-                            )
+                        for unit in units:
+                            if unit.is_appointment:
+                                logger.info(
+                                    "Gemini body pass appointment extraction doc_id=%s section=%r "
+                                    "appt=%d/%d title_id=%s blocks=%d",
+                                    input_data.document_id,
+                                    unit.section_heading,
+                                    unit.appt_index,
+                                    unit.total_appts,
+                                    unit.title_block_id,
+                                    len(unit.section_input.blocks),
+                                )
+                            else:
+                                logger.info(
+                                    "Gemini body pass section extraction doc_id=%s section=%r "
+                                    "target=%s blocks=%d",
+                                    input_data.document_id,
+                                    unit.section_heading,
+                                    unit.canonical_target,
+                                    len(unit.section_input.blocks),
+                                )
                             try:
                                 sec_res, sec_usage, sec_retries = _run_body_for_section_input(
-                                    sec_input, pass_name=f"body_sec_{sec.canonical_target}"
+                                    unit.section_input, pass_name=unit.pass_name
                                 )
+                                sec_res = isolate_unit_target_collections(sec_res, unit.canonical_target)
+                                if unit.is_appointment:
+                                    sec_res = enforce_single_experience_entity(sec_res, unit.title_block_id)
+
                                 section_outputs.append(sec_res)
                                 total_p_t += (sec_usage.get("prompt_tokens") or 0)
                                 total_o_t += (sec_usage.get("output_tokens") or 0)
@@ -844,11 +925,12 @@ class GeminiSemanticExtractor:
                                 if isinstance(sec_exc, SemanticConfigurationError):
                                     raise
                                 logger.warning(
-                                    "Gemini section extraction failed doc_id=%s section=%r "
+                                    "Gemini %s extraction failed doc_id=%s section=%r "
                                     "target=%s error_type=%s: %s",
+                                    "appointment" if unit.is_appointment else "section",
                                     input_data.document_id,
-                                    sec.heading_text,
-                                    sec.canonical_target,
+                                    unit.section_heading,
+                                    unit.canonical_target,
                                     type(sec_exc).__name__,
                                     sec_exc,
                                 )
@@ -865,9 +947,9 @@ class GeminiSemanticExtractor:
                                 input_data.document_id,
                                 model,
                             )
-                            supported_block_ids: list[str] = [
-                                bid for sec in grouped_supported for bid in sec.block_ids
-                            ]
+                            supported_block_ids: list[str] = list(
+                                dict.fromkeys(b.block_id for u in units for b in u.section_input.blocks)
+                            )
                             recovery_input = filter_semantic_input_to_blocks(
                                 input_data, supported_block_ids, include_headers=False
                             )
@@ -952,7 +1034,8 @@ class GeminiSemanticExtractor:
                         return merged_body, usage_final, total_retries
 
                 # ── Normal body pass (STANDARD_CV, MARITIME, FORM, UNKNOWN, or fallthrough) ──────────────
-                # Exclude unsupported sections (publications, teaching, references, etc.) if any exist
+                # Exclude unsupported sections (references, publications in standard resumes) if any exist.
+                # Unknown sections have canonical_target="unknown" and are preserved.
                 sections = partition_semantic_input_into_sections(input_data)
                 has_unsupported = any(s.canonical_target == "unsupported" for s in sections)
                 supported_blocks: list[str] = [

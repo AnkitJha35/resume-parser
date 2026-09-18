@@ -21,7 +21,7 @@ from app.pipeline.stages.text_extraction import PDFExtractor
 from app.pipeline.stages.layout import interpret_layout
 from app.pipeline.stages.reconstruction import reconstruct_document
 from app.pipeline.semantic_pipeline import parse_document_semantically
-from tests.benchmark.expectations import evaluate_status
+from tests.benchmark.expectations import evaluate_resume_comprehensive, evaluate_status
 from tests.benchmark.generalization import (
     GENERALIZATION_FIXTURES_DIR,
     BenchmarkSuiteId,
@@ -78,6 +78,13 @@ class SemanticParseResult:
     languages_count: int = 0
     achievements_count: int = 0
 
+    # Hard Correctness & Completeness Evaluation
+    hard_correctness_passed: bool = False
+    hard_correctness_violations: list[str] = field(default_factory=list)
+    entity_completeness_pct: float = 100.0
+    field_completeness_pct: float = 100.0
+    skills_metrics: dict[str, Any] = field(default_factory=dict)
+
     # Diagnostics & Notes
     diagnostics: list[str] = field(default_factory=list)
     notes: str = ""
@@ -104,6 +111,11 @@ class SemanticBenchmarkSummary:
     grounded_semantic_outputs: int = 0
     outputs_rejected_by_validation: int = 0
     validation_pass_rate_pct: float = 0.0
+    hard_correctness_pass_rate_pct: float = 0.0
+    entity_completeness_rate_pct: float = 0.0
+    field_completeness_rate_pct: float = 0.0
+    avg_skills_recall_pct: float | None = None
+    avg_requests_per_resume: float = 1.0
     total_elapsed_seconds: float = 0.0
     total_tokens: int | None = None
     archetype_breakdown: dict[str, dict[str, int]] = field(default_factory=dict)
@@ -276,7 +288,9 @@ class SemanticBenchmarkRunner:
             # Capture usage if provider tracked it
             usage = getattr(self.extractor, "last_usage_metadata", None)
 
-            status, diagnostics = evaluate_status(resume, filename)
+            eval_result = evaluate_resume_comprehensive(resume, filename, validation_violations=[])
+            status = eval_result.status
+            diagnostics = eval_result.hard_correctness_violations + eval_result.discrepancies + eval_result.notes
 
             personal_dict = {
                 "name": resume.personal.name,
@@ -340,6 +354,11 @@ class SemanticBenchmarkRunner:
                 semantic_success=True,
                 status=status,
                 passed_validation=True,
+                hard_correctness_passed=eval_result.hard_correctness_passed,
+                hard_correctness_violations=eval_result.hard_correctness_violations,
+                entity_completeness_pct=eval_result.entity_completeness_pct,
+                field_completeness_pct=eval_result.field_completeness_pct,
+                skills_metrics=eval_result.skills_metrics,
                 elapsed_seconds=round(elapsed, 4),
                 usage=usage,
                 provider=self.provider_name,
@@ -395,6 +414,11 @@ class SemanticBenchmarkRunner:
                 status="VALIDATION_FAILED",
                 failure_type="VALIDATION_ERROR",
                 passed_validation=False,
+                hard_correctness_passed=False,
+                hard_correctness_violations=[f"VALIDATION_VIOLATION: {v}" for v in violations],
+                entity_completeness_pct=0.0,
+                field_completeness_pct=0.0,
+                skills_metrics={"extracted_count": 0, "expected_count": None, "recall_pct": 0.0, "grounded_status": False},
                 elapsed_seconds=round(elapsed, 4),
                 usage=usage,
                 provider=self.provider_name,
@@ -435,6 +459,11 @@ class SemanticBenchmarkRunner:
                 status="COMPLETENESS_FAILED",
                 failure_type="COMPLETENESS_ERROR",
                 passed_validation=False,
+                hard_correctness_passed=False,
+                hard_correctness_violations=[f"COMPLETENESS_ERROR: {exc}"],
+                entity_completeness_pct=0.0,
+                field_completeness_pct=0.0,
+                skills_metrics={"extracted_count": 0, "expected_count": None, "recall_pct": 0.0, "grounded_status": False},
                 elapsed_seconds=round(elapsed, 4),
                 usage=usage,
                 provider=self.provider_name,
@@ -474,6 +503,11 @@ class SemanticBenchmarkRunner:
                 status="EXTRACTION_FAILED",
                 failure_type="EXTRACTION_ERROR",
                 passed_validation=False,
+                hard_correctness_passed=False,
+                hard_correctness_violations=[f"EXTRACTION_ERROR: {exc}"],
+                entity_completeness_pct=0.0,
+                field_completeness_pct=0.0,
+                skills_metrics={"extracted_count": 0, "expected_count": None, "recall_pct": 0.0, "grounded_status": False},
                 elapsed_seconds=round(elapsed, 4),
                 usage=usage,
                 provider=self.provider_name,
@@ -502,6 +536,11 @@ class SemanticBenchmarkRunner:
                 status="PARSER_EXCEPTION",
                 failure_type="PARSER_EXCEPTION",
                 passed_validation=False,
+                hard_correctness_passed=False,
+                hard_correctness_violations=[f"PARSER_EXCEPTION: {exc}"],
+                entity_completeness_pct=0.0,
+                field_completeness_pct=0.0,
+                skills_metrics={"extracted_count": 0, "expected_count": None, "recall_pct": 0.0, "grounded_status": False},
                 elapsed_seconds=round(elapsed, 4),
                 provider=self.provider_name,
                 model=self.model_name,
@@ -534,6 +573,17 @@ class SemanticBenchmarkRunner:
         grounded_count = sum(1 for r in results if r.passed_validation or r.failure_type == "VALIDATION_ERROR")
 
         pass_rate = (successful / len(results) * 100) if results else 0.0
+        hard_passed_count = sum(1 for r in results if getattr(r, "hard_correctness_passed", False))
+        hard_pass_rate = round((hard_passed_count / len(results)) * 100.0, 2) if results else 0.0
+        entity_comp_rate = round(sum(getattr(r, "entity_completeness_pct", 0.0) for r in results) / len(results), 1) if results else 0.0
+        field_comp_rate = round(sum(getattr(r, "field_completeness_pct", 0.0) for r in results) / len(results), 1) if results else 0.0
+        skills_recalls = [
+            r.skills_metrics["recall_pct"]
+            for r in results
+            if getattr(r, "skills_metrics", None) and "recall_pct" in r.skills_metrics
+        ]
+        avg_skills_recall = round(sum(skills_recalls) / len(skills_recalls), 1) if skills_recalls else None
+        avg_reqs = round(sum(getattr(r, "pass_count", 1) for r in results) / len(results), 2) if results else 1.0
 
         # Sum total tokens if available
         total_tokens: int | None = None
@@ -583,6 +633,11 @@ class SemanticBenchmarkRunner:
             grounded_semantic_outputs=grounded_count,
             outputs_rejected_by_validation=val_fails,
             validation_pass_rate_pct=round(pass_rate, 2),
+            hard_correctness_pass_rate_pct=hard_pass_rate,
+            entity_completeness_rate_pct=entity_comp_rate,
+            field_completeness_rate_pct=field_comp_rate,
+            avg_skills_recall_pct=avg_skills_recall,
+            avg_requests_per_resume=avg_reqs,
             total_elapsed_seconds=round(total_elapsed, 4),
             total_tokens=total_tokens,
             archetype_breakdown=breakdown,

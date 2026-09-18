@@ -270,3 +270,132 @@ def test_quality_gate_fails_when_completeness_failure_present():
     assert summary.fail_count == 1
     assert summary.passed_gate is False
     assert any("Completeness failures exceed threshold" in r for r in summary.failure_reasons)
+
+
+def test_quality_gate_distinguishes_correctness_from_completeness():
+    """Verify quality gate computes hard correctness pass rate separately from completeness."""
+    # 8 PASS + 4 PARTIAL (e.g. fewer skills than golden reference)
+    results = []
+    for i in range(8):
+        results.append({
+            "filename": f"pass_{i}.pdf",
+            "archetype": "standard_cv",
+            "status": BenchmarkOutcome.PASS.value,
+            "semantic_success": True,
+            "passed_validation": True,
+            "hard_correctness_passed": True,
+            "validation_violations": [],
+            "entity_completeness_pct": 100.0,
+            "field_completeness_pct": 100.0,
+            "skills_metrics": {"extracted_count": 20, "expected_count": 20, "recall_pct": 100.0},
+            "elapsed_seconds": 1.5,
+        })
+    for i in range(4):
+        results.append({
+            "filename": f"partial_{i}.pdf",
+            "archetype": "standard_cv",
+            "status": BenchmarkOutcome.PARTIAL.value,
+            "semantic_success": True,
+            "passed_validation": True,
+            "hard_correctness_passed": True,
+            "validation_violations": [],
+            "entity_completeness_pct": 90.0,
+            "field_completeness_pct": 95.0,
+            "skills_metrics": {"extracted_count": 15, "expected_count": 20, "recall_pct": 75.0},
+            "elapsed_seconds": 1.8,
+        })
+
+    summary = evaluate_quality_gate(results)
+
+    assert summary.total_resumes == 12
+    assert summary.pass_count == 8
+    assert summary.partial_count == 4
+    assert summary.fail_count == 0
+    # Hard correctness pass rate is 100% because all 12 have 0 validation violations
+    assert summary.hard_correctness_pass_rate_pct == 100.0
+    assert summary.entity_completeness_rate_pct == pytest.approx(96.7, 0.1)
+    assert summary.field_completeness_rate_pct == pytest.approx(98.3, 0.1)
+    # Average skills recall: (8 * 100 + 4 * 75) / 12 = 91.67%
+    assert summary.skills_recall_pct == pytest.approx(91.7, 0.1)
+    assert summary.validation_failure_rate_pct == 0.0
+    assert summary.extraction_failure_rate_pct == 0.0
+
+
+def test_quality_gate_handles_validation_failed_status():
+    """Verify VALIDATION_FAILED outcome is properly counted as hard correctness failure."""
+    results = [
+        {
+            "filename": "good.pdf",
+            "archetype": "standard_cv",
+            "status": BenchmarkOutcome.PASS.value,
+            "semantic_success": True,
+            "passed_validation": True,
+            "hard_correctness_passed": True,
+            "validation_violations": [],
+            "elapsed_seconds": 1.0,
+        },
+        {
+            "filename": "bad.pdf",
+            "archetype": "maritime_cv",
+            "status": BenchmarkOutcome.VALIDATION_FAILED.value,
+            "semantic_success": False,
+            "passed_validation": False,
+            "hard_correctness_passed": False,
+            "validation_violations": ["UNKNOWN_BLOCK_ID: 'b_999' not in document"],
+            "elapsed_seconds": 1.0,
+        },
+    ]
+
+    summary = evaluate_quality_gate(results)
+    assert summary.total_resumes == 2
+    assert summary.pass_count == 1
+    assert summary.fail_count == 1
+    assert summary.validation_failure_count == 1
+    assert summary.hard_correctness_pass_rate_pct == 50.0
+    assert summary.validation_failure_rate_pct == 50.0
+
+
+def test_evaluate_resume_comprehensive_skills_recall_and_anomalies():
+    """Verify evaluate_resume_comprehensive separates hard anomalies from skill count differences."""
+    from app.domain.resume import PersonalInfo, Resume
+    from tests.benchmark.expectations import evaluate_resume_comprehensive
+
+    # 1. Resume with skill count mismatch on swe_experienced_resume.pdf (33 vs 39)
+    resume = Resume(
+        parserVersion="1.0.0",
+        personal=PersonalInfo(
+            name="ANKIT JHA",
+            email="ankitjha6035@gmail.com",
+            phone="9570716035",
+            location="Noida, U.P, India",
+        ),
+        skills=[f"skill_{i}" for i in range(33)],
+        experience=[{"company": "C1", "designation": "D1"}, {"company": "C2", "designation": "D2"}],
+        education=[{"institution": "I1", "degree": "B1"}, {"institution": "I2", "degree": "B2"}],
+        projects=[{"name": "P1"}, {"name": "P2"}, {"name": "P3"}],
+    )
+
+    result = evaluate_resume_comprehensive(resume, "swe_experienced_resume.pdf")
+    # Must NOT fail hard correctness!
+    assert result.hard_correctness_passed is True
+    assert result.hard_correctness_violations == []
+    # Marked PARTIAL due to skills count difference (33 vs 39)
+    assert result.status == "PARTIAL"
+    assert result.skills_metrics["extracted_count"] == 33
+    assert result.skills_metrics["expected_count"] == 39
+    assert result.skills_metrics["recall_pct"] == pytest.approx(84.6, 0.1)
+
+    # 2. Resume with severe anomaly (document title as name)
+    bad_name_resume = Resume(
+        parserVersion="1.0.0",
+        personal=PersonalInfo(
+            name="APPLICATION FORM",
+            email="ankitjha6035@gmail.com",
+        ),
+        skills=["Python"],
+    )
+    bad_result = evaluate_resume_comprehensive(bad_name_resume, "swe_experienced_resume.pdf")
+    assert bad_result.hard_correctness_passed is False
+    assert bad_result.status == "VALIDATION_FAILED"
+    assert any("NAME_IS_FORM_OR_DOC_TITLE" in v for v in bad_result.hard_correctness_violations)
+

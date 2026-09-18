@@ -756,19 +756,19 @@ def test_akibul_two_pass_e2e_mocked_gemini_pipeline():
                 "experience": [
                     {
                         "company": {"value": "Unix Line PTE LTD", "raw_value": "Unix Line PTE LTD", "source_block_ids": ["b_p4_268", "b_p4_270"]},
-                        "designation": {"value": "Deck Cadet", "raw_value": "DeckCadet", "source_block_ids": ["b_p4_297"]},
-                        "startDate": {"value": "2023-02-18", "raw_value": "18-02-2023", "source_block_ids": ["b_p4_298", "b_p4_303"]},
-                        "endDate": {"value": "2023-08-14", "raw_value": "14-08-2023", "source_block_ids": ["b_p4_299", "b_p4_304"]},
+                        "designation": {"value": "Deck Cadet", "raw_value": "DeckCadet", "source_block_ids": ["b_p4_304", "b_p4_310"]},
+                        "startDate": {"value": "2023-02-18", "raw_value": "18-02-2023", "source_block_ids": ["b_p4_305", "b_p4_311"]},
+                        "endDate": {"value": "2023-08-14", "raw_value": "14-08-2023", "source_block_ids": ["b_p4_306", "b_p4_312"]},
                         "description": {"value": "MT Furano Galaxy", "raw_value": "MT Furano Galaxy", "source_block_ids": ["b_p4_269", "b_p4_271"]},
-                        "source_block_ids": ["b_p4_268", "b_p4_269", "b_p4_270", "b_p4_271", "b_p4_297", "b_p4_298", "b_p4_299", "b_p4_303", "b_p4_304"],
+                        "source_block_ids": ["b_p4_268", "b_p4_269", "b_p4_270", "b_p4_271", "b_p4_304", "b_p4_305", "b_p4_306", "b_p4_310", "b_p4_311", "b_p4_312"],
                     },
                     {
                         "company": {"value": "Unix Line PTE LTD", "raw_value": "Unix Line PTE LTD", "source_block_ids": ["b_p4_273", "b_p4_275"]},
-                        "designation": {"value": "Deck Cadet", "raw_value": "DeckCadet", "source_block_ids": ["b_p4_306"]},
-                        "startDate": {"value": "2024-03-07", "raw_value": "07-03-2024", "source_block_ids": ["b_p4_307", "b_p4_312"]},
-                        "endDate": {"value": "2024-10-09", "raw_value": "09-10-2024", "source_block_ids": ["b_p4_308", "b_p4_313"]},
+                        "designation": {"value": "Deck Cadet", "raw_value": "DeckCadet", "source_block_ids": ["b_p4_315", "b_p4_321"]},
+                        "startDate": {"value": "2024-03-07", "raw_value": "07-03-2024", "source_block_ids": ["b_p4_316", "b_p4_322"]},
+                        "endDate": {"value": "2024-10-09", "raw_value": "09-10-2024", "source_block_ids": ["b_p4_317", "b_p4_323"]},
                         "description": {"value": "MT ELM Galaxy", "raw_value": "MT ELM Galaxy", "source_block_ids": ["b_p4_274", "b_p4_276"]},
-                        "source_block_ids": ["b_p4_273", "b_p4_274", "b_p4_275", "b_p4_276", "b_p4_306", "b_p4_307", "b_p4_308", "b_p4_312", "b_p4_313"],
+                        "source_block_ids": ["b_p4_273", "b_p4_274", "b_p4_275", "b_p4_276", "b_p4_315", "b_p4_316", "b_p4_317", "b_p4_321", "b_p4_322", "b_p4_323"],
                     },
                 ],
                 "certifications": [

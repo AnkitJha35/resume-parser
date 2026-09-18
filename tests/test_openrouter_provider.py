@@ -91,7 +91,124 @@ def _make_mock_client(handler) -> httpx.Client:
 
 
 # =====================================================================
-# 1. Success Tests: Single-Pass and Two-Pass
+# 1. Output-Token Budget (max_tokens) Tests
+# =====================================================================
+
+def test_openrouter_default_max_tokens_is_used():
+    """Default output token budget (16384) is passed when unset."""
+    captured_payloads = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        captured_payloads.append(body)
+        resp_data = {
+            "choices": [{"message": {"content": json.dumps({"document_archetype": "standard_cv"})}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+        }
+        return httpx.Response(200, json=resp_data)
+
+    client = _make_mock_client(handler)
+    extractor = OpenRouterSemanticExtractor(
+        api_key="sk-or-testkey",
+        client=client,
+        two_pass=False,
+    )
+
+    extractor.extract(_sample_input())
+    assert len(captured_payloads) == 1
+    assert captured_payloads[0]["max_tokens"] == 16384
+
+
+def test_openrouter_configured_max_tokens_is_sent():
+    """Explicitly configured max_tokens is sent in the request payload."""
+    captured_payloads = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        captured_payloads.append(body)
+        resp_data = {
+            "choices": [{"message": {"content": json.dumps({"document_archetype": "standard_cv"})}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+        }
+        return httpx.Response(200, json=resp_data)
+
+    client = _make_mock_client(handler)
+    extractor = OpenRouterSemanticExtractor(
+        api_key="sk-or-testkey",
+        max_tokens=4096,
+        client=client,
+        two_pass=False,
+    )
+
+    extractor.extract(_sample_input())
+    assert len(captured_payloads) == 1
+    assert captured_payloads[0]["max_tokens"] == 4096
+
+
+def test_openrouter_env_max_tokens_is_used(monkeypatch):
+    """OPENROUTER_MAX_TOKENS environment variable is honored when unset explicitly."""
+    monkeypatch.setenv("OPENROUTER_MAX_TOKENS", "8192")
+    captured_payloads = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        captured_payloads.append(body)
+        resp_data = {
+            "choices": [{"message": {"content": json.dumps({"document_archetype": "standard_cv"})}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+        }
+        return httpx.Response(200, json=resp_data)
+
+    client = _make_mock_client(handler)
+    extractor = OpenRouterSemanticExtractor(
+        api_key="sk-or-testkey",
+        client=client,
+        two_pass=False,
+    )
+
+    extractor.extract(_sample_input())
+    assert len(captured_payloads) == 1
+    assert captured_payloads[0]["max_tokens"] == 8192
+
+
+# =====================================================================
+# 2. HTTP 402 Insufficient Credit / Non-Transient Handling Tests
+# =====================================================================
+
+def test_openrouter_402_insufficient_credits_not_retried():
+    """HTTP 402 is classified as non-transient SemanticConfigurationError and NOT retried."""
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        resp_body = {
+            "error": {
+                "message": "This request requires up to 65536 tokens, but your account only has enough credits for 4873 tokens.",
+                "code": 402,
+            }
+        }
+        return httpx.Response(402, json=resp_body)
+
+    client = _make_mock_client(handler)
+    extractor = OpenRouterSemanticExtractor(
+        api_key="sk-or-testkey",
+        client=client,
+        two_pass=False,
+        max_retries=3,
+    )
+
+    with pytest.raises(SemanticConfigurationError) as exc_info:
+        extractor.extract(_sample_input())
+
+    assert attempts == 1  # Strictly 1 attempt, NO retries
+    err_str = str(exc_info.value)
+    assert "HTTP 402" in err_str
+    assert "insufficient credits" in err_str or "payment required" in err_str
+
+
+# =====================================================================
+# 3. Success Tests: Single-Pass and Two-Pass
 # =====================================================================
 
 def test_openrouter_single_pass_success():
@@ -104,6 +221,7 @@ def test_openrouter_single_pass_success():
         assert body["model"] == "google/gemini-3.5-flash-lite"
         assert body["messages"][0]["role"] == "user"
         assert body["temperature"] == 0.0
+        assert body["max_tokens"] == 16384
         assert body["response_format"]["type"] == "json_schema"
         assert "schema" in body["response_format"]["json_schema"]
 
@@ -230,7 +348,7 @@ def test_openrouter_two_pass_success():
 
 
 # =====================================================================
-# 2. Error Handling & Transient Retry Tests
+# 4. Error Handling & Transient Retry Tests
 # =====================================================================
 
 def test_openrouter_malformed_json_in_envelope():
@@ -266,7 +384,6 @@ def test_openrouter_malformed_json_in_content():
 def test_openrouter_schema_failure():
     """Content violating Pydantic schema raises SemanticExtractionError."""
     def handler(request: httpx.Request) -> httpx.Response:
-        # Array instead of object
         resp_data = {
             "choices": [{"message": {"content": "[1, 2, 3]"}}],
             "usage": {"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20},
@@ -333,7 +450,7 @@ def test_openrouter_429_exhausted_raises_ratelimit_error():
 
     with pytest.raises(SemanticRateLimitError) as exc_info:
         extractor.extract(_sample_input())
-    assert attempts == 2  # initial + 1 retry
+    assert attempts == 2
     assert exc_info.value.status_code == 429
     assert "Rate limit exceeded" in str(exc_info.value) or "Quota exceeded" in str(exc_info.value)
 
@@ -360,7 +477,7 @@ def test_openrouter_5xx_server_error_retries_and_raises():
 
     with pytest.raises(SemanticServerError) as exc_info:
         extractor.extract(_sample_input())
-    assert attempts == 3  # 1 initial + 2 retries
+    assert attempts == 3
     assert exc_info.value.status_code == 503
     assert len(sleeps) == 2
 
@@ -419,7 +536,6 @@ def test_openrouter_missing_api_key_raises_configuration_error(monkeypatch):
     """Missing OPENROUTER_API_KEY raises SemanticConfigurationError."""
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     extractor = OpenRouterSemanticExtractor(two_pass=False)
-    # Patch settings to have None key
     with pytest.raises(SemanticConfigurationError) as exc_info:
         extractor.extract(_sample_input())
     assert "OPENROUTER_API_KEY is not configured" in str(exc_info.value)
@@ -435,7 +551,7 @@ def test_openrouter_secret_redaction():
 
 
 # =====================================================================
-# 3. Factory and Configuration Tests
+# 5. Factory and Configuration Tests
 # =====================================================================
 
 def test_factory_returns_openrouter_when_selected():
@@ -448,12 +564,14 @@ def test_factory_returns_openrouter_when_selected():
         minio_bucket_name="resumes",
         openrouter_api_key="sk-or-factory-test",
         openrouter_model="anthropic/claude-3-haiku",
+        openrouter_max_tokens=4096,
     )
     extractor = get_semantic_extractor(settings, provider="openrouter")
     assert isinstance(extractor, OpenRouterSemanticExtractor)
-    api_key, model, base_url, timeout, max_retries = extractor._resolve_config()
+    api_key, model, base_url, timeout, max_retries, max_tokens = extractor._resolve_config()
     assert api_key == "sk-or-factory-test"
     assert model == "anthropic/claude-3-haiku"
+    assert max_tokens == 4096
 
 
 def test_factory_returns_openrouter_from_settings():

@@ -11,13 +11,14 @@ def reconstruct_document(document: Document) -> Document:
     for page in document.pages:
         regions = []
         for region in page.regions:
+            col_starts = _find_column_starts(region.lines)
             reconstructed_lines: list[Line] = []
             for line in sorted(region.lines, key=lambda item: (item.bbox.y0, item.bbox.x0)):
                 merge_index = next(
                     (
                         index
                         for index in range(len(reconstructed_lines) - 1, max(-1, len(reconstructed_lines) - 9), -1)
-                        if _can_merge(reconstructed_lines[index], line)
+                        if _can_merge(reconstructed_lines[index], line, col_starts)
                     ),
                     None,
                 )
@@ -30,7 +31,45 @@ def reconstruct_document(document: Document) -> Document:
     return replace(document, pages=pages)
 
 
-def _can_merge(previous: Line, current: Line) -> bool:
+def _find_column_starts(lines: list[Line], tolerance: float = 4.0) -> list[float]:
+    """Find horizontal x0 positions that are shared by multiple lines on distinct baselines (y0)."""
+    if len(lines) < 2:
+        return []
+    baselines_by_x: list[tuple[float, float]] = [(l.bbox.x0, l.bbox.y0) for l in lines]
+    sorted_x = sorted(set(x0 for x0, _ in baselines_by_x))
+    clusters: list[list[float]] = []
+    for x in sorted_x:
+        if not clusters or x - clusters[-1][-1] > tolerance:
+            clusters.append([x])
+        else:
+            clusters[-1].append(x)
+
+    col_starts: list[float] = []
+    for cl in clusters:
+        min_c, max_c = cl[0], cl[-1]
+        matching_y = set()
+        for x0, y0 in baselines_by_x:
+            if min_c - 1.0 <= x0 <= max_c + 1.0:
+                matching_y.add(round(y0 / 4.0))
+        if len(matching_y) >= 2:
+            avg_x = sum(cl) / len(cl)
+            col_starts.append(avg_x)
+
+    return sorted(col_starts)
+
+
+def _is_crossing_column_boundary(prev: Line, curr: Line, col_starts: list[float], tolerance: float = 4.0) -> bool:
+    """Check if curr starts at a recognized column boundary distinct from prev."""
+    if not col_starts:
+        return False
+    for cs in col_starts:
+        if abs(curr.bbox.x0 - cs) <= tolerance:
+            if prev.bbox.x0 < cs - tolerance and curr.bbox.x0 >= prev.bbox.x1 - 1.0:
+                return True
+    return False
+
+
+def _can_merge(previous: Line, current: Line, col_starts: list[float] | None = None) -> bool:
     if previous.page_number != current.page_number:
         return False
 
@@ -40,11 +79,17 @@ def _can_merge(previous: Line, current: Line) -> bool:
     current_width = max(current.bbox.x1 - current.bbox.x0, 0.0)
     vertical_tolerance = max(previous_height, current_height, 1.0) * 0.25
     same_baseline = abs(previous.bbox.y0 - current.bbox.y0) <= vertical_tolerance
+
+    # Do not merge across distinct established column boundaries
+    if col_starts and _is_crossing_column_boundary(previous, current, col_starts):
+        return False
+
     wrapped_continuation = (
         abs(current.bbox.y0 - previous.bbox.y1) <= vertical_tolerance
         and abs(current.bbox.x1 - previous.bbox.x1) <= _horizontal_tolerance_for(previous, current)
         and current.bbox.x0 > previous.bbox.x0
         and current_width <= previous_width * 0.8
+        and not (col_starts and any(abs(current.bbox.x0 - cs) <= 4.0 for cs in col_starts if cs > previous.bbox.x0 + 8.0))
     )
     if not same_baseline and not wrapped_continuation:
         return False

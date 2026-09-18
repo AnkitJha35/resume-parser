@@ -145,6 +145,12 @@ async def test_e2e_complete_successful_production_path():
                 "name": {"value": "John Doe", "source_block_ids": ["b_p1_0"]},
                 "email": {"value": "john.doe@example.com", "source_block_ids": ["b_p1_1"]},
             },
+            "experience": [
+                {
+                    "title": {"value": "Senior Software Engineer", "source_block_ids": ["b_p1_5"]},
+                    "company": {"value": "Acme Corporation", "source_block_ids": ["b_p1_4"]},
+                }
+            ],
         }
         envelope = {
             "candidates": [
@@ -374,6 +380,12 @@ async def test_e2e_semantic_validation_failure_publishes_semantic_validation_fai
                 # Hallucinated block id
                 "name": {"value": "John Doe", "source_block_ids": ["b_nonexistent_999"]},
             },
+            "experience": [
+                {
+                    "title": {"value": "Senior Software Engineer", "source_block_ids": ["b_p1_5"]},
+                    "company": {"value": "Acme Corporation", "source_block_ids": ["b_p1_4"]},
+                }
+            ],
         }
         envelope = {
             "candidates": [

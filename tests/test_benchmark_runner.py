@@ -8,8 +8,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from app.domain.resume import PersonalInfo, Resume
-from tests.benchmark.expectations import detect_structural_anomalies, evaluate_status
+from app.domain.resume import EducationItem, PersonalInfo, Resume
+from tests.benchmark.expectations import GOLDEN_EXPECTATIONS, detect_structural_anomalies, evaluate_status
 from tests.benchmark.metadata import BENCHMARK_FIXTURES
 from tests.benchmark.report import format_terminal_table, generate_markdown_report, save_benchmark_report
 from tests.benchmark.runner import BenchmarkRunner, ResumeParseResult
@@ -79,7 +79,7 @@ def test_structural_anomaly_detection_rules():
     assert any("SECTION_HEADER_IN_LOCATION" in a for a in anomalies)
 
     status, diag = evaluate_status(bad_resume, "dummy.pdf")
-    assert status == "FAIL"
+    assert status in ("VALIDATION_FAILED", "FAIL")
     assert len(diag) >= 2
 
 
@@ -107,3 +107,94 @@ def test_report_generation_and_saving(tmp_path: Path):
     data = json.loads(json_p.read_text(encoding="utf-8"))
     assert data["total_resumes"] == 1
     assert data["results"][0]["filename"] == "AditCV_SOL.pdf"
+
+
+def test_fresher_hr_resume_semantic_expectations():
+    """Verify fresher_hr_resume.pdf golden expectation reflects 14 explicit source-grounded skills."""
+    golden = GOLDEN_EXPECTATIONS["fresher_hr_resume.pdf"]
+    assert golden.exact_skills_count is None
+    assert golden.expected_skills is not None
+    assert len(golden.expected_skills) == 14
+
+    expected_14 = [
+        "Recruitment & Selection Basics",
+        "Employee Engagement Concepts",
+        "Onboarding Process Understanding",
+        "HR Policy Awareness",
+        "Training & Development Support",
+        "Basic Labor Law Knowledge",
+        "MS Excel (VLOOKUP, Pivot Tables, Filters)",
+        "Google Sheets & Docs",
+        "HRMS (Basic understanding)",
+        "Email & Calendar Management",
+        "Strong Verbal & Written Communication",
+        "Team Collaboration",
+        "Time Management",
+        "Adaptability & Willingness to Learn",
+    ]
+    assert golden.expected_skills == set(expected_14)
+
+    # Construct clean semantic Resume matching ground truth
+    resume = Resume(
+        parserVersion="1.0.0",
+        personal=PersonalInfo(
+            name="Aditi Anand",
+            email="aditianand136@gmail.com",
+            phone="9241242699",
+        ),
+        skills=list(expected_14),
+        experience=[],
+        education=[
+            EducationItem(
+                degree="Master of Business Administration",
+                institution="School Of Open Learning , Delhi University (DU-SOL)",
+            ),
+            EducationItem(
+                degree="Bachelor of Arts (General)",
+                institution="BIR Tikendrajit University",
+            ),
+        ],
+        projects=[],
+    )
+
+    status, diag = evaluate_status(resume, "fresher_hr_resume.pdf")
+    assert status == "PASS"
+    assert diag == []
+
+    # Verify missing skill triggers failure
+    incomplete_resume = Resume(
+        parserVersion="1.0.0",
+        personal=PersonalInfo(
+            name="Aditi Anand",
+            email="aditianand136@gmail.com",
+            phone="9241242699",
+        ),
+        skills=list(expected_14[:-1]),  # missing "Adaptability & Willingness to Learn"
+        experience=[],
+        education=resume.education,
+        projects=[],
+    )
+    inc_status, inc_diag = evaluate_status(incomplete_resume, "fresher_hr_resume.pdf")
+    assert inc_status == "PARTIAL"
+    assert any("missing expected skills" in d and "Adaptability & Willingness to Learn" in d for d in inc_diag)
+
+
+def test_fresher_hr_resume_semantic_input_contains_14_source_grounded_skills():
+    """Verify upstream SemanticInput produces exactly the 14 explicit source-grounded skills."""
+    from app.pipeline.stages.text_extraction import PDFExtractor
+    from app.domain.document import document_from_text_blocks
+    from app.pipeline.stages.reconstruction import reconstruct_document
+    from app.pipeline.stages.layout import interpret_layout
+    from app.domain.semantic_contract import build_semantic_input
+
+    pdf_path = FIXTURES_DIR / "fresher_hr_resume.pdf"
+    raw = PDFExtractor.extract(pdf_path.read_bytes())
+    doc = interpret_layout(reconstruct_document(document_from_text_blocks(raw)))
+    s_input = build_semantic_input(doc)
+
+    skill_blocks = [b for b in s_input.blocks if b.suggested_role == "SKILL"]
+    assert len(skill_blocks) == 14
+
+    extracted_skills = {b.text.strip() for b in skill_blocks}
+    golden = GOLDEN_EXPECTATIONS["fresher_hr_resume.pdf"]
+    assert extracted_skills == golden.expected_skills

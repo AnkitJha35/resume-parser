@@ -195,26 +195,31 @@ class GeometricTableBinder:
 
         # 2. Group adjacent slices into candidate table regions
         # A table region must start on a slice with multiple columns (>= min_columns)
-        candidate_tables: list[list[dict[str, Any]]] = []
-        curr_t: list[dict[str, Any]] = []
-        for s in slices:
+        candidate_tables: list[list[int]] = []
+        curr_t: list[int] = []
+        for s_idx, s in enumerate(slices):
             if not curr_t:
                 if len(s["blocks"]) >= self.min_columns:
-                    curr_t.append(s)
+                    curr_t.append(s_idx)
             else:
-                prev_s = curr_t[-1]
+                prev_s = slices[curr_t[-1]]
                 if s["min_y0"] - prev_s["max_y1"] <= 25.0:
-                    curr_t.append(s)
+                    curr_t.append(s_idx)
                 else:
-                    if len(curr_t) >= self.min_rows and sum(1 for sl in curr_t if len(sl["blocks"]) >= self.min_columns) >= self.min_rows:
+                    if len(curr_t) >= self.min_rows and sum(1 for idx in curr_t if len(slices[idx]["blocks"]) >= self.min_columns) >= self.min_rows:
                         candidate_tables.append(curr_t)
-                    curr_t = [s] if len(s["blocks"]) >= self.min_columns else []
-        if curr_t and len(curr_t) >= self.min_rows and sum(1 for sl in curr_t if len(sl["blocks"]) >= self.min_columns) >= self.min_rows:
+                    curr_t = [s_idx] if len(s["blocks"]) >= self.min_columns else []
+        if curr_t and len(curr_t) >= self.min_rows and sum(1 for idx in curr_t if len(slices[idx]["blocks"]) >= self.min_columns) >= self.min_rows:
             candidate_tables.append(curr_t)
 
         detected_tables: list[GeometricTable] = []
+        consumed_slice_indices: set[int] = set()
 
-        for t_idx, t_slices in enumerate(candidate_tables):
+        for t_indices in candidate_tables:
+            if any(idx in consumed_slice_indices for idx in t_indices):
+                continue
+
+            t_slices = [slices[idx] for idx in t_indices]
             t_blocks: list[SemanticBlockInput] = [b for s in t_slices for b in s["blocks"]]
             if len(t_blocks) < (self.min_columns * self.min_rows):
                 continue
@@ -263,12 +268,14 @@ class GeometricTableBinder:
                     for b in sub_s["blocks"]:
                         bx_mid = (b.bbox[0] + b.bbox[2]) / 2.0
                         if cells:
-                            best_c = min(
-                                cells,
-                                key=lambda c: min(abs(bx_mid - (c[0] + c[1]) / 2.0), abs(b.bbox[0] - c[0])),
+                            best_idx, best_c = min(
+                                enumerate(cells),
+                                key=lambda item: min(abs(bx_mid - (item[1][0] + item[1][1]) / 2.0), abs(b.bbox[0] - item[1][0])),
                             )
-                            best_c[0] = min(best_c[0], b.bbox[0])
-                            best_c[1] = max(best_c[1], b.bbox[2])
+                            min_x = 0.0 if best_idx == 0 else cells[best_idx - 1][1] + 1.0
+                            max_x = 10000.0 if best_idx == len(cells) - 1 else cells[best_idx + 1][0] - 1.0
+                            best_c[0] = max(min(best_c[0], b.bbox[0]), min_x)
+                            best_c[1] = min(max(best_c[1], b.bbox[2]), max_x)
                             best_c[2].append(b)
                         else:
                             cells.append([b.bbox[0], b.bbox[2], [b]])
@@ -300,7 +307,7 @@ class GeometricTableBinder:
                 b_right = 10000.0 if i == len(col_template) - 1 else seps[i]
                 col_bands.append((b_left, b_right))
 
-            table_id = f"table_p{page_number}_{t_idx}"
+            table_id = f"table_p{page_number}_{len(detected_tables)}"
 
             # Build cell bindings with word-level geometric column assignment
             cells: list[GeometricCell] = []
@@ -315,19 +322,147 @@ class GeometricTableBinder:
                         split_cells = self._split_block_by_columns(b, seps, r_idx, table_id, role)
                         cells.extend(split_cells)
 
-            detected_tables.append(
-                GeometricTable(
-                    table_id=table_id,
-                    page=page_number,
-                    num_columns=len(col_template),
-                    num_rows=len(logical_rows),
-                    num_data_rows=num_data_rows,
-                    column_bands=col_bands,
-                    cells=cells,
-                )
+            # Conservative row density check: ensure candidate is not a single-column block run with an isolated date
+            row_multi_cols = [r for r in logical_rows if len(r) >= 2 or sum(len(sl["blocks"]) for sl in r) >= 2]
+            if len(col_template) >= 3:
+                if len(logical_rows) > 4 and len(row_multi_cols) / len(logical_rows) < 0.40:
+                    continue
+            elif len(col_template) == 2:
+                if len(logical_rows) > 3 and len(row_multi_cols) / len(logical_rows) < 0.60:
+                    continue
+
+            table = GeometricTable(
+                table_id=table_id,
+                page=page_number,
+                num_columns=len(col_template),
+                num_rows=len(logical_rows),
+                num_data_rows=num_data_rows,
+                column_bands=col_bands,
+                cells=cells,
             )
 
+            consumed_slice_indices.update(t_indices)
+            last_idx = max(t_indices)
+            self._extend_table_continuation(
+                table,
+                slices,
+                last_idx + 1,
+                consumed_slice_indices,
+                seps,
+                candidate_tables=candidate_tables,
+            )
+
+            detected_tables.append(table)
+
         return detected_tables
+
+    def _extend_table_continuation(
+        self,
+        table: GeometricTable,
+        slices: list[dict[str, Any]],
+        start_slice_idx: int,
+        consumed_slice_indices: set[int],
+        seps: list[float],
+        candidate_tables: list[list[int]] | None = None,
+        max_inter_row_gap: float = 55.0,
+    ) -> None:
+        """Deterministically extend a verified table across subsequent variable-height rows.
+
+        Uses stable consensus column tracks and boundaries (seps) established by the table.
+        Preserves row grouping, wrapped cell blocks, and handles variable inter-row spacing
+        without identifying fixtures by filename or assuming specific section semantics.
+        """
+        if not seps or table.num_columns < 3 or not table.cells:
+            return
+
+        # Map candidate table start indices to their candidate slice indices
+        cand_by_start: dict[int, list[int]] = {}
+        if candidate_tables:
+            for ct in candidate_tables:
+                if ct:
+                    cand_by_start[ct[0]] = ct
+
+        prev_max_y = max(c.bbox[3] for c in table.cells)
+        idx = start_slice_idx
+
+        while idx < len(slices):
+            if idx in consumed_slice_indices:
+                idx += 1
+                continue
+
+            # If this slice starts another candidate table that represents an independent multi-column structure, do not absorb it
+            if idx in cand_by_start:
+                ct_slices = [slices[i] for i in cand_by_start[idx]]
+                ct_blocks = [b for sl in ct_slices for b in sl["blocks"]]
+                # If candidate table has distinct column count or forms an independent multi-row structure with its own header
+                first_slice_blocks = slices[idx]["blocks"]
+                if len(first_slice_blocks) != table.num_columns and len(first_slice_blocks) >= self.min_columns:
+                    break
+
+            s = slices[idx]
+            gap = s["min_y0"] - prev_max_y
+
+            # Table continuation halts if inter-row spacing exceeds threshold or is inverted
+            if gap < -2.0 or gap > max_inter_row_gap:
+                break
+
+            # Table continuation halts immediately if any block is a section heading, heading candidate, or table header
+            if any(
+                b.suggested_role in ("SECTION_HEADING", "TABLE_HEADER") or getattr(b, "heading_candidate", False)
+                for b in s["blocks"]
+            ):
+                break
+
+            # A continuation row cannot have more blocks in its main slice than table columns
+            if len(s["blocks"]) > table.num_columns:
+                break
+
+            # Map blocks in candidate row start slice to columns
+            assigned_cols = []
+            for b in s["blocks"]:
+                bx_mid = (b.bbox[0] + b.bbox[2]) / 2.0
+                c_idx = next((i for i, sep in enumerate(seps) if bx_mid < sep), len(seps))
+                assigned_cols.append(c_idx)
+
+            unique_cols = set(assigned_cols)
+            # A genuine table continuation row must span multiple columns conforming to the table
+            if len(unique_cols) < min(table.num_columns, 2):
+                break
+
+            # Form logical row with wrapped continuation slices
+            row_slices = [s]
+            consumed_slice_indices.add(idx)
+            idx += 1
+
+            while idx < len(slices):
+                if idx in consumed_slice_indices:
+                    idx += 1
+                    continue
+                next_s = slices[idx]
+                sub_gap = next_s["min_y0"] - row_slices[-1]["max_y1"]
+                if sub_gap > self.row_gap_threshold:
+                    break
+                if any(
+                    b.suggested_role in ("SECTION_HEADING", "TABLE_HEADER") or getattr(b, "heading_candidate", False)
+                    for b in next_s["blocks"]
+                ):
+                    break
+                row_slices.append(next_s)
+                consumed_slice_indices.add(idx)
+                idx += 1
+
+            # Append new logical row to table
+            r_idx = table.num_rows
+            new_cells: list[GeometricCell] = []
+            for r_s in row_slices:
+                for b in r_s["blocks"]:
+                    split = self._split_block_by_columns(b, seps, r_idx, table.table_id, "DATA")
+                    new_cells.extend(split)
+
+            table.cells.extend(new_cells)
+            table.num_rows += 1
+            table.num_data_rows += 1
+            prev_max_y = max(c.bbox[3] for c in new_cells)
 
     def _split_block_by_columns(
         self,
@@ -446,6 +581,7 @@ class GeometricTableBinder:
     def bind_document_tables(
         self,
         blocks: list[SemanticBlockInput],
+        tables: list[GeometricTable] | None = None,
     ) -> list[SemanticBlockInput]:
         """Populate table_id, row_index, column_index, and cell_role on verifiable table blocks."""
         by_page: dict[int, list[SemanticBlockInput]] = {}
@@ -457,14 +593,17 @@ class GeometricTableBinder:
 
         for page_num in sorted(by_page.keys()):
             p_blocks = by_page[page_num]
-            tables = self.detect_page_tables(p_blocks, page_num)
-            if not tables:
+            if tables is not None:
+                p_tables = [t for t in tables if t.page == page_num]
+            else:
+                p_tables = self.detect_page_tables(p_blocks, page_num)
+            if not p_tables:
                 bound_blocks.extend(p_blocks)
                 continue
 
-            self.last_detected_tables.extend(tables)
+            self.last_detected_tables.extend(p_tables)
             binding_map: dict[str, list[GeometricCell]] = {}
-            for t in tables:
+            for t in p_tables:
                 for cell in t.cells:
                     src_id = cell.parent_block_id or cell.block_id
                     binding_map.setdefault(src_id, []).append(cell)

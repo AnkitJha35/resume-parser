@@ -3,3 +3,4 @@ __pycache__/
 *.py[cod]
 *.raw.json
 tests/benchmark/reports/raw/
+benchmark_results/

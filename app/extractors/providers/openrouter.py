@@ -116,6 +116,7 @@ def _classify_http_error(err: httpx.HTTPStatusError, api_key: str | None = None)
     Classification rules:
     - 400: SemanticResponseError (deterministic invalid request)
     - 401, 403: SemanticConfigurationError (authentication / authorization failure)
+    - 402: SemanticConfigurationError (insufficient credits / payment required; non-transient)
     - 404: SemanticConfigurationError (model or endpoint not found)
     - 429: SemanticRateLimitError (rate limit / quota exceeded)
     - 5xx: SemanticServerError (transient server error)
@@ -131,6 +132,10 @@ def _classify_http_error(err: httpx.HTTPStatusError, api_key: str | None = None)
     if status_code in (401, 403):
         return SemanticConfigurationError(
             f"OpenRouter API authentication failed (HTTP {status_code}): {error_msg}"
+        )
+    if status_code == 402:
+        return SemanticConfigurationError(
+            f"OpenRouter API payment required / insufficient credits (HTTP 402): {error_msg}"
         )
     if status_code == 404:
         return SemanticConfigurationError(
@@ -169,6 +174,7 @@ class OpenRouterSemanticExtractor:
         base_url: str | None = None,
         timeout: float | None = None,
         max_retries: int | None = None,
+        max_tokens: int | None = None,
         initial_backoff: float = 1.0,
         max_backoff: float = 30.0,
         backoff_multiplier: float = 2.0,
@@ -183,6 +189,7 @@ class OpenRouterSemanticExtractor:
         self._explicit_base_url = base_url
         self._explicit_timeout = timeout
         self._explicit_max_retries = max_retries
+        self._explicit_max_tokens = max_tokens
         self._explicit_two_pass = two_pass
         self._initial_backoff = initial_backoff
         self._max_backoff = max_backoff
@@ -213,8 +220,8 @@ class OpenRouterSemanticExtractor:
             pass
         return False
 
-    def _resolve_config(self) -> tuple[str, str, str, float, int]:
-        """Resolve API key, model, base_url, timeout, and max_retries with strict precedence."""
+    def _resolve_config(self) -> tuple[str, str, str, float, int, int]:
+        """Resolve API key, model, base_url, timeout, max_retries, and max_tokens with strict precedence."""
         api_key = self._explicit_api_key
         if api_key is not None and not api_key.strip():
             api_key = None
@@ -261,8 +268,19 @@ class OpenRouterSemanticExtractor:
             except ValueError:
                 pass
 
+        max_tokens = self._explicit_max_tokens
+        if max_tokens is not None and max_tokens <= 0:
+            max_tokens = None
+        if max_tokens is None and "OPENROUTER_MAX_TOKENS" in os.environ:
+            try:
+                parsed_max_tokens = int(os.environ["OPENROUTER_MAX_TOKENS"])
+                if parsed_max_tokens > 0:
+                    max_tokens = parsed_max_tokens
+            except ValueError:
+                pass
+
         # Check Settings for unresolved fields
-        if any(v is None for v in (api_key, model, base_url, timeout, max_retries)):
+        if any(v is None for v in (api_key, model, base_url, timeout, max_retries, max_tokens)):
             try:
                 settings = Settings()
                 if api_key is None:
@@ -285,6 +303,10 @@ class OpenRouterSemanticExtractor:
                     st_retries = getattr(settings, "openrouter_max_retries", None)
                     if isinstance(st_retries, int) and st_retries >= 0:
                         max_retries = st_retries
+                if max_tokens is None:
+                    st_tokens = getattr(settings, "openrouter_max_tokens", None)
+                    if isinstance(st_tokens, int) and st_tokens > 0:
+                        max_tokens = st_tokens
             except (ValidationError, OSError):
                 pass
 
@@ -297,6 +319,8 @@ class OpenRouterSemanticExtractor:
             timeout = 60.0
         if max_retries is None:
             max_retries = 2
+        if max_tokens is None:
+            max_tokens = 16384
 
         if not api_key:
             raise SemanticConfigurationError(
@@ -304,7 +328,7 @@ class OpenRouterSemanticExtractor:
                 "or pass api_key explicitly."
             )
 
-        return api_key, model, base_url, timeout, max_retries
+        return api_key, model, base_url, timeout, max_retries, max_tokens
 
     @property
     def last_run_meta(self) -> dict[str, Any]:
@@ -327,6 +351,7 @@ class OpenRouterSemanticExtractor:
         base_url: str,
         timeout: float,
         max_retries: int,
+        max_tokens: int = 16384,
         pass_name: str = "single",
     ) -> tuple[str, dict[str, Any], int]:
         """Execute a single HTTP request to the OpenRouter chat/completions endpoint with retries and return (text, usage_dict, retry_count)."""
@@ -346,6 +371,7 @@ class OpenRouterSemanticExtractor:
                 }
             ],
             "temperature": 0.0,
+            "max_tokens": max_tokens,
             "response_format": {
                 "type": "json_schema",
                 "json_schema": {
@@ -367,11 +393,12 @@ class OpenRouterSemanticExtractor:
 
         while True:
             logger.debug(
-                "OpenRouter %s request started model=%s attempt=%d/%d",
+                "OpenRouter %s request started model=%s attempt=%d/%d max_tokens=%d",
                 pass_name,
                 model,
                 attempt + 1,
                 max_retries + 1,
+                max_tokens,
             )
             try:
                 try:
@@ -386,7 +413,7 @@ class OpenRouterSemanticExtractor:
                     exc = _classify_http_error(err, api_key)
                     status_code = err.response.status_code
 
-                    # Only retry transient errors (429 and 5xx)
+                    # Only retry transient errors (429 and 5xx). Note: 402 is non-transient and not retried.
                     if isinstance(exc, (SemanticRateLimitError, SemanticServerError)) and attempt < max_retries:
                         if isinstance(exc, SemanticRateLimitError) and exc.retry_after is not None:
                             delay = exc.retry_after
@@ -467,7 +494,6 @@ class OpenRouterSemanticExtractor:
 
                 # Check if envelope contains an error
                 if "error" in res_json:
-                    err_payload = res_json["error"]
                     err_msg = _extract_api_error_message(json.dumps(res_json), api_key)
                     raise SemanticResponseError(f"OpenRouter API returned error envelope: {err_msg}")
 
@@ -528,7 +554,7 @@ class OpenRouterSemanticExtractor:
 
     def extract_single_pass(self, input_data: SemanticInput) -> SemanticOutput:
         """Single-pass extraction mode."""
-        api_key, model, base_url, timeout, max_retries = self._resolve_config()
+        api_key, model, base_url, timeout, max_retries, max_tokens = self._resolve_config()
         start_time = self._time_fn()
         schema = get_compact_schema(SemanticOutput)
         prompt = build_compact_extraction_prompt(input_data)
@@ -541,6 +567,7 @@ class OpenRouterSemanticExtractor:
             base_url=base_url,
             timeout=timeout,
             max_retries=max_retries,
+            max_tokens=max_tokens,
             pass_name="single",
         )
 
@@ -563,7 +590,7 @@ class OpenRouterSemanticExtractor:
         if not self._resolve_two_pass():
             return self.extract_single_pass(input_data)
 
-        api_key, model, base_url, timeout, max_retries = self._resolve_config()
+        api_key, model, base_url, timeout, max_retries, max_tokens = self._resolve_config()
         start_time = self._time_fn()
 
         schema_personal = get_personal_schema()
@@ -580,6 +607,7 @@ class OpenRouterSemanticExtractor:
                 base_url=base_url,
                 timeout=timeout,
                 max_retries=max_retries,
+                max_tokens=max_tokens,
                 pass_name="personal",
             )
             parsed = parse_personal_output(raw_text)
@@ -602,6 +630,7 @@ class OpenRouterSemanticExtractor:
                 base_url=base_url,
                 timeout=timeout,
                 max_retries=max_retries,
+                max_tokens=max_tokens,
                 pass_name=pass_name,
             )
             parsed = parse_body_output(raw_text)
@@ -708,6 +737,7 @@ class OpenRouterSemanticExtractor:
                             base_url=base_url,
                             timeout=timeout,
                             max_retries=max_retries,
+                            max_tokens=max_tokens,
                             pass_name="body_sectioned_recovery",
                         )
                         parsed_rec = parse_body_output(raw_text_rec)
@@ -788,6 +818,7 @@ class OpenRouterSemanticExtractor:
                 base_url=base_url,
                 timeout=timeout,
                 max_retries=max_retries,
+                max_tokens=max_tokens,
                 pass_name="body",
             )
             parsed = parse_body_output(raw_text)
@@ -834,6 +865,7 @@ class OpenRouterSemanticExtractor:
                         base_url=base_url,
                         timeout=timeout,
                         max_retries=max_retries,
+                        max_tokens=max_tokens,
                         pass_name="body_recovery",
                     )
                     parsed_rec = parse_body_output(raw_text_rec)
