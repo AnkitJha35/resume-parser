@@ -138,3 +138,18 @@ resume_provenance_table = Table(
     Column("records", JSONB(astext_type=Text()), nullable=False, server_default=text("'[]'::jsonb")),
     Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
 )
+
+# 5. Idempotency Keys table (minimal primitive for deterministic retry handling)
+idempotency_keys_table = Table(
+    "idempotency_keys",
+    metadata,
+    Column("idempotency_key", String(128), primary_key=True),
+    Column("resume_id", String(64), nullable=True),
+    Column("document_id", String(64), nullable=True),
+    Column("response_data", JSONB(astext_type=Text()), nullable=True),
+    Column("status", String(32), nullable=False, server_default=text("'IN_PROGRESS'")),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()),
+    Index("idx_idempotency_keys_created_at", text("created_at DESC")),
+)
+

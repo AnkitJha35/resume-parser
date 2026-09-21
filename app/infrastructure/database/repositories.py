@@ -10,6 +10,7 @@ from sqlalchemy import Connection, and_, desc, func, insert, select, update
 from app.infrastructure.database.schema import (
     candidates_table,
     documents_table,
+    idempotency_keys_table,
     resume_provenance_table,
     resume_snapshots_table,
 )
@@ -305,3 +306,44 @@ class ResumeProvenanceRepository:
         stmt = select(resume_provenance_table).where(resume_provenance_table.c.resume_id == resume_id)
         row = conn.execute(stmt).mappings().first()
         return dict(row) if row else None
+
+
+class IdempotencyRepository:
+    """Repository managing IdempotencyKey records for deterministic retry handling."""
+
+    @staticmethod
+    def get(conn: Connection, idempotency_key: str) -> dict[str, Any] | None:
+        stmt = select(idempotency_keys_table).where(idempotency_keys_table.c.idempotency_key == idempotency_key)
+        row = conn.execute(stmt).mappings().first()
+        return dict(row) if row else None
+
+    @staticmethod
+    def set_completed(
+        conn: Connection,
+        idempotency_key: str,
+        resume_id: str,
+        document_id: str,
+        response_data: dict[str, Any],
+    ) -> None:
+        stmt = (
+            update(idempotency_keys_table)
+            .where(idempotency_keys_table.c.idempotency_key == idempotency_key)
+            .values(
+                resume_id=resume_id,
+                document_id=document_id,
+                response_data=response_data,
+                status="COMPLETED",
+                updated_at=func.now(),
+            )
+        )
+        res = conn.execute(stmt)
+        if res.rowcount == 0:
+            insert_stmt = insert(idempotency_keys_table).values(
+                idempotency_key=idempotency_key,
+                resume_id=resume_id,
+                document_id=document_id,
+                response_data=response_data,
+                status="COMPLETED",
+            )
+            conn.execute(insert_stmt)
+
