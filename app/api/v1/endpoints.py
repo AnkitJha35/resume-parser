@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 import logging
 import time
 from pathlib import Path
@@ -12,6 +13,7 @@ from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 
 from app.api.v1.models import (
     BenchmarkRequest,
+    CandidateResumeListResponse,
     ConfigResponse,
     DiagnosticBlockItem,
     DiagnosticPageItem,
@@ -24,6 +26,8 @@ from app.api.v1.models import (
     ParseResponse,
     ParseStatus,
     ProvenanceRecord,
+    ResumeListResponse,
+    ResumeSnapshotResponse,
 )
 from app.core.config import Settings
 from app.domain.document import document_from_text_blocks
@@ -47,6 +51,12 @@ from app.extractors.semantic_extractor import (
     SemanticTimeoutError,
     SemanticTransportError,
     SemanticValidationError,
+)
+from app.infrastructure.database.connection import get_connection
+from app.infrastructure.database.repositories import (
+    CandidateRepository,
+    ResumeProvenanceRepository,
+    ResumeSnapshotRepository,
 )
 from app.pipeline.parser import PipelineError, ResumeParser
 from app.pipeline.stages.layout import interpret_layout
@@ -794,3 +804,179 @@ def run_benchmark(request: BenchmarkRequest) -> dict[str, Any]:
 
     summary = runner.run_all()
     return summary.to_dict()
+
+
+# =====================================================================
+# Product v1 Resume Read & Search Endpoints
+# =====================================================================
+
+
+@router.get("/resumes", response_model=ResumeListResponse)
+def list_resumes(
+    query: str | None = Query(None, description="Search candidate name, summary, company, designation"),
+    skills: list[str] | None = Query(None, description="Match skills (ALL semantics, case-insensitive)"),
+    status: ParseStatus | None = Query(None, description="Exact parse status filter"),
+    company: str | None = Query(None, description="Filter experience company (case-insensitive)"),
+    location: str | None = Query(None, description="Filter location (case-insensitive)"),
+    created_after: datetime | None = Query(None, description="Inclusive start datetime"),
+    created_before: datetime | None = Query(None, description="Inclusive end datetime"),
+    candidate_id: str | None = Query(None, description="Filter by candidate ID"),
+    is_latest: bool | None = Query(None, description="Filter by latest snapshot flag"),
+    limit: int = Query(20, ge=1, le=100, description="Page size (1-100)"),
+    offset: int = Query(0, ge=0, description="Page offset (>= 0)"),
+) -> ResumeListResponse:
+    """Paginated search and list of active resume snapshots using PostgreSQL-native search."""
+    flattened_skills: list[str] = []
+    if skills:
+        for s in skills:
+            for part in s.split(","):
+                part_clean = part.strip()
+                if part_clean and part_clean not in flattened_skills:
+                    flattened_skills.append(part_clean)
+
+    with get_connection() as conn:
+        rows, total = ResumeSnapshotRepository.search(
+            conn=conn,
+            query=query,
+            skills=flattened_skills if flattened_skills else None,
+            status=status.value if status else None,
+            company=company,
+            location=location,
+            created_after=created_after,
+            created_before=created_before,
+            candidate_id=candidate_id,
+            is_latest=is_latest,
+            limit=limit,
+            offset=offset,
+        )
+
+        items = [
+            ResumeSnapshotResponse(
+                resume_id=r["resume_id"],
+                document_id=r["document_id"],
+                candidate_id=r["candidate_id"],
+                status=ParseStatus(r["parse_status"]),
+                success=r["success"],
+                is_latest=r["is_latest"],
+                created_at=r["created_at"],
+                resume=r["resume_data"],
+                metadata=r["metadata"] or {},
+                violations=r["violations"] or [],
+                provenance=None,
+                candidate_name=r["candidate_name"],
+                candidate_email=r["candidate_email"],
+                candidate_location=r["candidate_location"],
+                skills=r["skills"] or [],
+            )
+            for r in rows
+        ]
+        has_more = (offset + len(items)) < total
+        return ResumeListResponse(
+            items=items,
+            total=total,
+            limit=limit,
+            offset=offset,
+            has_more=has_more,
+        )
+
+
+@router.get("/resumes/{resume_id}", response_model=ResumeSnapshotResponse)
+def get_resume_snapshot(
+    resume_id: str,
+    include_provenance: bool = Query(False, description="Whether to include granular provenance records"),
+) -> ResumeSnapshotResponse:
+    """Fetch an active resume snapshot by resume_id."""
+    with get_connection() as conn:
+        snapshot = ResumeSnapshotRepository.get_active_by_id(conn, resume_id)
+        if not snapshot:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "RESUME_NOT_FOUND",
+                    "message": f"Resume snapshot '{resume_id}' not found or has been deleted.",
+                },
+            )
+
+        provenance_data = None
+        if include_provenance:
+            prov_row = ResumeProvenanceRepository.get_by_resume_id(conn, resume_id)
+            provenance_data = prov_row["records"] if prov_row else []
+
+        return ResumeSnapshotResponse(
+            resume_id=snapshot["resume_id"],
+            document_id=snapshot["document_id"],
+            candidate_id=snapshot["candidate_id"],
+            status=ParseStatus(snapshot["parse_status"]),
+            success=snapshot["success"],
+            is_latest=snapshot["is_latest"],
+            created_at=snapshot["created_at"],
+            resume=snapshot["resume_data"],
+            metadata=snapshot["metadata"] or {},
+            violations=snapshot["violations"] or [],
+            provenance=provenance_data,
+            candidate_name=snapshot["candidate_name"],
+            candidate_email=snapshot["candidate_email"],
+            candidate_location=snapshot["candidate_location"],
+            skills=snapshot["skills"] or [],
+        )
+
+
+@router.get("/candidates/{candidate_id}/resumes", response_model=CandidateResumeListResponse)
+def list_candidate_resumes(
+    candidate_id: str,
+    is_latest: bool | None = Query(None, description="Filter by latest snapshot flag"),
+    status: ParseStatus | None = Query(None, description="Exact parse status filter"),
+    limit: int = Query(20, ge=1, le=100, description="Page size (1-100)"),
+    offset: int = Query(0, ge=0, description="Page offset (>= 0)"),
+) -> CandidateResumeListResponse:
+    """Return paginated snapshots for the specified candidate."""
+    with get_connection() as conn:
+        candidate = CandidateRepository.get_by_id(conn, candidate_id)
+        if not candidate:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "CANDIDATE_NOT_FOUND",
+                    "message": f"Candidate '{candidate_id}' not found or has been deleted.",
+                },
+            )
+
+        rows, total = ResumeSnapshotRepository.list_by_candidate(
+            conn=conn,
+            candidate_id=candidate_id,
+            is_latest=is_latest,
+            status=status.value if status else None,
+            limit=limit,
+            offset=offset,
+        )
+
+        items = [
+            ResumeSnapshotResponse(
+                resume_id=r["resume_id"],
+                document_id=r["document_id"],
+                candidate_id=r["candidate_id"],
+                status=ParseStatus(r["parse_status"]),
+                success=r["success"],
+                is_latest=r["is_latest"],
+                created_at=r["created_at"],
+                resume=r["resume_data"],
+                metadata=r["metadata"] or {},
+                violations=r["violations"] or [],
+                provenance=None,
+                candidate_name=r["candidate_name"],
+                candidate_email=r["candidate_email"],
+                candidate_location=r["candidate_location"],
+                skills=r["skills"] or [],
+            )
+            for r in rows
+        ]
+        has_more = (offset + len(items)) < total
+        return CandidateResumeListResponse(
+            candidate_id=candidate_id,
+            items=items,
+            total=total,
+            limit=limit,
+            offset=offset,
+            has_more=has_more,
+        )
+

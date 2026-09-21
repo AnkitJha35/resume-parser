@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from enum import Enum
 from typing import Any
 from pydantic import BaseModel, Field
@@ -136,3 +137,39 @@ class ApiErrorResponse(BaseModel):
     status_code: int
     status: ParseStatus = ParseStatus.ERROR
     detail: dict[str, Any] | None = None
+
+
+class ResumeSnapshotResponse(BaseModel):
+    resume_id: str
+    document_id: str
+    candidate_id: str | None = None
+    status: ParseStatus
+    success: bool
+    is_latest: bool
+    created_at: datetime
+    resume: dict[str, Any] | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    violations: list[str] = Field(default_factory=list)
+    provenance: list[dict[str, Any]] | None = None
+    candidate_name: str | None = None
+    candidate_email: str | None = None
+    candidate_location: str | None = None
+    skills: list[str] = Field(default_factory=list)
+
+
+class ResumeListResponse(BaseModel):
+    items: list[ResumeSnapshotResponse] = Field(default_factory=list)
+    total: int
+    limit: int
+    offset: int
+    has_more: bool
+
+
+class CandidateResumeListResponse(BaseModel):
+    candidate_id: str
+    items: list[ResumeSnapshotResponse] = Field(default_factory=list)
+    total: int
+    limit: int
+    offset: int
+    has_more: bool
+
