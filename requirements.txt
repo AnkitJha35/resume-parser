@@ -2,6 +2,8 @@
 #    uv export --no-dev --no-hashes --output-file requirements.txt
 aiokafka==0.14.0
     # via resume-parser
+alembic==1.20.0
+    # via resume-parser
 annotated-doc==0.0.5
     # via fastapi
 annotated-types==0.8.0
@@ -28,6 +30,8 @@ click==8.5.0
     # via uvicorn
 fastapi==0.141.1
     # via resume-parser
+greenlet==3.5.6 ; platform_machine == 'AMD64' or platform_machine == 'WIN32' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'ppc64le' or platform_machine == 'win32' or platform_machine == 'x86_64'
+    # via sqlalchemy
 h11==0.16.0
     # via
     #   httpcore
@@ -42,10 +46,18 @@ idna==3.19
     # via
     #   anyio
     #   httpx
+mako==1.4.1
+    # via alembic
+markupsafe==3.0.3
+    # via mako
 minio==7.2.20
     # via resume-parser
 packaging==26.3
     # via aiokafka
+psycopg==3.3.6
+    # via resume-parser
+psycopg-binary==3.3.6 ; implementation_name != 'pypy'
+    # via psycopg
 pycparser==3.0 ; implementation_name != 'PyPy'
     # via cffi
 pycryptodome==3.23.0
@@ -69,16 +81,23 @@ python-multipart==0.0.32
     # via resume-parser
 pyyaml==6.0.3
     # via uvicorn
+sqlalchemy==2.0.54
+    # via
+    #   alembic
+    #   resume-parser
 starlette==1.6.0
     # via fastapi
 typing-extensions==4.16.0
     # via
     #   aiokafka
+    #   alembic
     #   anyio
     #   fastapi
     #   minio
+    #   psycopg
     #   pydantic
     #   pydantic-core
+    #   sqlalchemy
     #   starlette
     #   typing-inspection
 typing-inspection==0.4.4
@@ -86,6 +105,8 @@ typing-inspection==0.4.4
     #   fastapi
     #   pydantic
     #   pydantic-settings
+tzdata==2026.4 ; sys_platform == 'win32'
+    # via psycopg
 urllib3==2.7.0
     # via minio
 uvicorn==0.52.4

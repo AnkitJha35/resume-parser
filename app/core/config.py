@@ -21,6 +21,12 @@ class Settings(BaseSettings):
     minio_bucket_name: str = "resumes"
     minio_secure: bool = False
 
+    # Database configuration (PostgreSQL persistence foundation - optional for parser-only API)
+    database_url: str | None = None
+    database_pool_size: int = 5
+    database_max_overflow: int = 10
+    database_pool_timeout: float = 30.0
+
     # Upload & OCR configuration
     max_upload_size: int = 10 * 1024 * 1024  # 10MB
     ocr_enabled: bool = True
