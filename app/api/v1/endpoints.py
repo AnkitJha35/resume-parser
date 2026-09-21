@@ -9,7 +9,14 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, File, HTTPException, Query, Response, UploadFile
+
+from app.services.resume_export_service import (
+    export_as_csv,
+    export_as_json,
+    export_as_text,
+    sanitize_filename,
+)
 
 from app.api.v1.models import (
     BenchmarkRequest,
@@ -878,6 +885,62 @@ def list_resumes(
             offset=offset,
             has_more=has_more,
         )
+
+
+@router.get("/resumes/{resume_id}/export")
+def export_resume(
+    resume_id: str,
+    format: str = Query("json", description="Export format: json, text, csv"),
+) -> Response:
+    """Export a persisted resume snapshot in json, text, or csv format."""
+    fmt = format.lower().strip()
+    if fmt not in ("json", "text", "csv"):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "UNSUPPORTED_FORMAT",
+                "message": f"Unsupported export format '{format}'. Supported formats: json, text, csv",
+            },
+        )
+
+    with get_connection() as conn:
+        snapshot = ResumeSnapshotRepository.get_active_by_id(conn, resume_id)
+        if not snapshot:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "RESUME_NOT_FOUND",
+                    "message": f"Resume snapshot '{resume_id}' not found or has been deleted.",
+                },
+            )
+
+        resume_data = snapshot.get("resume_data")
+        if not isinstance(resume_data, dict):
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "error": "MALFORMED_RESUME_DATA",
+                    "message": "Persisted resume data is corrupted or invalid.",
+                },
+            )
+
+        if fmt == "json":
+            content = export_as_json(resume_data)
+            media_type = "application/json"
+            filename = sanitize_filename(resume_id, "json")
+        elif fmt == "text":
+            content = export_as_text(resume_data)
+            media_type = "text/plain; charset=utf-8"
+            filename = sanitize_filename(resume_id, "txt")
+        else:  # csv
+            content = export_as_csv(resume_id, resume_data)
+            media_type = "text/csv; charset=utf-8"
+            filename = sanitize_filename(resume_id, "csv")
+
+        headers = {
+            "Content-Disposition": f'attachment; filename="{filename}"',
+        }
+        return Response(content=content, media_type=media_type, headers=headers)
 
 
 @router.get("/resumes/{resume_id}", response_model=ResumeSnapshotResponse)
