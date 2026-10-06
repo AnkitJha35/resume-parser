@@ -64,6 +64,7 @@ class Page:
     tables: list[object] = field(default_factory=list)
     headers: list[Line] = field(default_factory=list)
     footers: list[Line] = field(default_factory=list)
+    drawings: list[Any] = field(default_factory=list)
 
 
 @dataclass
@@ -74,8 +75,23 @@ class Document:
     ocr_used: bool = False
 
 
-def document_from_text_blocks(blocks: Iterable[TextBlock]) -> Document:
+def document_from_text_blocks(
+    blocks: Iterable[TextBlock],
+    drawings: Iterable[Any] | None = None,
+) -> Document:
     """Build a physical-layout document view without resolving reading order."""
+    if drawings is None:
+        try:
+            from app.pipeline.stages.text_extraction import PDFExtractor
+            drawings = getattr(PDFExtractor, "_last_drawings", None) or []
+        except ImportError:
+            drawings = []
+
+    drawings_by_page: dict[int, list[Any]] = {}
+    for d in drawings:
+        p_num = getattr(d, "page_number", 1)
+        drawings_by_page.setdefault(p_num, []).append(d)
+
     page_blocks: dict[int, list[TextBlock]] = {}
     for block in blocks:
         page_blocks.setdefault(block.page_number, []).append(block)
@@ -123,6 +139,7 @@ def document_from_text_blocks(blocks: Iterable[TextBlock]) -> Document:
                         lines=lines,
                     )
                 ],
+                drawings=drawings_by_page.get(page_number, []),
             )
         )
 

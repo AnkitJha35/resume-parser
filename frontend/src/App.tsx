@@ -20,11 +20,14 @@ import { Header } from './components/Header';
 import { UploadPanel } from './components/UploadPanel';
 import { ResultSummary } from './components/ResultSummary';
 import { ResumeViewer } from './components/ResumeViewer';
+import { GenericDocumentViewer } from './components/GenericDocumentViewer';
+import { GenericJsonViewer } from './components/GenericJsonViewer';
 import { ProvenanceView } from './components/ProvenanceView';
 import { StructureDebugView } from './components/StructureDebugView';
 import { BenchmarkView } from './components/BenchmarkView';
 import {
   FileText,
+  FileJson,
   ShieldCheck,
   Table,
   BarChart3,
@@ -33,7 +36,7 @@ import {
   X,
 } from 'lucide-react';
 
-type MainView = 'resume' | 'provenance' | 'structure' | 'benchmark';
+type MainView = 'resume' | 'json' | 'provenance' | 'structure' | 'benchmark';
 
 export const App: React.FC = () => {
   const [health, setHealth] = useState<HealthResponse | null>(null);
@@ -216,7 +219,7 @@ export const App: React.FC = () => {
             onClick={() => setActiveView('resume')}
           >
             <FileText size={16} />
-            <span>Canonical Resume</span>
+            <span>Document Structure</span>
             {parseResponse && (
               <span
                 className={`tab-pill ${
@@ -230,6 +233,27 @@ export const App: React.FC = () => {
                   : 'Ready'}
               </span>
             )}
+          </button>
+
+          <button
+            className={`view-tab ${activeView === 'json' ? 'active' : ''}`}
+            onClick={() => setActiveView('json')}
+          >
+            <FileJson size={16} />
+            <span>Generic JSON</span>
+            {parseResponse?.json_fidelity ? (
+              <span
+                className={`tab-pill ${
+                  parseResponse.json_fidelity.valid ? 'tab-pill-ready' : 'pill-warning'
+                }`}
+              >
+                {parseResponse.json_fidelity.valid ? 'Fidelity ✓' : 'Fidelity ⚠'}
+              </span>
+            ) : parseResponse?.document_json ? (
+              <span className="tab-pill pill-accent">
+                {parseResponse.document_json.document?.sections?.length || 0} sec
+              </span>
+            ) : null}
           </button>
 
           <button
@@ -274,12 +298,35 @@ export const App: React.FC = () => {
         <div className="view-container">
           {activeView === 'resume' && (
             <>
-              {parseResponse && parseResponse.resume ? (
+              {parseResponse && parseResponse.document_structure ? (
+                <GenericDocumentViewer documentStructure={parseResponse.document_structure} />
+              ) : parseResponse && parseResponse.resume ? (
                 <ResumeViewer resume={parseResponse.resume} />
               ) : (
                 <div className="empty-view-state card">
                   <FileText size={40} className="text-muted" />
                   <h3>No Parsed Resume Loaded</h3>
+                  <p>
+                    Select or upload a PDF above and click <strong>Parse Resume</strong>, or select a
+                    fixture from the dropdown.
+                  </p>
+                </div>
+              )}
+            </>
+          )}
+
+          {activeView === 'json' && (
+            <>
+              {parseResponse && parseResponse.document_json ? (
+                <GenericJsonViewer
+                  documentJson={parseResponse.document_json}
+                  documentProvenance={parseResponse.document_provenance}
+                  jsonFidelity={parseResponse.json_fidelity}
+                />
+              ) : (
+                <div className="empty-view-state card">
+                  <FileJson size={40} className="text-muted" />
+                  <h3>No Generic JSON Available</h3>
                   <p>
                     Select or upload a PDF above and click <strong>Parse Resume</strong>, or select a
                     fixture from the dropdown.

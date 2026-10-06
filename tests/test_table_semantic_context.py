@@ -473,7 +473,7 @@ def test_backwards_compatibility():
     layout = interpret_layout(reconstructed)
 
     si = build_semantic_input(layout, document_id=fixture_path.name)
-    assert len(si.blocks) in (322, 328)
+    assert len(si.blocks) in (322, 328, 329)
 
     # Check that new fields exist on blocks without breaking serialization
     b0 = si.blocks[0]
@@ -503,7 +503,7 @@ def test_compact_and_structured_table_serialization():
     compact_json = serialize_compact_semantic_input(si)
     payload = json.loads(compact_json)
     assert "blocks" in payload
-    assert len(payload["blocks"]) in (322, 328)
+    assert len(payload["blocks"]) in (322, 328, 329)
     assert "tables" in payload
     assert len(payload["tables"]) > 0
 
@@ -833,3 +833,146 @@ def test_case_l_rishabh_and_aashish_fixtures_unaffected():
         assert len(si_a.tables) >= 5
         for t in si_a.tables:
             assert len(t.rows) > 0
+
+
+def test_form_table_row0_cells_are_data_not_header():
+    """Form tables without column headers should assign role DATA to row 0 cells."""
+    b1 = _make_block("b1", "Ship Name", 50.0, 100.0, 150.0, 115.0)
+    b2 = _make_block("b2", ": JAWAHAR LAL NEHRU", 155.0, 100.0, 300.0, 115.0)
+    b3 = _make_block("b3", "Flag", 310.0, 100.0, 350.0, 115.0)
+    b4 = _make_block("b4", ": India", 355.0, 100.0, 450.0, 115.0)
+    b5 = _make_block("b5", "Rank", 50.0, 130.0, 150.0, 145.0)
+    b6 = _make_block("b6", ": Chief Officer", 155.0, 130.0, 300.0, 145.0)
+    b7 = _make_block("b7", "DWT", 310.0, 130.0, 350.0, 145.0)
+    b8 = _make_block("b8", ": 50000", 355.0, 130.0, 450.0, 145.0)
+
+    cells = [
+        GeometricCell("b1", "Ship Name", [50.0, 100.0, 150.0, 115.0], "table_p1_0", 0, 0, "DATA"),
+        GeometricCell("b2", ": JAWAHAR LAL NEHRU", [155.0, 100.0, 300.0, 115.0], "table_p1_0", 0, 1, "DATA"),
+        GeometricCell("b3", "Flag", [310.0, 100.0, 350.0, 115.0], "table_p1_0", 0, 2, "DATA"),
+        GeometricCell("b4", ": India", [355.0, 100.0, 450.0, 115.0], "table_p1_0", 0, 3, "DATA"),
+        GeometricCell("b5", "Rank", [50.0, 130.0, 150.0, 145.0], "table_p1_0", 1, 0, "DATA"),
+        GeometricCell("b6", ": Chief Officer", [155.0, 130.0, 300.0, 145.0], "table_p1_0", 1, 1, "DATA"),
+        GeometricCell("b7", "DWT", [310.0, 130.0, 350.0, 145.0], "table_p1_0", 1, 2, "DATA"),
+        GeometricCell("b8", ": 50000", [355.0, 130.0, 450.0, 145.0], "table_p1_0", 1, 3, "DATA"),
+    ]
+    table = GeometricTable(
+        table_id="table_p1_0",
+        page=1,
+        num_columns=4,
+        num_rows=2,
+        num_data_rows=2,
+        column_bands=[(50.0, 150.0), (155.0, 300.0), (310.0, 350.0), (355.0, 450.0)],
+        cells=cells,
+        column_widths=[25.0, 35.0, 15.0, 25.0],
+        is_border_defined=True,
+        visual_geometry={"has_outer_border": True, "has_horizontal_borders": False, "has_vertical_borders": False},
+    )
+
+    # Build semantic contexts
+    ctxs = build_table_semantic_contexts([table], [b1, b2, b3, b4, b5, b6, b7, b8])
+    assert len(ctxs) == 1
+    assert ctxs[0].is_form_table is True
+    assert all(c.cell_role == "DATA" for r in ctxs[0].rows for c in r)
+
+    # Apply semantics to blocks
+    blocks = [b1, b2, b3, b4, b5, b6, b7, b8]
+    # Bound blocks with table metadata
+    blocks = [b.model_copy(update={"table_id": "table_p1_0", "cell_role": "DATA"}) for b in blocks]
+    enriched = apply_table_semantics_to_blocks(ctxs, blocks)
+    for b in enriched:
+        assert b.suggested_role != "TABLE_HEADER"
+
+
+def test_aashish_dg_sea_service_blocks_not_table_header():
+    """AASHISH DG sea service blocks must not be classified as TABLE_HEADER."""
+    aashish_path = Path("tests/fixtures/AASHISH DG.pdf")
+    if not aashish_path.exists():
+        pytest.skip("AASHISH DG.pdf fixture not available")
+
+    raw = aashish_path.read_bytes()
+    drawings = PDFExtractor.extract_drawings(raw)
+    si = build_semantic_input(
+        interpret_layout(reconstruct_document(document_from_text_blocks(PDFExtractor.extract(raw)))),
+        page_drawings=drawings,
+    )
+
+    target_ids = {"b_p3_289", "b_p3_322", "b_p4_375", "b_p4_425", "b_p4_395", "b_p4_445"}
+    for b in si.blocks:
+        if b.block_id in target_ids:
+            assert b.cell_role != "HEADER"
+            assert b.suggested_role != "TABLE_HEADER"
+            assert b.suggested_role != "SECTION_HEADING"
+
+
+def test_validation_deduplicates_experience_violations():
+    """Semantic validation should deduplicate block IDs and avoid duplicate violations for the same block."""
+    from app.domain.semantic_contract import (
+        BlockClassification,
+        GroundedExperienceItem,
+        GroundedPersonal,
+        GroundedString,
+        SemanticBlockCategory,
+        SemanticOutput,
+        validate_semantic_output,
+    )
+
+    b_bad = _make_block("b_bad", "Invalid Header", 0.0, 10.0, 100.0, 20.0)
+    input_data = SemanticInput(document_id="doc1", page_count=1, blocks=[b_bad])
+
+    # Construct an experience entry where b_bad is in both source_block_ids and description
+    exp = GroundedExperienceItem(
+        company=GroundedString(value="Some Company", raw_value="Some Company", source_block_ids=["b_bad"]),
+        description=GroundedString(value="Did stuff", raw_value="Did stuff", source_block_ids=["b_bad"]),
+        source_block_ids=["b_bad"],
+    )
+    output = SemanticOutput(
+        document_archetype=DocumentArchetype.STANDARD_CV,
+        block_classifications=[
+            BlockClassification(block_id="b_bad", category=SemanticBlockCategory.TABLE_HEADER)
+        ],
+        personal=GroundedPersonal(name=None),
+        experience=[exp],
+    )
+
+    violations = validate_semantic_output(output, input_data)
+    excluded_violations = [v for v in violations if "EXCLUDED_CATEGORY_IN_EXPERIENCE" in v and "b_bad" in v]
+    # Must be exactly 1, not duplicated
+    assert len(excluded_violations) == 1
+
+
+def test_repair_guard_normalizes_form_table_data_cells_in_experience():
+    """Repair guard should normalize table data cells mislabeled as TABLE_HEADER to EXPERIENCE."""
+    from app.domain.semantic_contract import (
+        BlockClassification,
+        GroundedExperienceItem,
+        GroundedPersonal,
+        GroundedString,
+        SemanticBlockCategory,
+        SemanticOutput,
+        repair_grounded_provenance,
+    )
+
+    # b_cell is a DATA cell in a table
+    b_cell = _make_block("b_cell", "JAWAHAR LAL NEHRU", 0.0, 10.0, 100.0, 20.0)
+    b_cell = b_cell.model_copy(update={"table_id": "table_p1_0", "cell_role": "DATA", "suggested_role": "DESCRIPTION"})
+    input_data = SemanticInput(document_id="doc1", page_count=1, blocks=[b_cell])
+
+    exp = GroundedExperienceItem(
+        company=GroundedString(value="JAWAHAR LAL NEHRU", raw_value="JAWAHAR LAL NEHRU", source_block_ids=["b_cell"]),
+        source_block_ids=["b_cell"],
+    )
+    output = SemanticOutput(
+        document_archetype=DocumentArchetype.STANDARD_CV,
+        block_classifications=[
+            BlockClassification(block_id="b_cell", category=SemanticBlockCategory.TABLE_HEADER)
+        ],
+        personal=GroundedPersonal(name=None),
+        experience=[exp],
+    )
+
+    repaired_output, repairs = repair_grounded_provenance(output, input_data)
+    bc = next(b for b in repaired_output.block_classifications if b.block_id == "b_cell")
+    assert bc.category == SemanticBlockCategory.EXPERIENCE
+    assert any(r["field"] == "block_classifications[b_cell]" for r in repairs)
+

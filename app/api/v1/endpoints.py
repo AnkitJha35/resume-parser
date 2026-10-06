@@ -301,9 +301,33 @@ def _run_parse_pipeline(
                         "totalTokens": meta.get("total_tokens"),
                     },
                 }
+                doc_structure = None
+                doc_json = None
+                doc_provenance = None
+                json_fidelity = None
+                if wrapped.last_semantic_input:
+                    try:
+                        from app.pipeline.stages.generic_document_builder import build_document_structure_from_semantic_input
+                        from app.pipeline.stages.generic_document_json import (
+                            serialize_document_structure_to_data_json,
+                            serialize_document_structure_to_json,
+                        )
+                        from app.validation.generic_document_json_validator import validate_document_json
+                        ds = build_document_structure_from_semantic_input(wrapped.last_semantic_input)
+                        doc_structure = ds.model_dump()
+                        doc_json = serialize_document_structure_to_data_json(ds)
+                        doc_provenance = serialize_document_structure_to_json(ds)
+                        fidelity_rep = validate_document_json(ds, doc_json)
+                        json_fidelity = fidelity_rep.to_dict()
+                    except Exception as json_err:
+                        logger.warning("Failed to serialize or validate document_json: %s", json_err)
                 return ParseResponse(
                     success=False,
                     status=ParseStatus.VALIDATION_FAILED,
+                    document_structure=doc_structure,
+                    document_json=doc_json,
+                    document_provenance=doc_provenance,
+                    json_fidelity=json_fidelity,
                     resume=resume.model_dump(),
                     violations=exc.violations,
                     metadata=metadata,
@@ -447,10 +471,35 @@ def _run_parse_pipeline(
         },
     }
 
+    doc_structure = None
+    doc_json = None
+    doc_provenance = None
+    json_fidelity = None
+    if wrapped.last_semantic_input:
+        try:
+            from app.pipeline.stages.generic_document_builder import build_document_structure_from_semantic_input
+            from app.pipeline.stages.generic_document_json import (
+                serialize_document_structure_to_data_json,
+                serialize_document_structure_to_json,
+            )
+            from app.validation.generic_document_json_validator import validate_document_json
+            ds = build_document_structure_from_semantic_input(wrapped.last_semantic_input)
+            doc_structure = ds.model_dump()
+            doc_json = serialize_document_structure_to_data_json(ds)
+            doc_provenance = serialize_document_structure_to_json(ds)
+            fidelity_rep = validate_document_json(ds, doc_json)
+            json_fidelity = fidelity_rep.to_dict()
+        except Exception as ds_err:
+            logger.warning("Failed to build generic document structure or validate JSON fidelity: %s", ds_err)
+
     status = _evaluate_parse_status(resume)
     return ParseResponse(
         success=True,
         status=status,
+        document_structure=doc_structure,
+        document_json=doc_json,
+        document_provenance=doc_provenance,
+        json_fidelity=json_fidelity,
         resume=resume.model_dump(),
         violations=[],
         metadata=metadata,

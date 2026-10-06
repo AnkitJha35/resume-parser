@@ -22,6 +22,18 @@ class TextBlock:
     bold: bool | None = None
 
 
+@dataclass(frozen=True)
+class PageDrawing:
+    """A horizontal or vertical line segment extracted from PDF vector graphics."""
+
+    page_number: int
+    x0: float
+    y0: float
+    x1: float
+    y1: float
+    orientation: str  # "horizontal" or "vertical"
+
+
 class PDFExtractor:
     @staticmethod
     def clean_extracted_text(text: str) -> str:
@@ -40,6 +52,8 @@ class PDFExtractor:
         """False when cleanup leaves only empty/whitespace content."""
         return bool(PDFExtractor.clean_extracted_text(text).strip())
 
+    _last_drawings: list[PageDrawing] = []
+
     @staticmethod
     def extract(raw_pdf_bytes: bytes) -> list[TextBlock]:
         blocks: list[TextBlock] = []
@@ -49,7 +63,57 @@ class PDFExtractor:
                 page_blocks = PDFExtractor._extract_page_blocks(page, page_index)
                 blocks.extend(page_blocks)
 
+        try:
+            PDFExtractor._last_drawings = PDFExtractor.extract_drawings(raw_pdf_bytes)
+        except Exception:
+            PDFExtractor._last_drawings = []
+
         return blocks
+
+    @staticmethod
+    def extract_drawings(raw_pdf_bytes: bytes) -> list[PageDrawing]:
+        """Extract horizontal/vertical line segments from PDF vector graphics.
+
+        Uses PyMuPDF page.get_drawings() to find border/grid lines that define
+        table boundaries.  Only returns line segments that are clearly horizontal
+        (height < 2 pt, width > 20 pt) or vertical (width < 2 pt, height > 5 pt).
+        """
+        drawings: list[PageDrawing] = []
+
+        with fitz.open(stream=raw_pdf_bytes, filetype="pdf") as document:
+            for page_index, page in enumerate(document, start=1):
+                page_drawings = page.get_drawings()
+                for d in page_drawings:
+                    rect = d.get("rect")
+                    if not rect:
+                        continue
+                    x0, y0, x1, y1 = rect
+                    w = x1 - x0
+                    h = y1 - y0
+                    if h < 2.0 and w > 20.0:
+                        drawings.append(
+                            PageDrawing(
+                                page_number=page_index,
+                                x0=x0,
+                                y0=y0,
+                                x1=x1,
+                                y1=y1,
+                                orientation="horizontal",
+                            )
+                        )
+                    elif w < 2.0 and h > 5.0:
+                        drawings.append(
+                            PageDrawing(
+                                page_number=page_index,
+                                x0=x0,
+                                y0=y0,
+                                x1=x1,
+                                y1=y1,
+                                orientation="vertical",
+                            )
+                        )
+
+        return drawings
 
     @staticmethod
     def _extract_page_blocks(page: fitz.Page, page_number: int) -> list[TextBlock]:

@@ -57,6 +57,10 @@ class ProvenanceRecord(BaseModel):
 class ParseResponse(BaseModel):
     success: bool
     status: ParseStatus = ParseStatus.SUCCESS
+    document_structure: dict[str, Any] | None = None
+    document_json: dict[str, Any] | None = None
+    document_provenance: dict[str, Any] | None = None
+    json_fidelity: dict[str, Any] | None = None
     resume: dict[str, Any] | None = None
     violations: list[str] = Field(default_factory=list)
     metadata: ParseMetadata

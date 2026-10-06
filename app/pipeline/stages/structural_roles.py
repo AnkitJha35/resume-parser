@@ -409,6 +409,14 @@ _CANONICAL_SECTION_KEYWORDS: set[str] = {
     "languages",
     "affiliations",
     "activities",
+    "details",
+    "service",
+    "documents",
+    "declaration",
+    "competency",
+    "history",
+    "certificate",
+    "certification",
 }
 
 
@@ -493,7 +501,7 @@ def classify_structural_role(
     if _is_known_section_alias(value):
         return StructuralRole.SECTION_HEADING, 1.0, ("known_section_alias",)
 
-    if _looks_like_section_heading(value, font_size=font_size, bold=bold, following=follow):
+    if _looks_like_section_heading(value, font_size=font_size, bold=bold, following=follow, previous_text=previous_text):
         return StructuralRole.SECTION_HEADING, 0.8, ("section_boundary_geometry",)
 
     if _looks_like_entry_title(value, font_size=font_size, bold=bold, following=follow):
@@ -795,15 +803,24 @@ def _looks_like_section_heading(
     font_size: float | None,
     bold: bool | None,
     following: tuple[str, ...],
+    previous_text: str | None = None,
 ) -> bool:
+    if previous_text and previous_text.strip() == ":":
+        return False
+
     value = text.strip()
     words = value.split()
-    if not value or not (1 <= len(words) <= 6) or len(value) > 60:
+    if not value or not (1 <= len(words) <= 7) or len(value) > 60:
         return False
     if any(ch.isdigit() for ch in value):
         return False
-    if value.endswith((".", ";", ",", ":", "!", "?")):
+    if value.endswith((".", ";", ",", "!", "?")):
         return False
+    if value.endswith(":"):
+        value = value.rstrip(":").strip()
+        words = value.split()
+        if not value or not (1 <= len(words) <= 7):
+            return False
     if _looks_like_contact(value):
         return False
     if _contains_role_word(value):
@@ -823,7 +840,14 @@ def _looks_like_section_heading(
         return False
 
     upper_like = value.upper() == value and any(ch.isalpha() for ch in value)
-    if not _has_typography_emphasis(font_size, bold) and not upper_like:
+    _LOWERCASE_CONJ_PREP_SET = {"of", "and", "from", "in", "to", "for", "with", "at", "by", "or", "on", "as", "the"}
+    is_title_case = words[0][0].isupper() and all(
+        w[0].isupper() for w in words if w.lower() not in _LOWERCASE_CONJ_PREP_SET
+    )
+    has_keyword = (last_word_clean in _CANONICAL_SECTION_KEYWORDS or first_clean in _CANONICAL_SECTION_KEYWORDS)
+
+    has_emphasis = _has_typography_emphasis(font_size, bold) or upper_like or (is_title_case and has_keyword)
+    if not has_emphasis:
         return False
 
     # Known section alias (single-word or multi-word)
@@ -841,8 +865,7 @@ def _looks_like_section_heading(
     # Anchor keyword must appear as head noun (last word) or leading category keyword
     # e.g. "PROFESSIONAL EXPERIENCE", "TECHNICAL SKILLS", "ACADEMIC PROJECTS",
     #      "RELEVANT COURSEWORK", "ACADEMIC APPOINTMENTS", "PROJECT HIGHLIGHTS"
-    first_word_clean = re.sub(r"[^A-Za-z0-9]", "", words[0]).lower()
-    if last_word_clean in _CANONICAL_SECTION_KEYWORDS or first_word_clean in _CANONICAL_SECTION_KEYWORDS:
+    if has_keyword:
         return True
 
     # Section boundary geometry:
@@ -1018,7 +1041,7 @@ def _looks_like_technology(
     if _contains_role_word(value) or _is_known_section_alias(value):
         return False
     clean_val = re.sub(r"[^A-Za-z0-9\s/.-]", "", value).strip().lower()
-    if clean_val in _EXCLUDED_TECHNOLOGY_TERMS:
+    if clean_val in _EXCLUDED_TECHNOLOGY_TERMS or any(w in _CANONICAL_SECTION_KEYWORDS for w in clean_val.split()):
         return False
     # Only in list-like neighborhoods to avoid labeling arbitrary short nouns.
     neighbors = [item for item in ((previous_text,) if previous_text else ()) + following if item]

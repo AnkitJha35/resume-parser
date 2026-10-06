@@ -114,9 +114,126 @@ export type ParseStatus =
   | 'validation_failed'
   | string;
 
+export interface TableVisualGeometry {
+  has_outer_border?: boolean;
+  outer_bounds?: number[] | null;
+  has_horizontal_borders?: boolean;
+  has_vertical_borders?: boolean;
+  horizontal_borders?: boolean[];
+  vertical_borders?: boolean[];
+}
+
+export interface SpatialBlock {
+  text: string;
+  relative_x: number;
+  relative_y: number;
+  relative_width: number;
+  relative_height: number;
+  source_block_ids?: string[];
+  page_number?: number | null;
+  reading_order?: number | null;
+}
+
+export interface SpatialRow {
+  fields: SpatialBlock[];
+}
+
+export interface DocumentBlock {
+  id?: string | null;
+  type: string;
+  text: string;
+  source_block_ids?: string[];
+  page_number?: number | null;
+  reading_order?: number | null;
+  table_data?: {
+    headers?: string[];
+    rows?: string[][];
+    caption?: string | null;
+    column_widths?: number[];
+    num_columns?: number;
+    visual_geometry?: TableVisualGeometry | null;
+    is_form_layout?: boolean;
+    spatial_rows?: SpatialRow[];
+    spatial_blocks?: SpatialBlock[];
+    aspect_ratio?: number;
+    max_bottom?: number;
+  } | null;
+  metadata?: Record<string, any>;
+}
+
+export interface DocumentSection {
+  heading?: string | null;
+  level: number;
+  blocks: DocumentBlock[];
+  source_block_ids?: string[];
+  subsections?: DocumentSection[];
+}
+
+export interface DocumentStructure {
+  sections: DocumentSection[];
+  page_count: number;
+  metadata?: Record<string, any>;
+}
+
+export interface GenericDocumentBlockJson {
+  type: 'paragraph' | 'heading' | 'field' | 'record' | 'table' | 'list' | 'text' | string;
+  text?: string;
+  level?: number;
+  label?: string;
+  value?: string;
+  fields?: Array<{ label: string; value: string; source_block_ids?: string[] }>;
+  headers?: string[];
+  rows?: string[][];
+  columns?: number;
+  geometry?: {
+    page: number;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
+  form_fields?: Array<{ label: string; value: string; source_block_ids?: string[] }>;
+  items?: string[];
+  item_details?: Array<{ text: string; source_block_ids?: string[] }>;
+  source_block_ids?: string[];
+  page?: number | null;
+  [key: string]: any;
+}
+
+export interface GenericDocumentSectionJson {
+  heading: string | null;
+  level: number;
+  blocks: GenericDocumentBlockJson[];
+  source_block_ids: string[];
+  subsections?: GenericDocumentSectionJson[];
+}
+
+export interface GenericDocumentJson {
+  document: {
+    pages: number;
+    sections: GenericDocumentSectionJson[];
+    metadata?: Record<string, any>;
+  };
+}
+
+export interface JsonFidelityReport {
+  valid: boolean;
+  source_blocks: number;
+  json_owned_blocks: number;
+  missing_blocks: number;
+  duplicate_blocks: number;
+  unsupported_blocks: number;
+  provenance_errors: number;
+  issues: string[];
+}
+
 export interface ParseResponse {
   success: boolean;
   status: ParseStatus;
+  document_structure?: DocumentStructure | null;
+  document_json?: GenericDocumentJson | null;
+  document_provenance?: GenericDocumentJson | null;
+  json_fidelity?: JsonFidelityReport | null;
   resume: Resume | null;
   violations?: string[];
   metadata: ParseMetadata;

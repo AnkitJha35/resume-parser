@@ -2151,19 +2151,28 @@ def repair_grounded_provenance(
             if tech.source_block_ids:
                 exp_all_bids.update(tech.source_block_ids)
 
+    form_table_ids: set[str] = set()
+    for t in getattr(semantic_input, "tables", []):
+        if getattr(t, "is_form_table", False):
+            form_table_ids.add(t.table_id)
+
     for bc in getattr(output, "block_classifications", []):
         if bc.category == SemanticBlockCategory.TABLE_HEADER and bc.block_id in exp_all_bids:
             b = blocks_by_id.get(bc.block_id)
-            if b and b.table_id is None and b.suggested_role in {
-                "ENTRY_TITLE", "ORGANIZATION", "LOCATION", "DATE", "DESCRIPTION", "BULLET"
-            }:
-                bc.category = SemanticBlockCategory.EXPERIENCE
-                repairs.append({
-                    "field": f"block_classifications[{bc.block_id}]",
-                    "original_category": "TABLE_HEADER",
-                    "repaired_category": "EXPERIENCE",
-                    "reason": "non_table_block_in_experience",
+            if b:
+                is_non_table = (b.table_id is None and b.suggested_role in {
+                    "ENTRY_TITLE", "ORGANIZATION", "LOCATION", "DATE", "DESCRIPTION", "BULLET"
                 })
+                is_data_cell = (b.cell_role != "HEADER")
+                is_in_form = (b.table_id in form_table_ids)
+                if is_non_table or is_data_cell or is_in_form:
+                    bc.category = SemanticBlockCategory.EXPERIENCE
+                    repairs.append({
+                        "field": f"block_classifications[{bc.block_id}]",
+                        "original_category": "TABLE_HEADER",
+                        "repaired_category": "EXPERIENCE",
+                        "reason": "non_table_block_in_experience" if is_non_table else "table_data_block_in_experience",
+                    })
 
     return output, repairs
 
@@ -2690,6 +2699,7 @@ def build_semantic_input(
     document_id: str = "doc-1",
     structural_blocks: list[StructuralBlock] | None = None,
     archetype: DocumentArchetype | None = None,
+    page_drawings: list[Any] | None = None,
 ) -> SemanticInput:
     """Build a SemanticInput payload from layout Document IR.
 
@@ -2792,7 +2802,10 @@ def build_semantic_input(
     from app.pipeline.stages.structural_roles import _is_known_section_alias
 
     binder = GeometricTableBinder()
-    tables = binder.detect_document_tables(all_blocks)
+    drawings = page_drawings
+    if drawings is None:
+        drawings = [d for p in document.pages for d in getattr(p, "drawings", [])]
+    tables = binder.detect_document_tables(all_blocks, drawings=drawings)
     if tables:
         candidate_contexts = build_table_semantic_contexts(tables, all_blocks)
         valid_contexts = []
@@ -2809,6 +2822,11 @@ def build_semantic_input(
                     is_layout_header = True
                     break
             if is_layout_header:
+                continue
+
+            # Accept border-defined tables directly (explicit PDF vector borders outrank text density)
+            if getattr(ctx, "is_border_defined", False):
+                valid_contexts.append(ctx)
                 continue
 
             # Reject contact-dominated or prose-dominated false tables with UNKNOWN purpose
@@ -3289,7 +3307,7 @@ def validate_semantic_output(output: SemanticOutput, input_data: SemanticInput) 
                 violations.append(f"TABLE_HEADER_AS_DESIGNATION in experience[{i}]: {desig!r}")
 
         # Referee separation check: reject blocks classified as REFERENCE or BOILERPLATE
-        for bid in all_exp_block_ids:
+        for bid in dict.fromkeys(all_exp_block_ids):
             cat = category_by_block_id.get(bid)
             if cat == SemanticBlockCategory.REFERENCE:
                 violations.append(f"REFERENCE_IN_EXPERIENCE: block {bid} is classified as REFERENCE but mapped to experience[{i}]")
@@ -3452,3 +3470,337 @@ def semantic_output_to_resume(output: SemanticOutput, parser_version: str = "2.0
         languages=languages,
         metadata={"archetype": output.document_archetype.value, "extractor": "semantic_llm"},
     )
+
+
+# =====================================================================
+# 5. Generic Document Structure v1 Semantic Contracts
+# =====================================================================
+
+
+class GenericBlockSemanticOutput(BaseModel):
+    """Generic atomic content block emitted by the semantic model."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    type: str = "paragraph"  # paragraph, list_item, table, heading, text
+    text: GroundedString | None = None
+    table_headers: list[GroundedString] | None = None
+    table_rows: list[list[GroundedString]] | None = None
+    page_number: int | None = None
+    reading_order: int | None = None
+
+
+class GenericSectionSemanticOutput(BaseModel):
+    """Generic hierarchical section emitted by the semantic model."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    heading: GroundedString | None = None  # None for unheaded / pre-heading content
+    level: int = 1
+    blocks: list[GenericBlockSemanticOutput] = Field(default_factory=list)
+    subsections: list[GenericSectionSemanticOutput] = Field(default_factory=list)
+
+
+class GenericDocumentSemanticOutput(BaseModel):
+    """Root generic document semantic extraction payload."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    document_archetype: str = "generic_document"
+    sections: list[GenericSectionSemanticOutput] = Field(default_factory=list)
+
+
+def generic_semantic_output_to_document_structure(
+    output: GenericDocumentSemanticOutput,
+    page_count: int = 1,
+) -> Any:
+    """Convert GenericDocumentSemanticOutput to DocumentStructure."""
+    from app.domain.document_structure import DocumentBlock, DocumentSection, DocumentStructure
+
+    def _convert_block(b: GenericBlockSemanticOutput) -> DocumentBlock:
+        b_type = b.type or "paragraph"
+        txt = b.text.value if b.text else ""
+        source_bids = list(b.text.source_block_ids) if b.text else []
+        table_data = None
+        if b.table_rows or b.table_headers:
+            b_type = "table"
+            headers = [h.value for h in (b.table_headers or [])]
+            rows = [[c.value for c in r] for r in (b.table_rows or [])]
+            table_data = {"headers": headers, "rows": rows}
+            for h in b.table_headers or []:
+                source_bids.extend(h.source_block_ids)
+            for r in b.table_rows or []:
+                for c in r:
+                    source_bids.extend(c.source_block_ids)
+        return DocumentBlock(
+            type=b_type,
+            text=txt,
+            source_block_ids=list(dict.fromkeys(source_bids)),
+            page_number=b.page_number,
+            reading_order=b.reading_order,
+            table_data=table_data,
+        )
+
+    def _convert_section(s: GenericSectionSemanticOutput) -> DocumentSection:
+        heading_val = s.heading.value if s.heading else None
+        source_bids = list(s.heading.source_block_ids) if s.heading else []
+        blocks = [_convert_block(b) for b in s.blocks]
+        subsections = [_convert_section(sub) for sub in s.subsections]
+        return DocumentSection(
+            heading=heading_val,
+            level=s.level or 1,
+            blocks=blocks,
+            source_block_ids=source_bids,
+            subsections=subsections,
+        )
+
+    return DocumentStructure(
+        sections=[_convert_section(s) for s in output.sections],
+        page_count=page_count,
+        metadata={"archetype": output.document_archetype},
+    )
+
+
+def semantic_output_to_document_structure(
+    output: SemanticOutput,
+    input_data: SemanticInput | None = None,
+) -> Any:
+    """Project legacy SemanticOutput to generic DocumentStructure."""
+    from app.domain.document_structure import DocumentBlock, DocumentSection, DocumentStructure
+
+    sections: list[DocumentSection] = []
+
+    # 1. Unheaded personal/contact section
+    personal_blocks: list[DocumentBlock] = []
+    personal_bids: list[str] = []
+    if output.personal:
+        if output.personal.name:
+            personal_blocks.append(
+                DocumentBlock(
+                    type="paragraph",
+                    text=output.personal.name.value,
+                    source_block_ids=output.personal.name.source_block_ids,
+                )
+            )
+            personal_bids.extend(output.personal.name.source_block_ids)
+        contact_parts = []
+        contact_bids = []
+        if output.personal.email:
+            contact_parts.append(output.personal.email.value)
+            contact_bids.extend(output.personal.email.source_block_ids)
+        if output.personal.phone:
+            contact_parts.append(output.personal.phone.value)
+            contact_bids.extend(output.personal.phone.source_block_ids)
+        if output.personal.location:
+            contact_parts.append(output.personal.location.value)
+            contact_bids.extend(output.personal.location.source_block_ids)
+        if contact_parts:
+            personal_blocks.append(
+                DocumentBlock(
+                    type="paragraph",
+                    text=" | ".join(contact_parts),
+                    source_block_ids=contact_bids,
+                )
+            )
+            personal_bids.extend(contact_bids)
+
+    if personal_blocks:
+        sections.append(
+            DocumentSection(
+                heading=None,
+                level=1,
+                blocks=personal_blocks,
+                source_block_ids=list(dict.fromkeys(personal_bids)),
+            )
+        )
+
+    # 2. Summary
+    if output.summary:
+        sections.append(
+            DocumentSection(
+                heading="Summary",
+                level=1,
+                blocks=[
+                    DocumentBlock(
+                        type="paragraph",
+                        text=output.summary.value,
+                        source_block_ids=output.summary.source_block_ids,
+                    )
+                ],
+                source_block_ids=list(output.summary.source_block_ids),
+            )
+        )
+
+    # 3. Skills
+    if output.skills:
+        skill_blocks = [
+            DocumentBlock(
+                type="list_item",
+                text=s.value,
+                source_block_ids=s.source_block_ids,
+            )
+            for s in output.skills
+        ]
+        all_skill_bids = [bid for s in output.skills for bid in s.source_block_ids]
+        sections.append(
+            DocumentSection(
+                heading="Skills",
+                level=1,
+                blocks=skill_blocks,
+                source_block_ids=list(dict.fromkeys(all_skill_bids)),
+            )
+        )
+
+    # 4. Experience
+    if output.experience:
+        exp_blocks = []
+        all_exp_bids = []
+        for exp in output.experience:
+            parts = []
+            if exp.designation:
+                parts.append(exp.designation.value)
+            if exp.company:
+                parts.append(f"at {exp.company.value}")
+            dates = []
+            if exp.startDate:
+                dates.append(exp.startDate.value)
+            if exp.endDate:
+                dates.append(exp.endDate.value)
+            elif exp.current and exp.current.value:
+                dates.append("Present")
+            if dates:
+                parts.append(f"({' - '.join(dates)})")
+            title_line = " ".join(parts)
+            if exp.description:
+                title_line += f"\n{exp.description.value}"
+            exp_blocks.append(
+                DocumentBlock(
+                    type="paragraph",
+                    text=title_line.strip(),
+                    source_block_ids=exp.source_block_ids,
+                )
+            )
+            all_exp_bids.extend(exp.source_block_ids)
+        sections.append(
+            DocumentSection(
+                heading="Experience",
+                level=1,
+                blocks=exp_blocks,
+                source_block_ids=list(dict.fromkeys(all_exp_bids)),
+            )
+        )
+
+    # 5. Education
+    if output.education:
+        edu_blocks = []
+        all_edu_bids = []
+        for edu in output.education:
+            parts = []
+            if edu.degree:
+                parts.append(edu.degree.value)
+            if edu.institution:
+                parts.append(f"from {edu.institution.value}")
+            dates = []
+            if edu.startDate:
+                dates.append(edu.startDate.value)
+            if edu.endDate:
+                dates.append(edu.endDate.value)
+            if dates:
+                parts.append(f"({' - '.join(dates)})")
+            edu_blocks.append(
+                DocumentBlock(
+                    type="paragraph",
+                    text=" ".join(parts),
+                    source_block_ids=edu.source_block_ids,
+                )
+            )
+            all_edu_bids.extend(edu.source_block_ids)
+        sections.append(
+            DocumentSection(
+                heading="Education",
+                level=1,
+                blocks=edu_blocks,
+                source_block_ids=list(dict.fromkeys(all_edu_bids)),
+            )
+        )
+
+    # 6. Projects
+    if output.projects:
+        prj_blocks = []
+        all_prj_bids = []
+        for prj in output.projects:
+            desc = prj.name.value if prj.name else "Project"
+            if prj.description:
+                desc += f": {prj.description.value}"
+            prj_blocks.append(
+                DocumentBlock(
+                    type="paragraph",
+                    text=desc,
+                    source_block_ids=prj.source_block_ids,
+                )
+            )
+            all_prj_bids.extend(prj.source_block_ids)
+        sections.append(
+            DocumentSection(
+                heading="Projects",
+                level=1,
+                blocks=prj_blocks,
+                source_block_ids=list(dict.fromkeys(all_prj_bids)),
+            )
+        )
+
+    # 7. Certifications
+    if output.certifications:
+        cert_blocks = [
+            DocumentBlock(type="list_item", text=c.value, source_block_ids=c.source_block_ids)
+            for c in output.certifications
+        ]
+        all_cert_bids = [bid for c in output.certifications for bid in c.source_block_ids]
+        sections.append(
+            DocumentSection(
+                heading="Certifications",
+                level=1,
+                blocks=cert_blocks,
+                source_block_ids=list(dict.fromkeys(all_cert_bids)),
+            )
+        )
+
+    # 8. Languages
+    if output.languages:
+        lang_blocks = [
+            DocumentBlock(type="list_item", text=l.value, source_block_ids=l.source_block_ids)
+            for l in output.languages
+        ]
+        all_lang_bids = [bid for l in output.languages for bid in l.source_block_ids]
+        sections.append(
+            DocumentSection(
+                heading="Languages",
+                level=1,
+                blocks=lang_blocks,
+                source_block_ids=list(dict.fromkeys(all_lang_bids)),
+            )
+        )
+
+    # 9. Achievements
+    if output.achievements:
+        ach_blocks = [
+            DocumentBlock(type="list_item", text=a.value, source_block_ids=a.source_block_ids)
+            for a in output.achievements
+        ]
+        all_ach_bids = [bid for a in output.achievements for bid in a.source_block_ids]
+        sections.append(
+            DocumentSection(
+                heading="Achievements",
+                level=1,
+                blocks=ach_blocks,
+                source_block_ids=list(dict.fromkeys(all_ach_bids)),
+            )
+        )
+
+    page_count = input_data.page_count if input_data else 1
+    return DocumentStructure(
+        sections=sections,
+        page_count=page_count,
+        metadata={"archetype": output.document_archetype.value, "extractor": "semantic_llm"},
+    )
+

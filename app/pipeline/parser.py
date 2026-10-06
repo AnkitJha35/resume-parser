@@ -33,6 +33,15 @@ from app.pipeline.stages.semantic_paths import detect_region_aware_sections
 from app.pipeline.stages.structural_roles import build_structural_blocks
 from app.pipeline.stages.candidate_sections import build_candidate_sections
 from app.pipeline.stages.candidate_entries import build_candidate_entries
+from app.domain.document_structure import DocumentStructure, document_structure_to_resume
+from app.domain.semantic_contract import (
+    GenericDocumentSemanticOutput,
+    SemanticOutput,
+    build_semantic_input,
+    generic_semantic_output_to_document_structure,
+    semantic_output_to_document_structure,
+)
+from app.pipeline.stages.generic_document_builder import build_document_structure_from_semantic_input
 
 
 class PipelineError(Exception):
@@ -76,6 +85,34 @@ class ResumeParser:
             semantic_extractor,
             document_id=document_id,
         )
+
+    def parse_document_structure(
+        self,
+        raw_pdf_bytes: bytes,
+        semantic_extractor: SemanticExtractor | None = None,
+        document_id: str = "doc-1",
+    ) -> DocumentStructure:
+        """Reconstruct generic DocumentStructure from raw PDF bytes."""
+        detection = self.pdf_detector.detect(raw_pdf_bytes)
+        if not detection.is_pdf:
+            raise PipelineError("INVALID_PDF", "The file is not a valid PDF.")
+        if not detection.has_text:
+            raise PipelineError("PDF_EXTRACTION_FAILED", "Unable to extract meaningful text.")
+
+        physical_document = document_from_text_blocks(PDFExtractor.extract(raw_pdf_bytes))
+        reconstructed_document = reconstruct_document(physical_document)
+        layout_document = interpret_layout(reconstructed_document)
+        semantic_input = build_semantic_input(layout_document, document_id=document_id)
+
+        if semantic_extractor is not None:
+            output = semantic_extractor.extract(semantic_input)
+            if isinstance(output, GenericDocumentSemanticOutput):
+                return generic_semantic_output_to_document_structure(output, page_count=detection.page_count)
+            elif isinstance(output, SemanticOutput):
+                return semantic_output_to_document_structure(output, semantic_input)
+
+        return build_document_structure_from_semantic_input(semantic_input)
+
 
     def parse(self, raw_pdf_bytes: bytes) -> Resume:
         context = PipelineContext(raw_pdf_bytes)

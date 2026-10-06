@@ -69,9 +69,13 @@ class TableSemanticContext(BaseModel):
     evidence: list[str] = Field(default_factory=list)
     is_form_table: bool = False
     columns: list[ColumnSemanticDescriptor] = Field(default_factory=list)
+    num_columns: int = 0
+    column_widths: list[float] = Field(default_factory=list)
     rows: list[list[CellSemanticDescriptor]] = Field(default_factory=list)
     physical_rows: list[list[CellSemanticDescriptor]] = Field(default_factory=list)
     source_block_ids: list[str] = Field(default_factory=list)
+    is_border_defined: bool = False
+    visual_geometry: dict[str, Any] | None = None
 
     @property
     def logical_rows(self) -> list[list[CellSemanticDescriptor]]:
@@ -663,9 +667,10 @@ def merge_logical_table_rows(
     columns: list[ColumnSemanticDescriptor],
     purpose: TablePurpose,
     is_form_table: bool = False,
+    is_border_defined: bool = False,
 ) -> list[list[CellSemanticDescriptor]]:
     """Merge physical continuation rows into logical records while preserving all source_block_ids."""
-    if is_form_table or len(rows) <= 1:
+    if is_form_table or is_border_defined or len(rows) <= 1:
         return rows
 
     # Row 0 is the table header (when not a form table)
@@ -767,7 +772,8 @@ def build_table_semantic_contexts(
             for c_idx in range(table.num_columns):
                 matched = cells_by_col.get(c_idx, [])
                 text = " ".join(c.text for c in matched).strip()
-                cell_role = "HEADER" if r_idx == 0 else "DATA"
+                is_header_row = (r_idx == 0 and not is_form and any(c.cell_role == "HEADER" for c in row_cells))
+                cell_role = "HEADER" if is_header_row else "DATA"
                 sem_role = col_role_map.get(c_idx, "unknown")
                 source_ids = [c.block_id for c in matched]
 
@@ -790,6 +796,7 @@ def build_table_semantic_contexts(
             columns,
             purpose,
             is_form_table=is_form,
+            is_border_defined=getattr(table, "is_border_defined", False),
         )
 
         contexts.append(
@@ -801,9 +808,13 @@ def build_table_semantic_contexts(
                 evidence=evidence,
                 is_form_table=is_form,
                 columns=columns,
+                num_columns=table.num_columns,
+                column_widths=getattr(table, "column_widths", []),
                 rows=logical_rows,
                 physical_rows=rows,
                 source_block_ids=all_table_block_ids,
+                is_border_defined=getattr(table, "is_border_defined", False),
+                visual_geometry=getattr(table, "visual_geometry", None),
             )
         )
 
@@ -838,22 +849,24 @@ def apply_table_semantics_to_blocks(
         # Enforce structural role precedence
         new_role = b.suggested_role
 
-        if b.cell_role == "HEADER":
+        if b.cell_role == "HEADER" and not ctx.is_form_table:
             new_role = "TABLE_HEADER"
-        elif new_role == "TECHNOLOGY":
+        elif new_role in ("TECHNOLOGY", "SECTION_HEADING"):
             if ctx.purpose in (TablePurpose.PERSONAL_DATA, TablePurpose.CONTACT_DETAILS):
                 new_role = "PERSONAL"
             else:
                 new_role = "DESCRIPTION"
 
+        update_kwargs: dict[str, Any] = {
+            "table_purpose": purpose_str,
+            "column_semantic": col_semantic,
+            "suggested_role": new_role,
+        }
+        if getattr(b, "heading_candidate", None):
+            update_kwargs["heading_candidate"] = None
+
         enriched_blocks.append(
-            b.model_copy(
-                update={
-                    "table_purpose": purpose_str,
-                    "column_semantic": col_semantic,
-                    "suggested_role": new_role,
-                }
-            )
+            b.model_copy(update=update_kwargs)
         )
 
     return enriched_blocks
